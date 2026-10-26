@@ -65,10 +65,19 @@ export component WelcomeView inherits Rectangle {
             spacing: 6px;
             alignment: start;
 
-            Image {
-                source: @image-url("icons/patina.svg");
-                width: 76px;
-                height: 76px;
+            // The icon's tile fills 208 of its 256 units (Flathub's grid);
+            // the margin around it is cropped so the tile lines up with the
+            // title below.
+            Rectangle {
+                width: 67px;
+                height: 67px;
+                Image {
+                    x: -(self.width - parent.width) / 2;
+                    y: -(self.height - parent.height) / 2;
+                    width: parent.width * 256 / 208;
+                    height: parent.height * 256 / 208;
+                    source: @image-url("icons/patina.svg");
+                }
             }
             Text {
                 text: "Patina";
