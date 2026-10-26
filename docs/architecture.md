@@ -159,6 +159,14 @@ more headless mpv core, on a thread of its own, opens each local file
 (paused, with nothing shown or heard) just far enough to read its length and
 tags. `App` caches the results and passes them to the windows as they come.
 
+The playlist itself is mpv's. `playlist.rs` holds what Patina adds on top,
+free of mpv so it is unit-tested: the selection, kept by mpv's entry ids so
+it follows entries as they move; turning "move these rows there" into the
+one-entry `playlist-move` commands mpv has; the series prefix each name
+shares with another, folded in the list; and reading pasted text as paths
+and URLs. The clipboard is `arboard`; moving files to the trash is the
+`trash` crate, on a thread of its own.
+
 ## Subtitle matching
 
 `subtitle_match.rs` follows IINA's matcher. Subtitle files in the video's
@@ -168,7 +176,10 @@ edit distance, so each file goes only to the video it fits best. Each
 player core registers mpv's `on_load` hook; when it fires, a short-lived
 thread finds the matches and sets them as that file's `sub-files` before
 continuing the hook, so mpv loads and selects them exactly as it would its
-own auto-loaded files (mpv's `sub-auto` is off in this mode).
+own auto-loaded files (mpv's `sub-auto` is off in this mode). Choices made
+from the playlist menu (subtitles added for one file, or its matches turned
+down as wrong) live in `App`, shared with those threads, and apply in either
+mode.
 
 ## History and inspector windows
 

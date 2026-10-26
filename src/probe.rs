@@ -14,6 +14,8 @@ pub struct Probe {
     pub title: String,
     pub artist: String,
     pub album: String,
+    /// No video, or only cover art: the playlist may show its tags.
+    pub audio_only: bool,
 }
 
 pub struct Prober {
@@ -111,11 +113,17 @@ fn probe(mpv: &Mpv, path: &str) -> Option<Probe> {
             .to_owned(),
         _ => String::new(),
     };
+    let tracks = mpv.get_property("track-list").unwrap_or_default();
+    let audio_only = !tracks.as_array().iter().any(|track| {
+        track.get("type").and_then(Node::as_str) == Some("video")
+            && !track.bool_or("albumart", false)
+    });
     let probe = Probe {
         duration,
         title: tag(&["title"]),
         artist: tag(&["artist", "album_artist"]),
         album: tag(&["album"]),
+        audio_only,
     };
     let _ = mpv.command(&["stop"]);
     Some(probe)
@@ -166,6 +174,7 @@ mod tests {
             (first.title.as_str(), first.artist.as_str()),
             ("Tone", "Patina")
         );
+        assert!(first.audio_only);
         let (_, missing) = results.recv_blocking().unwrap();
         assert!(missing.is_none());
         std::fs::remove_dir_all(&dir).unwrap();

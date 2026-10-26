@@ -87,6 +87,8 @@ pub struct Preferences {
     pub keep_open: bool,
     pub auto_play_next: bool,
     pub playlist_auto_add: bool,
+    /// Show audio files by their title and artist tags in the playlist.
+    pub playlist_show_metadata: bool,
     pub resume_playback: bool,
     pub record_history: bool,
     pub recent_limit: usize,
@@ -205,6 +207,7 @@ impl Default for Preferences {
             keep_open: true,
             auto_play_next: true,
             playlist_auto_add: true,
+            playlist_show_metadata: true,
             resume_playback: true,
             record_history: true,
             recent_limit: 12,

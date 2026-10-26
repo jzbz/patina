@@ -31,7 +31,9 @@ and its state in Patina.
   chapters and video adjustments
 - The playlist and chapters sidebar, with other files from the same folder
   added automatically, each file's length and how much of it you watched,
-  and drag-and-drop reordering
+  title and artist for tagged music, multi-select, drag-and-drop
+  reordering, copy and paste, and IINA's row menu (play next, subtitles for
+  one file, move to trash, ...)
 - Quick settings for video (tracks, aspect ratio, crop, rotation, flip,
   mirror, speed, deinterlacing, hardware decoding, colour), audio (tracks,
   external audio, delay, 10-band equalizer, output device) and subtitles

@@ -229,6 +229,14 @@ pub const ITEMS: &[Item] = &[
     item(
         General,
         "Playback",
+        "playlist-show-metadata",
+        "Show artist and title for audio files",
+        "From their tags, in the playlist.",
+        Switch,
+    ),
+    item(
+        General,
+        "Playback",
         "resume-playback",
         "Resume where you left off",
         "",

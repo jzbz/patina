@@ -11,6 +11,7 @@ mod media_controls;
 mod mpv;
 mod platform;
 mod player;
+mod playlist;
 mod preferences;
 mod probe;
 mod settings;

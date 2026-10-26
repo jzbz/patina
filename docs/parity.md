@@ -87,16 +87,16 @@ testing has been on Linux (X11 and Wayland).
 
 | Item | IINA | Patina |
 | --- | --- | --- |
-| PLC-01 | Playlist rows | partial: name, folder, current item, duration, watched progress; series-prefix folding and artist/title display planned |
-| PLC-02 | Durations prefetched in the background | done: a headless mpv reads each local file's length and tags; the footer shows the total |
+| PLC-01 | Playlist rows | done: name, folder, current item, multi-select (Ctrl/Command and Shift), duration, watched progress, the series prefix a name shares with others folded into a "…" that unfolds, and title and artist for tagged audio files (preference). Adapted: long names are cut at the end, not in the middle (Slint elides only there); the music-mode variant of the metadata setting waits for music mode |
+| PLC-02 | Durations prefetched in the background | done: a headless mpv reads each local file's length and tags; the footer shows the total, or "X of Y selected" |
 | PLC-03 | Loop, shuffle, sort, add, remove, clear | partial: sort planned |
 | PLC-04 | Double-click to play | done |
-| PLC-05 | Drag to reorder, drop to insert | partial: drag reordering with an insertion line; dropped files are added at the end (dropping at a position, cut/copy/paste planned) |
-| PLC-06 | Row context menu | planned |
+| PLC-05 | Drag to reorder, drop to insert | done: dragging rows (the whole selection with them) to an insertion line; cut, copy and paste of rows as paths and URLs, from the menu or Ctrl/Command+X/C/V. Adapted: files dropped while the playlist is open go after the selected rows rather than under the pointer, because winit 0.30, which Slint uses, reports no position for a drop (and no file drops at all on Wayland) |
+| PLC-06 | Row context menu | done: Play Next, Play in New Window, Remove, Cut/Copy/Paste, Add Subtitle… and Wrong Subtitle, Open in Browser for streams, Show in File Manager and Move to Trash for files, Add Files/URL, Clear Playlist; Return plays and Delete removes the selection. Plugin items wait for plugins (M4) |
 | PLC-07 | Add files from the same folder | done (mpv `autocreate-playlist=same`; subfolders are left out, while an opened folder is read recursively) |
 | PLC-08 | Auto-play next, repeat on open | partial: auto-play next (preference); repeat on open planned |
 | PLC-10 | Save playlist | partial: writes `.m3u8`; not yet tested |
-| PLC-11 | Delete current file | planned |
+| PLC-11 | Delete current file | done: File > Move to Trash (`delete-current-file`) and the row menu move files to the trash and drop them from the playlist; IINA's binding-only hard delete is not offered |
 | PLC-12 | Chapters tab | done |
 | PLC-13 | Panel toggles and bindings | done |
 
@@ -170,7 +170,7 @@ once and applied to running players, as IINA's option observers do
 | SUB-02 | Track naming | done: title, language name, codec, format and flags |
 | SUB-03 | External subtitles | done: dialog, drop |
 | SUB-04 | Intelligent auto-matching | done: names, episode numbers (S01E02, 1x02, "- 02") with series-name similarity, the folder's immediate subfolders, a lone video takes the folder's subtitles, preferred languages first; matches reach mpv through its `on_load` hook so its own track selection applies. The extra search paths and priority strings are planned |
-| SUB-05 | Per-file "Wrong Subtitle" overrides | planned |
+| SUB-05 | Per-file "Wrong Subtitle" overrides | done: from the row menu, Add Subtitle… gives a file subtitles of the user's choosing and Wrong Subtitle turns its matches down (Patina's and mpv's own), now if it is playing and whenever it plays later in the session |
 | SUB-06..09 | Online subtitles | planned |
 | SUB-10 | Preferred languages | done (plain text field; ISO 639 autocompletion planned) |
 | SUB-11 | Encodings | partial: default encoding preference; the per-file Encoding menu is planned |

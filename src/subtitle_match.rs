@@ -8,7 +8,9 @@
 
 use crate::mpv::{Mpv, Value};
 use crate::player::state::language_name;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const SUBTITLE_EXTENSIONS: &[&str] = &[
     "ass", "idx", "lrc", "mks", "smi", "srt", "ssa", "sub", "sup", "vtt", "utf", "utf8", "utf-8",
@@ -45,26 +47,50 @@ const NAMED_LANGUAGES: &[&str] = &[
     "fi", "pl", "cs", "hu", "el", "tr", "he", "th", "vi", "id", "ms", "uk", "ro", "bg", "hr", "sr",
 ];
 
-/// Hands mpv the subtitle files that match the file it is about to open,
-/// from mpv's `on_load` hook, as that file's `sub-files`: mpv then loads
-/// and selects them as it would its own auto-loaded files. Blocks on mpv.
-pub fn load_for_current_file(mpv: &Mpv, languages: &[String]) {
+/// What the user chose for one file's subtitles from the playlist menu:
+/// files to add, and whether the automatic matches were wrong.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Choice {
+    pub added: Vec<String>,
+    pub wrong: bool,
+}
+
+/// Choices by file path, shared with the threads that answer `on_load`.
+pub type Choices = Arc<Mutex<HashMap<String, Choice>>>;
+
+/// Hands mpv the subtitle files for the file it is about to open, from
+/// mpv's `on_load` hook, as that file's `sub-files`: mpv then loads and
+/// selects them as it would its own auto-loaded files. `matching` holds the
+/// preferred languages when Patina's own matching is on. Blocks on mpv.
+pub fn load_for_current_file(mpv: &Mpv, matching: Option<&[String]>, choices: &Choices) {
     let Ok(path) = mpv.get_property("path") else {
         return;
     };
     let Some(path) = path.as_str().filter(|path| !crate::util::is_url(path)) else {
         return;
     };
+    let choice = choices
+        .lock()
+        .ok()
+        .and_then(|choices| choices.get(path).cloned())
+        .unwrap_or_default();
+    if choice.wrong
+        && let Err(error) = mpv.set_property("file-local-options/sub-auto", "no")
+    {
+        log::warn!("{error}");
+    }
     let video = std::path::absolute(path).unwrap_or_else(|_| PathBuf::from(path));
-    let found = if has_extension(&video, IMAGE_EXTENSIONS) {
-        return;
-    } else if has_extension(&video, AUDIO_EXTENSIONS) {
+    let found = match matching {
+        Some(_) if choice.wrong => Vec::new(),
+        Some(_) if has_extension(&video, IMAGE_EXTENSIONS) => Vec::new(),
         // Lyrics for a song, only by its exact name.
-        find(&video, languages, false)
-    } else {
-        find(&video, languages, true)
+        Some(languages) if has_extension(&video, AUDIO_EXTENSIONS) => {
+            find(&video, languages, false)
+        }
+        Some(languages) => find(&video, languages, true),
+        None => Vec::new(),
     };
-    if found.is_empty() {
+    if found.is_empty() && choice.added.is_empty() {
         return;
     }
     let mut files: Vec<String> = mpv
@@ -77,6 +103,8 @@ pub fn load_for_current_file(mpv: &Mpv, languages: &[String]) {
                 .collect()
         })
         .unwrap_or_default();
+    // The user's own choices first, so mpv prefers them.
+    files.extend(choice.added);
     for subtitle in found {
         log::debug!("matched subtitle {}", subtitle.display());
         files.push(subtitle.to_string_lossy().into_owned());
@@ -84,6 +112,24 @@ pub fn load_for_current_file(mpv: &Mpv, languages: &[String]) {
     if let Err(error) = mpv.set_property("file-local-options/sub-files", Value::List(files)) {
         log::warn!("{error}");
     }
+}
+
+/// Whether subtitles can belong to `path`: not a stream, a song or a
+/// picture.
+pub fn takes_subtitles(path: &str) -> bool {
+    let path = Path::new(path);
+    !crate::util::is_url(&path.to_string_lossy())
+        && !has_extension(path, AUDIO_EXTENSIONS)
+        && !has_extension(path, IMAGE_EXTENSIONS)
+}
+
+/// The subtitle files that match `video`, for a file already playing.
+pub fn matches(video: &str, languages: &[String]) -> Vec<String> {
+    let video = std::path::absolute(video).unwrap_or_else(|_| PathBuf::from(video));
+    find(&video, languages, true)
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Subtitle files near `video` that belong to it, best first.
@@ -518,7 +564,7 @@ mod tests {
         }
         std::fs::write(dir.join("Clip.S01E04.mkv"), b"").unwrap();
 
-        let subtitles = |languages: &[String]| -> Vec<(String, bool)> {
+        let subtitles = |languages: &[String], choices: &Choices| -> Vec<(String, bool)> {
             mpv.command(&["loadfile", &video.to_string_lossy()])
                 .unwrap();
             let Event::Hook { id, .. } = wait_for(&mpv, |event| {
@@ -526,7 +572,7 @@ mod tests {
             }) else {
                 unreachable!()
             };
-            load_for_current_file(&mpv, languages);
+            load_for_current_file(&mpv, Some(languages), choices);
             mpv.hook_continue(id).unwrap();
             wait_for(&mpv, |event| matches!(event, Event::FileLoaded));
             let tracks = mpv.get_property("track-list").unwrap();
@@ -546,9 +592,21 @@ mod tests {
         // The runner's own UI language must not pick the subtitle.
         mpv.set_property("subs-match-os-language", false).unwrap();
         mpv.hook_add(7, "on_load", 0).unwrap();
-        let english = subtitles(&[]);
+        let english = subtitles(&[], &Choices::default());
         mpv.set_property("slang", "ja").unwrap();
-        let japanese = subtitles(&["ja".to_owned()]);
+        let japanese = subtitles(&["ja".to_owned()], &Choices::default());
+        // Wrong Subtitle, plus a file of the user's own.
+        let own = dir.join("Fixed.srt");
+        std::fs::write(&own, cue).unwrap();
+        let choices = Choices::default();
+        choices.lock().unwrap().insert(
+            video.to_string_lossy().into_owned(),
+            Choice {
+                added: vec![own.to_string_lossy().into_owned()],
+                wrong: true,
+            },
+        );
+        let chosen = subtitles(&["ja".to_owned()], &choices);
         mpv.command(&["stop"]).unwrap();
         wait_for(&mpv, |event| matches!(event, Event::EndFile { .. }));
         let options = mpv.get_property("options/sub-files").unwrap();
@@ -570,6 +628,8 @@ mod tests {
                 ("Clip - 03.en.srt".to_owned(), false)
             ]
         );
+        // Only the user's file: neither Patina's matches nor mpv's own.
+        assert_eq!(chosen, [("Fixed.srt".to_owned(), true)]);
         // The list only applied to those files.
         assert!(options.as_array().is_empty());
     }

@@ -25,8 +25,13 @@ component PlaylistRow inherits Rectangle {
     // Where a dragged entry would be inserted, or -1.
     in property <int> drop-position: -1;
     in property <bool> dragged;
+    // Whether the series prefix is shown in full.
+    in property <bool> expanded;
     callback drag-to(int);
     callback drop(int);
+    callback pressed;
+    callback menu(length, length);
+    callback expand;
 
     property <bool> dragging;
     // The insertion point under the pointer: rows swap halfway across.
@@ -34,7 +39,7 @@ component PlaylistRow inherits Rectangle {
 
     height: 44px;
     border-radius: Theme.control-radius;
-    background: root.item.current ? Theme.selection : touch.has-hover && !root.dragging ? Theme.hover : transparent;
+    background: root.item.selected ? Theme.selection : touch.has-hover && !root.dragging ? Theme.hover : transparent;
     opacity: root.dragged ? 0.45 : 1;
 
     touch := TouchArea {
@@ -51,7 +56,14 @@ component PlaylistRow inherits Rectangle {
             }
         }
         pointer-event(event) => {
-            if event.kind == PointerEventKind.up && root.dragging {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.pressed();
+                Actions.select-playlist(root.index, event.modifiers.control || event.modifiers.meta, event.modifiers.shift);
+            } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.pressed();
+                Actions.playlist-menu(root.index);
+                root.menu(self.mouse-x, self.mouse-y);
+            } else if event.kind == PointerEventKind.up && root.dragging {
                 root.dragging = false;
                 root.drop(root.target);
             } else if event.kind == PointerEventKind.cancel && root.dragging {
@@ -96,12 +108,40 @@ component PlaylistRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             horizontal-stretch: 1;
-            Text {
+            if root.item.short-title == "" || root.expanded: Text {
                 text: root.item.title;
                 color: root.item.current ? Theme.playing : Theme.text;
                 font-size: Theme.font-normal;
                 font-weight: root.item.current ? 600 : 400;
                 overflow: elide;
+            }
+            // The series prefix it shares with its neighbours, folded into
+            // a "…" that shows it again, as in IINA.
+            if root.item.short-title != "" && !root.expanded: HorizontalLayout {
+                spacing: 2px;
+                Rectangle {
+                    width: ellipsis.preferred-width + 6px;
+                    border-radius: 3px;
+                    background: fold-touch.has-hover ? Theme.hover : transparent;
+                    ellipsis := Text {
+                        text: "…";
+                        color: Theme.secondary-text;
+                        font-size: Theme.font-normal;
+                    }
+                    fold-touch := TouchArea {
+                        clicked => {
+                            root.expand();
+                        }
+                    }
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.item.short-title;
+                    color: root.item.current ? Theme.playing : Theme.text;
+                    font-size: Theme.font-normal;
+                    font-weight: root.item.current ? 600 : 400;
+                    overflow: elide;
+                }
             }
             if root.item.detail != "": Text {
                 text: root.item.detail;
@@ -146,6 +186,7 @@ component PlaylistRow inherits Rectangle {
 component PlaylistPanel inherits VerticalLayout {
     property <int> drag-from: -1;
     property <int> drop-position: -1;
+    property <bool> expanded;
     spacing: 8px;
 
     HorizontalLayout {
@@ -197,25 +238,167 @@ component PlaylistPanel inherits VerticalLayout {
         }
     }
 
-    if Media.playlist.length > 0: ListView {
+    if Media.playlist.length > 0: menu := ContextMenuArea {
         vertical-stretch: 1;
-        for item[index] in Media.playlist: PlaylistRow {
-            item: item;
-            index: index;
-            count: Media.playlist.length;
-            drop-position: root.drop-position;
-            dragged: root.drag-from == index;
-            drag-to(position) => {
-                root.drag-from = index;
-                root.drop-position = position;
-            }
-            drop(position) => {
-                // mpv inserts the moved entry before `position`.
-                if position >= 0 && position != index && position != index + 1 {
-                    Actions.move-index(index, position);
+        enabled: false;
+
+        Menu {
+            MenuItem {
+                title: "Play Next";
+                activated => {
+                    Actions.patina("playlist-play-next");
                 }
-                root.drag-from = -1;
-                root.drop-position = -1;
+            }
+            MenuItem {
+                title: "Play in New Window";
+                activated => {
+                    Actions.patina("playlist-play-new-window");
+                }
+            }
+            MenuItem {
+                title: Media.playlist-selected > 1 ? "Remove " + Media.playlist-selected + " Items" : "Remove";
+                activated => {
+                    Actions.patina("playlist-remove");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Cut";
+                activated => {
+                    Actions.patina("playlist-cut");
+                }
+            }
+            MenuItem {
+                title: Media.selection-urls && !Media.selection-local ? "Copy URL" : "Copy";
+                activated => {
+                    Actions.patina("playlist-copy");
+                }
+            }
+            MenuItem {
+                title: "Paste";
+                activated => {
+                    Actions.patina("playlist-paste");
+                }
+            }
+            if Media.selection-subtitles: MenuSeparator { }
+            if Media.selection-subtitles: MenuItem {
+                title: "Add Subtitle…";
+                activated => {
+                    Actions.patina("playlist-add-subtitle");
+                }
+            }
+            if Media.selection-subtitles: MenuItem {
+                title: Media.wrong-subtitle ? "Use Matched Subtitles" : "Wrong Subtitle";
+                activated => {
+                    Actions.patina("playlist-wrong-subtitle");
+                }
+            }
+            if Media.selection-urls: MenuSeparator { }
+            if Media.selection-urls: MenuItem {
+                title: "Open in Browser";
+                activated => {
+                    Actions.patina("playlist-open-in-browser");
+                }
+            }
+            if Media.selection-local: MenuSeparator { }
+            if Media.selection-local: MenuItem {
+                title: "Show in File Manager";
+                activated => {
+                    Actions.patina("playlist-reveal");
+                }
+            }
+            if Media.selection-local: MenuItem {
+                title: "Move to Trash";
+                activated => {
+                    Actions.patina("playlist-trash");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Add Files…";
+                activated => {
+                    Actions.patina("add-files");
+                }
+            }
+            MenuItem {
+                title: "Add URL…";
+                activated => {
+                    Actions.patina("add-url");
+                }
+            }
+            MenuItem {
+                title: "Clear Playlist";
+                activated => {
+                    Actions.patina("clear-playlist");
+                }
+            }
+        }
+
+        // Keys for the selection once a row has been clicked; the rest go on
+        // to the player's bindings.
+        list-keys := FocusScope {
+            key-pressed(event) => {
+                let command = event.modifiers.control || event.modifiers.meta;
+                if (event.text == Key.Delete || event.text == Key.Backspace) && Media.playlist-selected > 0 {
+                    Actions.patina("playlist-remove");
+                    return accept;
+                }
+                if event.text == Key.Return && Media.playlist-selected > 0 {
+                    Actions.patina("playlist-play-selected");
+                    return accept;
+                }
+                if command && event.text == "a" {
+                    Actions.patina("playlist-select-all");
+                    return accept;
+                }
+                if command && event.text == "c" && Media.playlist-selected > 0 {
+                    Actions.patina("playlist-copy");
+                    return accept;
+                }
+                if command && event.text == "x" && Media.playlist-selected > 0 {
+                    Actions.patina("playlist-cut");
+                    return accept;
+                }
+                if command && event.text == "v" {
+                    Actions.patina("playlist-paste");
+                    return accept;
+                }
+                reject
+            }
+
+            ListView {
+                for item[index] in Media.playlist: PlaylistRow {
+                    item: item;
+                    index: index;
+                    count: Media.playlist.length;
+                    drop-position: root.drop-position;
+                    dragged: root.drag-from == index;
+                    expanded: root.expanded;
+                    pressed => {
+                        list-keys.focus();
+                    }
+                    menu(x, y) => {
+                        menu.show({
+                            x: self.absolute-position.x - menu.absolute-position.x + x,
+                            y: self.absolute-position.y - menu.absolute-position.y + y,
+                        });
+                    }
+                    expand => {
+                        root.expanded = true;
+                    }
+                    drag-to(position) => {
+                        root.drag-from = index;
+                        root.drop-position = position;
+                    }
+                    drop(position) => {
+                        // mpv inserts the moved entry before `position`.
+                        if position >= 0 && position != index && position != index + 1 {
+                            Actions.move-index(index, position);
+                        }
+                        root.drag-from = -1;
+                        root.drop-position = -1;
+                    }
+                }
             }
         }
     }

@@ -9,6 +9,39 @@ fn spawn(command: &mut Command) {
     }
 }
 
+/// Moves files to the trash (the Recycle Bin on Windows) on a thread of its
+/// own; failures are logged.
+pub fn move_to_trash(paths: Vec<String>) {
+    let spawned = std::thread::Builder::new()
+        .name("trash".into())
+        .spawn(move || {
+            #[allow(unused_mut)]
+            let mut context = trash::TrashContext::default();
+            // Finder's own method asks the user to let Patina control Finder.
+            #[cfg(target_os = "macos")]
+            {
+                use trash::macos::{DeleteMethod, TrashContextExtMacos};
+                context.set_delete_method(DeleteMethod::NsFileManager);
+            }
+            for path in paths {
+                // mpv may still be closing a file it was playing, and
+                // Windows won't move an open file.
+                let mut attempts = 0;
+                while let Err(error) = context.delete(&path) {
+                    attempts += 1;
+                    if attempts == 10 {
+                        log::warn!("could not move {path} to the trash: {error}");
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        log::warn!("could not start moving files to the trash: {error}");
+    }
+}
+
 /// Opens a file or directory with its default application.
 pub fn open_path(path: &Path) {
     if cfg!(target_os = "macos") {

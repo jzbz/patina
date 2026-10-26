@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::input::{Binding, KeyCombo};
 use crate::mpv::{EndFileReason, Event, Mpv};
-use crate::player::state::{PlaybackState, Track, TrackKind, file_name};
+use crate::player::state::{PlaybackState, PlaylistEntry, Track, TrackKind, file_name};
 use crate::player::{self, Player, Prop};
 use crate::settings::ResizeWindow;
 use crate::subtitle_match;
@@ -80,6 +80,11 @@ pub struct PlayerController {
     thumbnail_path: RefCell<String>,
     /// The playlist rows, kept so file information can update one row.
     playlist_model: Rc<VecModel<PlaylistItem>>,
+    /// Selected playlist rows, by mpv's entry ids.
+    playlist_selection: RefCell<crate::playlist::Selection>,
+    /// How much of each row's name is a series prefix shared with its
+    /// neighbours, in bytes (0 for none).
+    series_prefixes: RefCell<Vec<usize>>,
     this: Weak<PlayerController>,
 }
 
@@ -98,6 +103,8 @@ impl PlayerController {
             thumbnail_job: RefCell::new(None),
             thumbnail_path: RefCell::new(String::new()),
             playlist_model: Rc::new(VecModel::default()),
+            playlist_selection: RefCell::new(Default::default()),
+            series_prefixes: RefCell::new(Vec::new()),
             app: Rc::downgrade(app),
             window,
             player: RefCell::new(Some(player)),
@@ -161,6 +168,11 @@ impl PlayerController {
 
     pub fn is_idle(&self) -> bool {
         self.state.borrow().idle && self.pending_open.borrow().is_empty()
+    }
+
+    /// The file playing now, as mpv was given it.
+    pub fn current_path(&self) -> String {
+        self.state.borrow().path.clone()
     }
 
     /// Reads a property for the inspector; the value arrives as a reply
@@ -343,12 +355,7 @@ impl PlayerController {
             } else {
                 "replace"
             };
-            if std::path::Path::new(source).is_dir() {
-                // Every media file inside, as IINA opens folders.
-                player.command(&["loadfile", source, mode, "-1", "directory-mode=recursive"]);
-            } else {
-                player.command(&["loadfile", source, mode]);
-            }
+            loadfile(&player, source, mode, None);
         }
         if !append {
             player.set("pause", self.app().prefs().pause_when_open);
@@ -659,18 +666,12 @@ impl PlayerController {
             && index < self.playlist_model.row_count()
         {
             self.playlist_model
-                .set_row_data(index, self.playlist_item(entry));
+                .set_row_data(index, self.playlist_item(index, entry));
             self.update_playlist_summary(&state);
         }
         if any(&[Prop::Playlist, Prop::PlaylistPos]) {
-            let items: Vec<PlaylistItem> = state
-                .playlist
-                .iter()
-                .map(|entry| self.playlist_item(entry))
-                .collect();
-            self.playlist_model.set_vec(items);
+            self.rebuild_playlist(&state);
             media.set_playlist_pos(state.playlist_pos as i32);
-            self.update_playlist_summary(&state);
         }
         if any(&[
             Prop::TrackList,
@@ -1086,9 +1087,13 @@ impl PlayerController {
                 .command(&["playlist-remove", &index.to_string()]);
         });
         handler!(on_move_index, |this, from, to| {
-            this.player()
-                .command(&["playlist-move", &from.to_string(), &to.to_string()]);
+            this.move_playlist(from as usize, to as usize)
         });
+        handler!(on_select_playlist, |this, index, toggle, extend| {
+            this.select_playlist(index as usize, toggle, extend)
+        });
+        handler!(on_playlist_menu, |this, index| this
+            .playlist_menu(index as usize));
         handler!(on_select_chapter, |this, index| {
             this.mark_user_action();
             this.player().set("chapter", index as i64);
@@ -1181,7 +1186,17 @@ impl PlayerController {
                 self.player().command(&["sub-add", subtitle, "select"]);
             }
         }
-        if !media.is_empty() {
+        if media.is_empty() {
+            return;
+        }
+        // Dropped with the playlist in view, files join the playlist after
+        // the selected rows rather than replacing what plays. (IINA inserts
+        // them where they are dropped; winit doesn't report where that is.)
+        let playlist_open =
+            self.window.get_sidebar_open() && self.window.get_sidebar_tab() == "playlist";
+        if playlist_open && !self.state.borrow().idle {
+            self.insert_after_selection(&media);
+        } else {
             self.open(media, false);
         }
     }
@@ -1418,6 +1433,85 @@ impl PlayerController {
             "open-website" => crate::platform::open_url(crate::WEBSITE),
             "save-playlist" => app.save_playlist_dialog(self),
             "clear-playlist" => self.player().command(&["playlist-clear"]),
+            "playlist-select-all" => self.playlist_select_all(),
+            "playlist-play-selected" => {
+                if let Some((index, _)) = self.selected_entries().first() {
+                    self.mark_user_action();
+                    self.player()
+                        .command(&["playlist-play-index", &index.to_string()]);
+                    self.player().set("pause", false);
+                }
+            }
+            "playlist-play-next" => self.playlist_play_next(),
+            "playlist-play-new-window" => {
+                let paths: Vec<String> = self
+                    .selected_entries()
+                    .into_iter()
+                    .map(|(_, entry)| entry.filename)
+                    .collect();
+                if !paths.is_empty()
+                    && let Some(window) = app.new_window()
+                {
+                    window.open(paths, false);
+                }
+            }
+            "playlist-remove" => self.playlist_remove(&self.selected_entries()),
+            "playlist-copy" => self.playlist_copy(false),
+            "playlist-cut" => self.playlist_copy(true),
+            "playlist-paste" => {
+                let sources = app
+                    .clipboard_text()
+                    .map(|text: String| crate::playlist::pasted_sources(&text))
+                    .unwrap_or_default();
+                if !sources.is_empty() {
+                    self.insert_after_selection(&sources);
+                }
+            }
+            "playlist-add-subtitle" => {
+                if let [(_, entry)] = self.selected_entries().as_slice() {
+                    app.add_subtitles_dialog(self, &entry.filename);
+                }
+            }
+            "playlist-wrong-subtitle" => {
+                if let [(_, entry)] = self.selected_entries().as_slice() {
+                    self.toggle_wrong_subtitle(&entry.filename);
+                }
+            }
+            "playlist-open-in-browser" => {
+                for (_, entry) in self.selected_entries() {
+                    if util::is_url(&entry.filename) {
+                        crate::platform::open_url(&entry.filename);
+                    }
+                }
+            }
+            "playlist-reveal" => {
+                let first = self
+                    .selected_entries()
+                    .into_iter()
+                    .find(|(_, entry)| !util::is_url(&entry.filename));
+                if let Some((_, entry)) = first {
+                    crate::platform::reveal(std::path::Path::new(&entry.filename));
+                }
+            }
+            "playlist-trash" => {
+                let local: Vec<(usize, PlaylistEntry)> = self
+                    .selected_entries()
+                    .into_iter()
+                    .filter(|(_, entry)| !util::is_url(&entry.filename))
+                    .collect();
+                self.move_to_trash(&local);
+            }
+            "delete-current-file" => {
+                let state = self.state.borrow();
+                let current = usize::try_from(state.playlist_pos)
+                    .ok()
+                    .and_then(|index| Some((index, state.playlist.get(index)?.clone())))
+                    .filter(|(_, entry)| !util::is_url(&entry.filename));
+                drop(state);
+                if let Some(current) = current {
+                    self.move_to_trash(&[current]);
+                }
+            }
             "clear-recent" => app.clear_history(),
             "load-subtitles" => app.load_track_dialog(self, TrackKind::Sub),
             "load-audio" => app.load_track_dialog(self, TrackKind::Audio),
@@ -1902,9 +1996,28 @@ impl PlayerController {
 
     // ---- Playlist ------------------------------------------------------
 
-    /// A playlist row: the name, its folder, its length once probed, and how
-    /// far it was watched.
-    fn playlist_item(&self, entry: &crate::player::state::PlaylistEntry) -> PlaylistItem {
+    /// Rebuilds every playlist row, after the playlist itself changed.
+    fn rebuild_playlist(&self, state: &PlaybackState) {
+        let labels: Vec<String> = state.playlist.iter().map(PlaylistEntry::label).collect();
+        let names: Vec<&str> = labels.iter().map(String::as_str).collect();
+        *self.series_prefixes.borrow_mut() = crate::playlist::series_prefixes(&names);
+        self.playlist_selection
+            .borrow_mut()
+            .retain(&playlist_order(state));
+        let items: Vec<PlaylistItem> = state
+            .playlist
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| self.playlist_item(index, entry))
+            .collect();
+        self.playlist_model.set_vec(items);
+        self.update_playlist_summary(state);
+        self.update_selection_state(state);
+    }
+
+    /// A playlist row: the name (or an audio file's tags), its folder, its
+    /// length once probed, and how far it was watched.
+    fn playlist_item(&self, index: usize, entry: &PlaylistEntry) -> PlaylistItem {
         let app = self.app();
         let probe = app.probe(&entry.filename);
         let state = self.state.borrow();
@@ -1916,11 +2029,37 @@ impl PlayerController {
                 .map(|probe| probe.duration)
                 .filter(|d| *d > 0.0)
         };
+        let folder = util::parent_directory(&entry.filename);
+        let tags = probe
+            .as_ref()
+            .filter(|probe| probe.audio_only && !probe.title.is_empty())
+            .filter(|_| app.prefs().playlist_show_metadata);
+        let (title, short_title, detail) = match tags {
+            Some(probe) if probe.artist.is_empty() => (probe.title.clone(), String::new(), folder),
+            Some(probe) => (probe.title.clone(), String::new(), probe.artist.clone()),
+            None => {
+                let label = entry.label();
+                let prefix = self
+                    .series_prefixes
+                    .borrow()
+                    .get(index)
+                    .copied()
+                    .unwrap_or(0);
+                let short = label
+                    .get(prefix..)
+                    .filter(|_| prefix > 0)
+                    .unwrap_or_default()
+                    .to_owned();
+                (label, short, folder)
+            }
+        };
         PlaylistItem {
-            title: entry.label().into(),
-            detail: util::parent_directory(&entry.filename).into(),
+            title: title.into(),
+            short_title: short_title.into(),
+            detail: detail.into(),
             duration: duration.map(format_time).unwrap_or_default().into(),
             current: entry.current,
+            selected: self.playlist_selection.borrow().ids.contains(&entry.id),
             progress: app.watched(&entry.filename).map_or(-1.0, |p| p as f32),
         }
     }
@@ -1928,6 +2067,11 @@ impl PlayerController {
     fn update_playlist_summary(&self, state: &PlaybackState) {
         let app = self.app();
         let count = state.playlist.len();
+        let selected = self
+            .playlist_selection
+            .borrow()
+            .indices(&playlist_order(state))
+            .len();
         let durations: Vec<Option<f64>> = state
             .playlist
             .iter()
@@ -1944,8 +2088,11 @@ impl PlayerController {
             1 => "1 item".to_owned(),
             n => format!("{n} items"),
         };
-        // IINA shows the total once every length is known.
-        let summary = if count > 0 && durations.iter().all(Option::is_some) {
+        // IINA shows how many rows are selected, or else the total once
+        // every length is known.
+        let summary = if selected > 0 {
+            format!("{selected} of {count} selected")
+        } else if count > 0 && durations.iter().all(Option::is_some) {
             let total: f64 = durations.iter().flatten().sum();
             format!("{items} · {}", format_time(total))
         } else {
@@ -1962,7 +2109,7 @@ impl PlayerController {
         let mut found = false;
         for (index, entry) in state.playlist.iter().enumerate() {
             if entry.filename == path && index < self.playlist_model.row_count() {
-                let item = self.playlist_item(entry);
+                let item = self.playlist_item(index, entry);
                 self.playlist_model.set_row_data(index, item);
                 found = true;
             }
@@ -1972,6 +2119,236 @@ impl PlayerController {
         }
     }
 
+    /// The selected rows, in playlist order.
+    fn selected_entries(&self) -> Vec<(usize, PlaylistEntry)> {
+        let state = self.state.borrow();
+        self.playlist_selection
+            .borrow()
+            .indices(&playlist_order(&state))
+            .into_iter()
+            .filter_map(|index| Some((index, state.playlist.get(index)?.clone())))
+            .collect()
+    }
+
+    fn select_playlist(&self, index: usize, toggle: bool, extend: bool) {
+        let state = self.state.borrow();
+        self.playlist_selection
+            .borrow_mut()
+            .click(&playlist_order(&state), index, toggle, extend);
+        self.selection_changed(&state);
+    }
+
+    /// A right click on row `index`: the menu acts on the selection, or on
+    /// that row alone when it isn't part of it.
+    fn playlist_menu(&self, index: usize) {
+        let state = self.state.borrow();
+        self.playlist_selection
+            .borrow_mut()
+            .for_menu(&playlist_order(&state), index);
+        self.selection_changed(&state);
+    }
+
+    fn playlist_select_all(&self) {
+        let state = self.state.borrow();
+        self.playlist_selection
+            .borrow_mut()
+            .select_all(&playlist_order(&state));
+        self.selection_changed(&state);
+    }
+
+    fn selection_changed(&self, state: &PlaybackState) {
+        let ids = self.playlist_selection.borrow().ids.clone();
+        for (index, entry) in state.playlist.iter().enumerate() {
+            if let Some(mut row) = self.playlist_model.row_data(index) {
+                let selected = ids.contains(&entry.id);
+                if row.selected != selected {
+                    row.selected = selected;
+                    self.playlist_model.set_row_data(index, row);
+                }
+            }
+        }
+        self.update_playlist_summary(state);
+        self.update_selection_state(state);
+    }
+
+    /// What the row menu offers, for the rows it will act on.
+    fn update_selection_state(&self, state: &PlaybackState) {
+        let indices = self
+            .playlist_selection
+            .borrow()
+            .indices(&playlist_order(state));
+        let entries: Vec<&PlaylistEntry> = indices
+            .iter()
+            .filter_map(|&index| state.playlist.get(index))
+            .collect();
+        let media = self.window.global::<Media>();
+        media.set_playlist_selected(entries.len() as i32);
+        media.set_selection_local(entries.iter().any(|entry| !util::is_url(&entry.filename)));
+        media.set_selection_urls(entries.iter().any(|entry| util::is_url(&entry.filename)));
+        let single = match entries.as_slice() {
+            [entry] if subtitle_match::takes_subtitles(&entry.filename) => Some(*entry),
+            _ => None,
+        };
+        media.set_selection_subtitles(single.is_some());
+        media.set_wrong_subtitle(
+            single.is_some_and(|entry| self.app().subtitle_choice(&entry.filename).wrong),
+        );
+    }
+
+    /// Moves entry `from` to before row `to`, taking the rest of the
+    /// selection along when it is part of it.
+    fn move_playlist(&self, from: usize, to: usize) {
+        let state = self.state.borrow();
+        let order = playlist_order(&state);
+        let Some(&id) = order.get(from) else {
+            return;
+        };
+        let selection = &self.playlist_selection.borrow().ids;
+        let moving: HashSet<i64> = if selection.contains(&id) && selection.len() > 1 {
+            selection.clone()
+        } else {
+            [id].into()
+        };
+        let desired = crate::playlist::moved(&order, &moving, to);
+        drop(state);
+        self.reorder(&order, &desired);
+    }
+
+    fn reorder(&self, current: &[i64], desired: &[i64]) {
+        let player = self.player();
+        for (from, to) in crate::playlist::moves(current, desired) {
+            player.command(&["playlist-move", &from.to_string(), &to.to_string()]);
+        }
+    }
+
+    /// Moves the selected rows to just after the one playing, as IINA's
+    /// Play Next does.
+    fn playlist_play_next(&self) {
+        let state = self.state.borrow();
+        let order = playlist_order(&state);
+        let current = usize::try_from(state.playlist_pos).ok();
+        let current_id = current.and_then(|index| order.get(index).copied());
+        let moving: HashSet<i64> = self
+            .playlist_selection
+            .borrow()
+            .ids
+            .iter()
+            .copied()
+            .filter(|id| Some(*id) != current_id)
+            .collect();
+        let target = current.map_or(0, |index| index + 1);
+        let desired = crate::playlist::moved(&order, &moving, target);
+        drop(state);
+        self.reorder(&order, &desired);
+    }
+
+    fn playlist_remove(&self, entries: &[(usize, PlaylistEntry)]) {
+        let player = self.player();
+        // From the end, so the indices of the rest stay valid.
+        for (index, _) in entries.iter().rev() {
+            player.command(&["playlist-remove", &index.to_string()]);
+        }
+    }
+
+    /// Copies the selected rows' paths and URLs, one per line; `cut` also
+    /// removes the rows.
+    fn playlist_copy(&self, cut: bool) {
+        let entries = self.selected_entries();
+        if entries.is_empty() {
+            return;
+        }
+        let text: Vec<&str> = entries
+            .iter()
+            .map(|(_, entry)| entry.filename.as_str())
+            .collect();
+        self.app().set_clipboard_text(text.join("\n"));
+        if cut {
+            self.playlist_remove(&entries);
+        }
+    }
+
+    /// Adds sources to the playlist right after the last selected row, or
+    /// at its end when nothing is selected.
+    fn insert_after_selection(&self, sources: &[String]) {
+        let at = self.selected_entries().last().map(|(index, _)| index + 1);
+        let player = self.player();
+        for (offset, source) in sources.iter().enumerate() {
+            match at {
+                Some(at) => loadfile(&player, source, "insert-at", Some(at + offset)),
+                None => loadfile(&player, source, "append", None),
+            }
+        }
+    }
+
+    /// Removes local files from the playlist and moves them to the trash,
+    /// as IINA's Delete does.
+    fn move_to_trash(&self, entries: &[(usize, PlaylistEntry)]) {
+        if entries.is_empty() {
+            return;
+        }
+        self.playlist_remove(entries);
+        let paths: Vec<String> = entries
+            .iter()
+            .map(|(_, entry)| entry.filename.clone())
+            .collect();
+        let detail = match paths.as_slice() {
+            [path] => file_name(path),
+            paths => format!("{} files", paths.len()),
+        };
+        crate::platform::move_to_trash(paths);
+        self.show_osd("Moved to Trash", &detail, None);
+    }
+
+    /// Turns a file's matched subtitles down, as IINA's Wrong Subtitle
+    /// does, or back on.
+    fn toggle_wrong_subtitle(&self, path: &str) {
+        let app = self.app();
+        let wrong = !app.subtitle_choice(path).wrong;
+        app.update_subtitle_choice(path, |choice| choice.wrong = wrong);
+        let state = self.state.borrow();
+        if state.path == path {
+            if wrong {
+                // Drop the files loaded automatically; keep the user's.
+                let added = app.subtitle_choice(path).added;
+                for track in state.tracks(TrackKind::Sub) {
+                    if track.external && !added.contains(&track.external_filename) {
+                        self.player()
+                            .command(&["sub-remove", &track.id.to_string()]);
+                    }
+                }
+            } else if app.prefs().sub_auto == "smart" {
+                // Find them again; reading the folder happens off this thread.
+                let languages = sub_languages(&app.prefs());
+                let mpv = self.mpv.clone();
+                let video = path.to_owned();
+                let spawned =
+                    std::thread::Builder::new()
+                        .name("subtitles".into())
+                        .spawn(move || {
+                            for (index, file) in subtitle_match::matches(&video, &languages)
+                                .iter()
+                                .enumerate()
+                            {
+                                let flag = if index == 0 { "select" } else { "auto" };
+                                if let Err(error) = mpv.command(&["sub-add", file, flag]) {
+                                    log::debug!("{error}");
+                                }
+                            }
+                        });
+                if let Err(error) = spawned {
+                    log::warn!("could not match subtitles: {error}");
+                }
+            }
+        }
+        self.update_selection_state(&state);
+        let message = if wrong {
+            "Matched Subtitles Off"
+        } else {
+            "Matched Subtitles On"
+        };
+        self.show_osd(message, &file_name(path), None);
+    }
+
     // ---- Subtitle matching ----------------------------------------------
 
     /// mpv is about to open a file. With Patina's subtitle matching on
@@ -1979,22 +2356,13 @@ impl PlayerController {
     /// to it are found on a thread of their own and handed to mpv first.
     fn before_load(&self, id: u64) {
         let prefs = self.app().prefs();
-        let languages: Option<Vec<String>> = (prefs.sub_auto == "smart").then(|| {
-            prefs
-                .sub_language
-                .split(',')
-                .map(str::trim)
-                .filter(|code| !code.is_empty())
-                .map(str::to_owned)
-                .collect()
-        });
+        let languages = (prefs.sub_auto == "smart").then(|| sub_languages(&prefs));
+        let choices = self.app().subtitle_choices();
         let mpv = self.mpv.clone();
         let spawned = std::thread::Builder::new()
             .name("subtitles".into())
             .spawn(move || {
-                if let Some(languages) = languages {
-                    subtitle_match::load_for_current_file(&mpv, &languages);
-                }
+                subtitle_match::load_for_current_file(&mpv, languages.as_deref(), &choices);
                 if let Err(error) = mpv.hook_continue(id) {
                     log::warn!("{error}");
                 }
@@ -2146,6 +2514,34 @@ impl PlayerController {
             player.shutdown();
         }
         self.app().window_closed(self);
+    }
+}
+
+/// Entry ids in playlist order, which the selection is kept by.
+fn playlist_order(state: &PlaybackState) -> Vec<i64> {
+    state.playlist.iter().map(|entry| entry.id).collect()
+}
+
+/// The preferred subtitle languages, most preferred first.
+fn sub_languages(prefs: &crate::settings::Preferences) -> Vec<String> {
+    prefs
+        .sub_language
+        .split(',')
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Queues `loadfile` for one source, at `index` for the modes that take
+/// one. Folders are read recursively, every media file inside, as IINA
+/// opens them.
+fn loadfile(player: &Player, source: &str, mode: &str, index: Option<usize>) {
+    let index = index.map_or_else(|| "-1".to_owned(), |index| index.to_string());
+    if std::path::Path::new(source).is_dir() {
+        player.command(&["loadfile", source, mode, &index, "directory-mode=recursive"]);
+    } else {
+        player.command(&["loadfile", source, mode, &index]);
     }
 }
 

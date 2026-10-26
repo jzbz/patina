@@ -67,6 +67,7 @@ const PRESETS: &[(&str, &str, bool)] = &[
     ("Inspector", "inspector", true),
     ("New window", "new-window", true),
     ("Show in the file manager", "reveal-file", true),
+    ("Move the file to the trash", "delete-current-file", true),
     ("Float on top", "toggle-ontop", true),
     ("Toggle full screen", "toggle-fullscreen", true),
     ("Save the playlist", "save-playlist", true),

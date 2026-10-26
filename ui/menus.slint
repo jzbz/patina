@@ -66,6 +66,13 @@ export component MainMenu inherits ContextMenuArea {
                 }
             }
             MenuItem {
+                title: "Move to Trash";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.patina("delete-current-file");
+                }
+            }
+            MenuItem {
                 title: "Playback History…";
                 activated => {
                     Actions.patina("history");

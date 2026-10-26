@@ -3,9 +3,13 @@
 
 export struct PlaylistItem {
     title: string,
+    // The title without the series prefix it shares with its neighbours,
+    // shown while the prefix is folded, or empty when there is none.
+    short-title: string,
     detail: string,
     duration: string,
     current: bool,
+    selected: bool,
     // How far it was watched, 0..1, or negative when never played.
     progress: float,
 }
@@ -108,6 +112,15 @@ export global Media {
     in property <[PlaylistItem]> playlist;
     in property <int> playlist-pos: -1;
     in property <string> playlist-summary;
+    // What the playlist row menu acts on: how many rows are selected, and
+    // whether they include local files and network streams.
+    in property <int> playlist-selected;
+    in property <bool> selection-local;
+    in property <bool> selection-urls;
+    // One local file is selected, so its subtitles can be chosen, and
+    // whether its matched subtitles have been turned down.
+    in property <bool> selection-subtitles;
+    in property <bool> wrong-subtitle;
     in property <[TrackItem]> video-tracks;
     in property <[TrackItem]> audio-tracks;
     in property <[TrackItem]> sub-tracks;
@@ -160,7 +173,13 @@ export global Actions {
     callback select-secondary-sub(int);
     callback play-index(int);
     callback remove-index(int);
+    // Moves an entry, or the whole selection when the entry is part of it.
     callback move-index(int, int);
+    // A click on a playlist row: on its own, with Ctrl (Command on macOS)
+    // to toggle, with Shift to extend.
+    callback select-playlist(int, bool, bool);
+    // A right click on a playlist row, before its menu opens.
+    callback playlist-menu(int);
     callback select-chapter(int);
     callback open-recent(int);
     callback set-eq(int, float);

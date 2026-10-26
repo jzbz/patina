@@ -10,6 +10,7 @@ repository = "https://github.com/jzbz/patina"
 build = "build.rs"
 
 [dependencies]
+arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 async-channel = "2.5.0"
 directories = "6.0.0"
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
@@ -30,6 +31,7 @@ slint = { version = "1.18.1", default-features = false, features = [
     "renderer-femtovg",
     "unstable-winit-030",
 ] }
+trash = "5.2.9"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 zbus = { version = "6.1.0", default-features = false, features = ["default-rt", "service"] }

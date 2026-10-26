@@ -57,6 +57,8 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
   setting.
 - `src/thumbnails.rs`: seek-bar thumbnails from a headless mpv core.
 - `src/probe.rs`: playlist durations and tags from a headless mpv core.
+- `src/playlist.rs`: playlist selection, multi-row moves, series-prefix
+  folding and pasted sources, without mpv.
 - `src/subtitle_match.rs`: finding the subtitle files that belong to a
   video.
 - `src/history.rs`, `src/inspector.rs`: the playback history and inspector

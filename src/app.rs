@@ -47,6 +47,9 @@ pub struct App {
     preferences: RefCell<Option<Rc<crate::preferences::PreferencesController>>>,
     history_window: RefCell<Option<Rc<crate::history::HistoryController>>>,
     inspector: RefCell<Option<Rc<crate::inspector::InspectorController>>>,
+    /// Subtitle choices made from the playlist menu, by file.
+    subtitle_choices: crate::subtitle_match::Choices,
+    clipboard: RefCell<Option<arboard::Clipboard>>,
     prober: RefCell<Option<crate::probe::Prober>>,
     /// Durations and tags of local files; None for files that can't be read.
     probes: RefCell<std::collections::HashMap<String, Option<crate::probe::Probe>>>,
@@ -74,6 +77,8 @@ impl App {
             preferences: RefCell::new(None),
             history_window: RefCell::new(None),
             inspector: RefCell::new(None),
+            subtitle_choices: Default::default(),
+            clipboard: RefCell::new(None),
             prober: RefCell::new(None),
             probes: RefCell::new(std::collections::HashMap::new()),
             probing: RefCell::new(std::collections::HashSet::new()),
@@ -394,6 +399,103 @@ impl App {
             },
         };
         controller.show();
+    }
+
+    // ---- Subtitle choices -------------------------------------------------
+
+    /// The choices, shared with the threads that load files.
+    pub fn subtitle_choices(&self) -> crate::subtitle_match::Choices {
+        self.subtitle_choices.clone()
+    }
+
+    pub fn subtitle_choice(&self, path: &str) -> crate::subtitle_match::Choice {
+        self.subtitle_choices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(path)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn update_subtitle_choice(
+        &self,
+        path: &str,
+        update: impl FnOnce(&mut crate::subtitle_match::Choice),
+    ) {
+        let mut choices = self
+            .subtitle_choices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let choice = choices.entry(path.to_owned()).or_default();
+        update(choice);
+        if *choice == Default::default() {
+            choices.remove(path);
+        }
+    }
+
+    /// Picks subtitle files for one playlist entry, as IINA's Add
+    /// Subtitle… does: they load whenever it plays, now too if it is.
+    pub fn add_subtitles_dialog(self: &Rc<Self>, owner: &PlayerController, path: &str) {
+        let dialog = self
+            .dialog_for(Some(owner))
+            .set_title(format!("Subtitles for {}", file_name(path)))
+            .add_filter("Subtitle files", SUBTITLE_EXTENSIONS)
+            .add_filter("All files", &["*"]);
+        let target = self.find(owner);
+        let app = Rc::downgrade(self);
+        let path = path.to_owned();
+        spawn(async move {
+            let Some(files) = dialog.pick_files().await else {
+                return;
+            };
+            let files: Vec<String> = files
+                .iter()
+                .map(|file| file.path().to_string_lossy().into_owned())
+                .collect();
+            if let Some(app) = app.upgrade() {
+                app.update_subtitle_choice(&path, |choice| choice.added.extend(files.clone()));
+            }
+            if let Some(target) = target
+                && target.current_path() == path
+            {
+                for (index, file) in files.iter().enumerate() {
+                    let flag = if index == 0 { "select" } else { "auto" };
+                    target.run_mpv_command(&["sub-add", file, flag]);
+                }
+            }
+        });
+    }
+
+    // ---- Clipboard --------------------------------------------------------
+
+    /// Runs `use` with the system clipboard, opened on first use and kept:
+    /// on X11 copied text lasts only while its owner does.
+    fn with_clipboard<R>(
+        &self,
+        r#use: impl FnOnce(&mut arboard::Clipboard) -> Result<R, arboard::Error>,
+    ) -> Option<R> {
+        let mut clipboard = self.clipboard.borrow_mut();
+        if clipboard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(opened) => *clipboard = Some(opened),
+                Err(error) => {
+                    log::warn!("no clipboard: {error}");
+                    return None;
+                }
+            }
+        }
+        let clipboard = clipboard.as_mut()?;
+        r#use(clipboard)
+            .map_err(|error| log::warn!("clipboard: {error}"))
+            .ok()
+    }
+
+    pub fn set_clipboard_text(&self, text: String) {
+        self.with_clipboard(|clipboard| clipboard.set_text(text));
+    }
+
+    pub fn clipboard_text(&self) -> Option<String> {
+        self.with_clipboard(|clipboard| clipboard.get_text())
     }
 
     // ---- Inspector -------------------------------------------------------
