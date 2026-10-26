@@ -183,4 +183,6 @@ cargo fmt
 MIT. Patina is an independent project, not affiliated with IINA, and
 contains no IINA code or artwork. mpv, FFmpeg, Slint and the other
 dependencies keep their own licenses; note that mpv is GPL-licensed by
-default, which applies to builds that bundle it.
+default, which applies to builds that bundle it. The icons, the logo's
+glyph included, are [Lucide](https://lucide.dev)'s, under the ISC license
+(a few derived from Feather, MIT); see [ui/icons/LICENSE](ui/icons/LICENSE).

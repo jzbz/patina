@@ -1,1 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fff" d="M22 6.3v11.4c0 .7-.8 1.2-1.4.8L13 13.3v4.4c0 .7-.8 1.2-1.4.8l-9-5.7c-.6-.4-.6-1.2 0-1.6l9-5.7c.6-.4 1.4.1 1.4.8v4.4l7.6-4.9c.6-.4 1.4.1 1.4.8z"/></svg>
+<!-- @license lucide-static v1.61.0 - ISC -->
+<svg
+  class="lucide lucide-rewind"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="#fff"
+  stroke="#fff"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M12 6a2 2 0 0 0-3.414-1.414l-6 6a2 2 0 0 0 0 2.828l6 6A2 2 0 0 0 12 18z" />
+  <path d="M22 6a2 2 0 0 0-3.414-1.414l-6 6a2 2 0 0 0 0 2.828l6 6A2 2 0 0 0 22 18z" />
+</svg>

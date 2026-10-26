@@ -1,1 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#fff" d="M2 6.3v11.4c0 .7.8 1.2 1.4.8L11 13.3V17.7c0 .7.8 1.2 1.4.8l9-5.7c.6-.4.6-1.2 0-1.6l-9-5.7c-.6-.4-1.4.1-1.4.8v4.4L3.4 5.5C2.8 5.1 2 5.6 2 6.3z"/></svg>
+<!-- @license lucide-static v1.61.0 - ISC -->
+<svg
+  class="lucide lucide-fast-forward"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="#fff"
+  stroke="#fff"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M12 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 12 18z" />
+  <path d="M2 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 2 18z" />
+</svg>

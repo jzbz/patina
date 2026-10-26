@@ -67,7 +67,9 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
 - `src/inhibit.rs`: keeping the screen awake during playback.
 - `src/cli.rs`, `src/util.rs`, `src/platform.rs`.
 - `ui/`: the Slint interface (`app.slint` is the window; see
-  architecture.md); `ui/icons/` are Patina's own SVG icons.
+  architecture.md); `ui/icons/` are Lucide's SVG icons
+  (lucide-static, ISC; `ui/icons/LICENSE`), white for Slint to tint, the
+  transport controls filled.
 
 ## Rules
 

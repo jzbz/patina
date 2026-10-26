@@ -93,7 +93,7 @@ export component WelcomeView inherits Rectangle {
                 }
             }
             WelcomeAction {
-                icon: @image-url("icons/folder.svg");
+                icon: @image-url("icons/folder-open.svg");
                 title: "Open…";
                 detail: "Files or a folder";
                 clicked => {
@@ -144,7 +144,7 @@ export component WelcomeView inherits Rectangle {
                             padding-right: 8px;
                             spacing: 10px;
                             Image {
-                                source: @image-url("icons/file-video.svg");
+                                source: @image-url("icons/file-play.svg");
                                 width: 18px;
                                 colorize: #8cb4ff;
                             }
@@ -189,7 +189,7 @@ export component WelcomeView inherits Rectangle {
                 alignment: center;
                 spacing: 10px;
                 Image {
-                    source: @image-url("icons/drop.svg");
+                    source: @image-url("icons/file-down.svg");
                     height: 40px;
                     colorize: Theme.playing;
                 }

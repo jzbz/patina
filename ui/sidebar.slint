@@ -163,7 +163,7 @@ component PlaylistRow inherits Rectangle {
             width: (touch.has-hover || self.has-hover) && !root.dragging ? 24px : 0px;
             height: 24px;
             visible: self.width > 0;
-            icon: @image-url("icons/close.svg");
+            icon: @image-url("icons/x.svg");
             icon-size: 12px;
             tooltip: "Remove from playlist";
             clicked => {
@@ -199,7 +199,7 @@ component PlaylistPanel inherits VerticalLayout {
             horizontal-stretch: 1;
         }
         IconButton {
-            icon: @image-url("icons/loop-one.svg");
+            icon: @image-url("icons/repeat-1.svg");
             icon-size: 16px;
             active: Playback.loop-file;
             tooltip: "Loop File";
@@ -208,7 +208,7 @@ component PlaylistPanel inherits VerticalLayout {
             }
         }
         IconButton {
-            icon: @image-url("icons/loop.svg");
+            icon: @image-url("icons/repeat.svg");
             icon-size: 16px;
             active: Playback.loop-playlist;
             tooltip: "Loop Playlist";
@@ -424,7 +424,7 @@ component PlaylistPanel inherits VerticalLayout {
         }
         TextButton {
             text: "Clear";
-            icon: @image-url("icons/trash.svg");
+            icon: @image-url("icons/trash-2.svg");
             enabled: Media.playlist.length > 0;
             clicked => {
                 Actions.patina("clear-playlist");
@@ -520,7 +520,7 @@ component SpeedControl inherits VerticalLayout {
         IconButton {
             width: 20px;
             height: 20px;
-            icon: @image-url("icons/reset.svg");
+            icon: @image-url("icons/rotate-ccw.svg");
             icon-size: 13px;
             enabled: Playback.speed != 1;
             tooltip: "Reset speed";
@@ -984,7 +984,7 @@ export component Sidebar inherits Rectangle {
             }
             IconButton {
                 y: -2px;
-                icon: @image-url("icons/close.svg");
+                icon: @image-url("icons/x.svg");
                 icon-size: 13px;
                 hover-background: true;
                 tooltip: "Close";

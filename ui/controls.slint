@@ -6,15 +6,15 @@ component ToolbarButton inherits IconButton {
     in property <string> kind;
     in property <bool> fullscreen;
     in property <string> sidebar;
-    icon: root.kind == "pip" ? @image-url("icons/pip.svg")
-        : root.kind == "playlist" ? @image-url("icons/playlist.svg")
-        : root.kind == "settings" ? @image-url("icons/settings.svg")
-        : root.kind == "fullscreen" ? (root.fullscreen ? @image-url("icons/fullscreen-exit.svg") : @image-url("icons/fullscreen.svg"))
+    icon: root.kind == "pip" ? @image-url("icons/picture-in-picture-2.svg")
+        : root.kind == "playlist" ? @image-url("icons/list-video.svg")
+        : root.kind == "settings" ? @image-url("icons/sliders-horizontal.svg")
+        : root.kind == "fullscreen" ? (root.fullscreen ? @image-url("icons/minimize.svg") : @image-url("icons/maximize.svg"))
         : root.kind == "music" ? @image-url("icons/music.svg")
         : root.kind == "screenshot" ? @image-url("icons/camera.svg")
-        : root.kind == "subtitles" ? @image-url("icons/subtitles.svg")
-        : root.kind == "plugins" ? @image-url("icons/plugins.svg")
-        : @image-url("icons/more.svg");
+        : root.kind == "subtitles" ? @image-url("icons/captions.svg")
+        : root.kind == "plugins" ? @image-url("icons/puzzle.svg")
+        : @image-url("icons/ellipsis.svg");
     tooltip: root.kind == "pip" ? "Picture in Picture"
         : root.kind == "playlist" ? "Playlist"
         : root.kind == "settings" ? "Quick Settings"
@@ -41,10 +41,10 @@ export component ControlBar inherits Rectangle {
     // Drag the bar around; the parent moves it.
     callback drag(length, length);
 
-    property <image> volume-icon: Playback.muted || Playback.volume <= 0 ? @image-url("icons/volume-mute.svg")
-        : Playback.volume < 34 ? @image-url("icons/volume-low.svg")
-        : Playback.volume < 67 ? @image-url("icons/volume-medium.svg")
-        : @image-url("icons/volume-high.svg");
+    property <image> volume-icon: Playback.muted || Playback.volume <= 0 ? @image-url("icons/volume-x.svg")
+        : Playback.volume < 34 ? @image-url("icons/volume.svg")
+        : Playback.volume < 67 ? @image-url("icons/volume-1.svg")
+        : @image-url("icons/volume-2.svg");
 
     width: 460px;
     height: 74px;
@@ -100,7 +100,7 @@ export component ControlBar inherits Rectangle {
             x: 6px;
             y: 4px;
             width: 34px;
-            icon: Prefs.arrow-action == "playlist" ? @image-url("icons/previous.svg") : @image-url("icons/rewind.svg");
+            icon: Prefs.arrow-action == "playlist" ? @image-url("icons/skip-back.svg") : @image-url("icons/rewind.svg");
             icon-size: 22px;
             enabled: Playback.has-media;
             tooltip: Prefs.arrow-action == "speed" ? "Slow down" : Prefs.arrow-action == "seek" ? "Back 10 seconds" : "Previous";
@@ -127,7 +127,7 @@ export component ControlBar inherits Rectangle {
             x: parent.width - self.width - 6px;
             y: 4px;
             width: 34px;
-            icon: Prefs.arrow-action == "playlist" ? @image-url("icons/next.svg") : @image-url("icons/fast-forward.svg");
+            icon: Prefs.arrow-action == "playlist" ? @image-url("icons/skip-forward.svg") : @image-url("icons/fast-forward.svg");
             icon-size: 22px;
             enabled: Playback.has-media;
             tooltip: Prefs.arrow-action == "speed" ? "Speed up" : Prefs.arrow-action == "seek" ? "Forward 10 seconds" : "Next";
@@ -329,7 +329,7 @@ export component TitleBar inherits Rectangle {
             }
 
             Image {
-                source: @image-url("icons/file-video.svg");
+                source: @image-url("icons/file-play.svg");
                 width: 15px;
                 colorize: #8cb4ff;
                 visible: Playback.has-media;
@@ -347,7 +347,7 @@ export component TitleBar inherits Rectangle {
 
             IconButton {
                 y: 2px;
-                icon: @image-url("icons/pip.svg");
+                icon: @image-url("icons/picture-in-picture-2.svg");
                 icon-size: 16px;
                 hover-background: true;
                 tooltip: "Picture in Picture";
@@ -372,21 +372,21 @@ export component TitleBar inherits Rectangle {
             if Platform.custom-titlebar: HorizontalLayout {
                 padding-left: 4px;
                 WindowButton {
-                    icon: @image-url("icons/minimize.svg");
+                    icon: @image-url("icons/minus.svg");
                     tooltip: "Minimize";
                     clicked => {
                         root.minimize();
                     }
                 }
                 WindowButton {
-                    icon: root.maximized ? @image-url("icons/restore.svg") : @image-url("icons/maximize.svg");
+                    icon: root.maximized ? @image-url("icons/copy.svg") : @image-url("icons/square.svg");
                     tooltip: root.maximized ? "Restore" : "Maximize";
                     clicked => {
                         root.toggle-maximized();
                     }
                 }
                 WindowButton {
-                    icon: @image-url("icons/close.svg");
+                    icon: @image-url("icons/x.svg");
                     danger: true;
                     tooltip: "Close";
                     clicked => {
