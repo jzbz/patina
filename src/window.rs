@@ -6,6 +6,7 @@ use crate::mpv::{EndFileReason, Event, Mpv};
 use crate::player::state::{PlaybackState, Track, TrackKind, file_name};
 use crate::player::{self, Player, Prop};
 use crate::settings::ResizeWindow;
+use crate::thumbnails;
 use crate::util::{self, format_delay, format_speed, format_time};
 use crate::{
     Actions, ChapterItem, DeviceItem, Media, Osd, Platform, Playback, PlayerWindow, PlaylistItem,
@@ -56,6 +57,8 @@ pub struct PlayerController {
     fit_pending: Cell<bool>,
     has_fitted: Cell<bool>,
     crop_index: Cell<usize>,
+    /// Counts files started, so media controls can tell tracks apart.
+    track: Cell<u64>,
     eq_gains: RefCell<[f32; 10]>,
     eq_timer: Timer,
     drops: RefCell<Vec<String>>,
@@ -70,6 +73,10 @@ pub struct PlayerController {
     /// A size we asked for, re-requested if a stale configure from the
     /// Wayland compositor undoes it: (size, deadline, attempts left).
     wanted_size: Cell<Option<(slint::LogicalSize, Instant, u8)>>,
+    /// Seek-bar thumbnails for the current file, filled in as they arrive.
+    thumbnails: RefCell<Vec<Option<slint::Image>>>,
+    thumbnail_job: RefCell<Option<thumbnails::Job>>,
+    thumbnail_path: RefCell<String>,
     this: Weak<PlayerController>,
 }
 
@@ -84,6 +91,9 @@ impl PlayerController {
             osd_fallback: Cell::new(None),
             osd_fallback_timer: Timer::default(),
             wanted_size: Cell::new(None),
+            thumbnails: RefCell::new(Vec::new()),
+            thumbnail_job: RefCell::new(None),
+            thumbnail_path: RefCell::new(String::new()),
             app: Rc::downgrade(app),
             window,
             player: RefCell::new(Some(player)),
@@ -98,6 +108,7 @@ impl PlayerController {
             fit_pending: Cell::new(false),
             has_fitted: Cell::new(false),
             crop_index: Cell::new(0),
+            track: Cell::new(0),
             eq_gains: RefCell::new([0.0; 10]),
             eq_timer: Timer::default(),
             drops: RefCell::new(Vec::new()),
@@ -155,6 +166,15 @@ impl PlayerController {
         }
     }
 
+    pub fn audio_devices(&self) -> Vec<(String, String)> {
+        self.state
+            .borrow()
+            .audio_devices
+            .iter()
+            .map(|device| (device.name.clone(), device.description.clone()))
+            .collect()
+    }
+
     /// The playlist as (title, path) pairs.
     pub fn playlist_paths(&self) -> Vec<(String, String)> {
         self.state
@@ -168,6 +188,17 @@ impl PlayerController {
     // ---- Setup ----------------------------------------------------------
 
     fn apply_preferences(&self) {
+        self.apply_interface_preferences();
+        let prefs = self.app().prefs();
+        self.window.set_float_on_top(prefs.always_on_top);
+        if prefs.always_on_top {
+            self.player().set("ontop", true);
+        }
+    }
+
+    /// Copies the interface preferences into the window; safe to repeat
+    /// whenever they change.
+    pub fn apply_interface_preferences(&self) {
         let app = self.app();
         let prefs = app.prefs();
         let platform = self.window.global::<Platform>();
@@ -191,18 +222,17 @@ impl PlayerController {
         ui.set_double_click(prefs.double_click.clone().into());
         ui.set_right_click(prefs.right_click.clone().into());
         ui.set_middle_click(prefs.middle_click.clone().into());
+        ui.set_thumbnail_width(prefs.thumbnail_width as f32);
+    }
 
-        self.window.set_float_on_top(prefs.always_on_top);
-        if prefs.always_on_top {
-            self.player().set("ontop", true);
+    /// Sets changed mpv options on this window's running core.
+    pub fn apply_mpv_options(&self, options: &[(&'static str, String)]) {
+        if !self.is_running() {
+            return;
         }
-        self.player().set("volume-max", prefs.max_volume.max(100.0));
-        self.player().set(
-            "volume",
-            prefs.volume.clamp(0.0, prefs.max_volume.max(100.0)),
-        );
-        if prefs.playlist_auto_add {
-            self.player().set("autocreate-playlist", "same");
+        let player = self.player();
+        for (name, value) in options {
+            player.set_quiet(name, value.as_str());
         }
     }
 
@@ -287,7 +317,7 @@ impl PlayerController {
             player.command(&["loadfile", source, mode]);
         }
         if !append {
-            player.set("pause", false);
+            player.set("pause", self.app().prefs().pause_when_open);
         }
         drop(player);
         self.app().note_opened(sources);
@@ -313,6 +343,8 @@ impl PlayerController {
                     }
                 }
                 Event::StartFile { .. } => {
+                    self.track.set(self.track.get() + 1);
+                    self.reset_thumbnails();
                     self.loading.set(true);
                     self.crop_index.set(0);
                     self.window.set_error(SharedString::new());
@@ -354,6 +386,15 @@ impl PlayerController {
                 Event::Seek => {
                     if self.user_acted() {
                         self.osd_seek();
+                    }
+                }
+                Event::PlaybackRestart => {
+                    // A seek finished (or playback began): tell the media
+                    // controls where playback is now.
+                    if let Some(app) = self.app.upgrade()
+                        && app.is_active(self)
+                    {
+                        app.media_position(self.state.borrow().position, true);
                     }
                 }
                 Event::CommandReply { userdata, result } => match (userdata, result) {
@@ -431,6 +472,11 @@ impl PlayerController {
         }
         if any(&[Prop::TimePos]) {
             playback.set_position(state.position as f32);
+            if let Some(app) = self.app.upgrade()
+                && app.is_active(self)
+            {
+                app.media_position(state.position, false);
+            }
         }
         if any(&[Prop::Duration]) {
             playback.set_duration(state.duration as f32);
@@ -621,6 +667,36 @@ impl PlayerController {
             media.set_audio_devices(ModelRc::new(VecModel::from(devices)));
         }
 
+        if any(&[
+            Prop::Duration,
+            Prop::VideoParams,
+            Prop::Path,
+            Prop::TrackList,
+        ]) {
+            self.maybe_start_thumbnails(&state);
+        }
+        if any(&[
+            Prop::Idle,
+            Prop::Pause,
+            Prop::MediaTitle,
+            Prop::Path,
+            Prop::Metadata,
+            Prop::Duration,
+            Prop::Speed,
+            Prop::Volume,
+            Prop::LoopFile,
+            Prop::LoopPlaylist,
+            Prop::Shuffle,
+            Prop::Playlist,
+            Prop::PlaylistPos,
+            Prop::Seekable,
+            Prop::TrackList,
+        ]) && let Some(app) = self.app.upgrade()
+            && app.is_active(self)
+        {
+            app.publish_now_playing(self.now_playing(&state));
+        }
+
         // mpv window properties, driven by key bindings such as "cycle fullscreen".
         if any(&[Prop::Fullscreen]) && self.window.window().is_fullscreen() != state.fullscreen {
             self.window.window().set_fullscreen(state.fullscreen);
@@ -630,9 +706,17 @@ impl PlayerController {
         }
         if any(&[Prop::VideoParams]) && self.fit_pending.get() && state.video.is_some() {
             self.fit_pending.set(false);
-            self.has_fitted.set(true);
+            let first = !self.has_fitted.replace(true);
             drop(state);
-            self.fit_to_video(1.0, true);
+            let prefs = self.app().prefs();
+            let scale = match prefs.window_size.as_str() {
+                "fit" => f64::INFINITY,
+                other => other.parse().unwrap_or(1.0),
+            };
+            self.fit_to_video(scale, true);
+            if first && prefs.fullscreen_when_open && !self.window.window().is_fullscreen() {
+                self.player().set("fullscreen", true);
+            }
             self.osd_for_changes(changed);
             return;
         }
@@ -967,6 +1051,7 @@ impl PlayerController {
         });
         handler!(on_set_eq, |this, band, gain| this.set_eq(band, gain));
         handler!(on_activity, |this| this.mark_user_action());
+        handler!(on_preview, |this, time| this.show_preview(time as f64));
 
         let weak = Rc::downgrade(self);
         self.window.on_dialog_confirmed(move |kind, text| {
@@ -1014,6 +1099,7 @@ impl PlayerController {
                 {
                     this.player().set("pause", true);
                 }
+                winit::event::WindowEvent::Focused(true) => this.app().set_active(&this),
                 _ => {}
             }
             EventResult::Propagate
@@ -1099,6 +1185,10 @@ impl PlayerController {
                     let delta = format!("{}", steps as f64 * prefs.volume_step);
                     self.player().command_quiet(&["add", "volume", &delta]);
                 }
+                "speed" => {
+                    let factor = format!("{}", 1.1f64.powf(steps as f64));
+                    self.player().command_quiet(&["multiply", "speed", &factor]);
+                }
                 "seek" => {
                     let delta = format!("{}", -steps as f64 * prefs.seek_step / 2.0);
                     self.player()
@@ -1136,6 +1226,9 @@ impl PlayerController {
                 if let Err(error) = self.mpv.command_async(REPLY_SCREENSHOT, &args) {
                     log::warn!("{error}");
                 }
+            }
+            ("seek", [amount]) if self.app().prefs().seek_mode == "exact" => {
+                self.player().command(&["seek", amount, "relative+exact"]);
             }
             ("set", ["window-scale", scale]) => {
                 if let Ok(scale) = scale.parse() {
@@ -1213,6 +1306,7 @@ impl PlayerController {
             "new-window" => {
                 app.new_window();
             }
+            "preferences" => app.open_preferences(),
             "close-window" => self.close(),
             "quit" => app.quit(),
             "minimize" => self.window.window().set_minimized(true),
@@ -1250,10 +1344,11 @@ impl PlayerController {
             "bigger-window" => self.scale_window(1.2),
             "smaller-window" => self.scale_window(1.0 / 1.2),
             "screenshot" => {
-                let mode = if argument == "video" {
-                    "video"
-                } else {
-                    "subtitles"
+                let mode = match argument {
+                    "video" => "video",
+                    "subtitles" => "subtitles",
+                    _ if app.prefs().screenshot_subtitles => "subtitles",
+                    _ => "video",
                 };
                 self.run_mpv(&["screenshot".into(), mode.into()]);
             }
@@ -1312,10 +1407,18 @@ impl PlayerController {
                 }
             }
             "hwdec" => {
-                let on = argument != "off";
-                self.player()
-                    .set("hwdec", if on { "auto-safe" } else { "no" });
-                app.update_prefs(|prefs| prefs.hardware_decoding = on);
+                // Like IINA's switch: this player only, back to the preferred
+                // decoder when turned on.
+                let preferred = match app.prefs().hwdec.as_str() {
+                    "no" => "auto-safe".to_owned(),
+                    other => other.to_owned(),
+                };
+                let value = if argument == "off" {
+                    "no".to_owned()
+                } else {
+                    preferred
+                };
+                self.player().set("hwdec", value.as_str());
             }
             "save-ui-prefs" => {
                 let remaining = self.window.global::<Prefs>().get_show_remaining_time();
@@ -1605,6 +1708,246 @@ impl PlayerController {
         ));
     }
 
+    // ---- System media controls ------------------------------------------
+
+    /// This window's state as the system media controls show it.
+    fn now_playing(&self, state: &PlaybackState) -> crate::media_controls::NowPlaying {
+        use crate::media_controls::{LoopMode, NowPlaying, Status};
+        if state.idle {
+            return NowPlaying::default();
+        }
+        let meta = |keys: &[&str]| {
+            state
+                .metadata
+                .iter()
+                .find(|(key, _)| keys.iter().any(|wanted| key.eq_ignore_ascii_case(wanted)))
+                .map(|(_, value)| value.clone())
+                .unwrap_or_default()
+        };
+        // Streams and music are known by their title; local videos by name.
+        let titled = util::is_url(&state.path) || state.is_audio_only();
+        let title = if titled && !state.title.is_empty() {
+            state.title.clone()
+        } else {
+            file_name(&state.path)
+        };
+        let url = if util::is_url(&state.path) {
+            state.path.clone()
+        } else {
+            crate::platform::file_uri(std::path::Path::new(&state.path))
+        };
+        let count = state.playlist.len() as i64;
+        NowPlaying {
+            status: if state.paused {
+                Status::Paused
+            } else {
+                Status::Playing
+            },
+            track: self.track.get(),
+            title,
+            artist: meta(&["artist", "album_artist", "performer"]),
+            album: meta(&["album"]),
+            url,
+            art_url: String::new(),
+            duration: state.duration,
+            rate: state.speed,
+            volume: state.volume / 100.0,
+            loop_mode: if state.loop_file {
+                LoopMode::Track
+            } else if state.loop_playlist {
+                LoopMode::Playlist
+            } else {
+                LoopMode::None
+            },
+            shuffle: state.shuffle,
+            can_next: state.playlist_pos + 1 < count || (state.loop_playlist && count > 1),
+            can_previous: state.playlist_pos > 0,
+            can_seek: state.seekable,
+            audio_only: state.is_audio_only(),
+        }
+    }
+
+    pub fn publish_now_playing(&self) {
+        if let Some(app) = self.app.upgrade() {
+            let now = self.now_playing(&self.state.borrow());
+            app.publish_now_playing(now);
+        }
+    }
+
+    /// A media key or a request from the desktop's player controls. Keys go
+    /// through their key bindings when the user has bound them, as in IINA.
+    pub fn media_command(&self, command: crate::media_controls::Command) {
+        use crate::media_controls::{Command, LoopMode};
+        if !self.is_running() {
+            return;
+        }
+        self.mark_user_action();
+        let key = match &command {
+            Command::Play => Some("PLAYONLY"),
+            Command::Pause => Some("PAUSEONLY"),
+            Command::PlayPause => Some("PLAYPAUSE"),
+            Command::Stop => Some("STOP"),
+            Command::Next => Some("NEXT"),
+            Command::Previous => Some("PREV"),
+            _ => None,
+        };
+        let binding = key
+            .and_then(KeyCombo::parse)
+            .and_then(|combo| self.app().bindings().get(&combo).cloned());
+        if let Some(binding) = binding {
+            match binding {
+                Binding::Mpv(commands) => commands.iter().for_each(|command| self.run_mpv(command)),
+                Binding::Patina(action) => self.run_action(&action),
+            }
+            return;
+        }
+        let player = self.player();
+        match command {
+            Command::Play => player.set("pause", false),
+            Command::Pause => player.set("pause", true),
+            Command::PlayPause => player.command(&["cycle", "pause"]),
+            Command::Stop => player.command(&["stop"]),
+            Command::Next => player.command(&["playlist-next"]),
+            Command::Previous => player.command(&["playlist-prev"]),
+            Command::Seek(seconds) => {
+                player.command(&["seek", &format!("{seconds:.3}"), "relative"])
+            }
+            Command::SetPosition(seconds) => {
+                player.command(&["seek", &format!("{seconds:.3}"), "absolute+exact"])
+            }
+            Command::SetVolume(volume) => player.set("volume", (volume * 100.0).round()),
+            Command::SetRate(rate) => player.set("speed", rate.clamp(0.03125, 32.0)),
+            Command::SetLoop(mode) => {
+                player.set(
+                    "loop-file",
+                    if mode == LoopMode::Track { "inf" } else { "no" },
+                );
+                player.set(
+                    "loop-playlist",
+                    if mode == LoopMode::Playlist {
+                        "inf"
+                    } else {
+                        "no"
+                    },
+                );
+            }
+            Command::SetShuffle(shuffle) => {
+                drop(player);
+                if shuffle != self.state.borrow().shuffle {
+                    self.run_action("toggle-shuffle");
+                }
+            }
+            Command::Raise => {
+                drop(player);
+                let window = self.window.window();
+                window.set_minimized(false);
+                let _ = window.show();
+                window.with_winit_window(|winit| winit.focus_window());
+            }
+            Command::OpenUri(_) | Command::Quit => {}
+        }
+    }
+
+    // ---- Seek-bar thumbnails --------------------------------------------
+
+    fn reset_thumbnails(&self) {
+        self.thumbnail_job.borrow_mut().take();
+        self.thumbnails.borrow_mut().clear();
+        self.thumbnail_path.borrow_mut().clear();
+        self.window.global::<Playback>().set_preview_ready(false);
+    }
+
+    /// Starts making thumbnails once a local video's duration and size are
+    /// known, as IINA does (never for streams or audio).
+    fn maybe_start_thumbnails(&self, state: &PlaybackState) {
+        let app = self.app();
+        let prefs = app.prefs();
+        let eligible = prefs.thumbnails
+            && !state.idle
+            && state.duration > 1.0
+            && state.video.is_some()
+            && !state.is_audio_only()
+            && !state.path.is_empty()
+            && !util::is_url(&state.path)
+            && *self.thumbnail_path.borrow() != state.path;
+        if !eligible {
+            return;
+        }
+        *self.thumbnail_path.borrow_mut() = state.path.clone();
+        *self.thumbnails.borrow_mut() = vec![None; thumbnails::COUNT];
+        let (job, updates) = thumbnails::start(thumbnails::Request {
+            path: state.path.clone().into(),
+            duration: state.duration,
+            width: prefs.thumbnail_width.clamp(40, 600) * 2,
+            cache_dir: Some(app.paths().thumbnail_cache_dir()),
+            cache_limit_bytes: prefs.thumbnail_cache_mb.saturating_mul(1 << 20),
+        });
+        *self.thumbnail_job.borrow_mut() = Some(job);
+        let this = self.this.clone();
+        let path = state.path.clone();
+        let spawned = slint::spawn_local(async move {
+            while let Ok(update) = updates.recv().await {
+                let Some(this) = this.upgrade() else { break };
+                if *this.thumbnail_path.borrow() != path {
+                    break;
+                }
+                match update {
+                    thumbnails::Update::Ready(index, thumbnail) => {
+                        let buffer =
+                            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                &thumbnail.rgba,
+                                thumbnail.width,
+                                thumbnail.height,
+                            );
+                        if let Some(slot) = this.thumbnails.borrow_mut().get_mut(index) {
+                            *slot = Some(slint::Image::from_rgba8(buffer));
+                        }
+                    }
+                    thumbnails::Update::Finished => break,
+                }
+            }
+        });
+        if let Err(error) = spawned {
+            log::warn!("could not receive thumbnails: {error}");
+        }
+    }
+
+    /// Fills in the seek preview for `time`: the nearest thumbnail made so
+    /// far and the chapter there.
+    fn show_preview(&self, time: f64) {
+        let state = self.state.borrow();
+        let playback = self.window.global::<Playback>();
+        let chapter = state
+            .chapters
+            .iter()
+            .rev()
+            .find(|chapter| chapter.time <= time)
+            .map(|chapter| chapter.title.clone())
+            .unwrap_or_default();
+        playback.set_preview_chapter(chapter.into());
+
+        let thumbnails = self.thumbnails.borrow();
+        if thumbnails.is_empty() || state.duration <= 0.0 {
+            playback.set_preview_ready(false);
+            return;
+        }
+        let wanted = ((time / state.duration) * thumbnails::COUNT as f64)
+            .floor()
+            .clamp(0.0, (thumbnails::COUNT - 1) as f64) as usize;
+        // Use the closest thumbnail available while the rest are made.
+        let nearest = (0..thumbnails::COUNT)
+            .flat_map(|distance| [wanted.checked_sub(distance), Some(wanted + distance)])
+            .flatten()
+            .find_map(|index| thumbnails.get(index).cloned().flatten());
+        match nearest {
+            Some(image) => {
+                playback.set_preview_image(image);
+                playback.set_preview_ready(true);
+            }
+            None => playback.set_preview_ready(false),
+        }
+    }
+
     // ---- Recent files ---------------------------------------------------
 
     pub fn refresh_recent(&self) {
@@ -1638,6 +1981,7 @@ impl PlayerController {
             }
             self.app().update_prefs(|prefs| prefs.volume = state.volume);
         }
+        self.reset_thumbnails();
         // Hiding the window tears down its renderer, which frees mpv's render
         // context while the GL context is still current.
         let _ = self.window.hide();

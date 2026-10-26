@@ -212,22 +212,58 @@ export component ControlBar inherits Rectangle {
     }
 }
 
-// The time shown above the seek bar while hovering it.
+// IINA's seek preview: the thumbnail at the hovered time (once made), the
+// time, and the chapter there.
 export component SeekPreview inherits Rectangle {
     in property <float> time;
-    width: label.preferred-width + 14px;
-    height: 22px;
-    border-radius: 5px;
+    width: layout.preferred-width;
+    height: layout.preferred-height;
+    border-radius: 6px;
     background: Theme.osd-background;
     border-width: 1px;
     border-color: Theme.osc-border;
+    drop-shadow-blur: 12px;
+    drop-shadow-color: #00000066;
 
-    label := Text {
-        text: Format.time(root.time);
-        color: Theme.text;
-        font-size: 12px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    init => {
+        Actions.preview(root.time);
+    }
+    changed time => {
+        Actions.preview(root.time);
+    }
+
+    layout := VerticalLayout {
+        padding: 3px;
+        padding-bottom: 4px;
+        spacing: 2px;
+
+        if Playback.preview-ready: Rectangle {
+            width: Prefs.thumbnail-width;
+            height: self.width * Playback.preview-image.height / max(1, Playback.preview-image.width);
+            border-radius: 4px;
+            clip: true;
+            Image {
+                source: Playback.preview-image;
+                width: parent.width;
+                height: parent.height;
+                image-fit: fill;
+            }
+        }
+        Text {
+            text: Format.time(root.time);
+            color: Theme.text;
+            font-size: 12px;
+            horizontal-alignment: center;
+            min-width: 44px;
+        }
+        if Playback.preview-chapter != "": Text {
+            text: Playback.preview-chapter;
+            color: Theme.secondary-text;
+            font-size: 10px;
+            horizontal-alignment: center;
+            overflow: elide;
+            max-width: Prefs.thumbnail-width;
+        }
     }
 }
 

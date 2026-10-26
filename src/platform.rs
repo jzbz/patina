@@ -62,7 +62,7 @@ pub fn reveal(path: &Path) {
 
 /// A `file://` URI with everything but unreserved characters and `/`
 /// percent-encoded.
-fn file_uri(path: &Path) -> String {
+pub fn file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
     for byte in path.to_string_lossy().bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {

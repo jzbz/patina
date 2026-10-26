@@ -7,28 +7,16 @@
 //! macOS. The calls run on a small thread of their own so a slow D-Bus
 //! never stalls the interface.
 
-use std::sync::mpsc::{Sender, channel};
-
 pub struct Inhibitor {
-    requests: Sender<bool>,
+    requests: async_channel::Sender<bool>,
 }
 
 impl Inhibitor {
     pub fn new() -> Self {
-        let (requests, receiver) = channel::<bool>();
+        let (requests, receiver) = async_channel::unbounded::<bool>();
         let spawned = std::thread::Builder::new()
             .name("inhibit".into())
-            .spawn(move || {
-                let mut backend = Backend::default();
-                let mut active = false;
-                for wanted in receiver {
-                    if wanted != active {
-                        active = wanted;
-                        backend.set(wanted);
-                    }
-                }
-                backend.set(false);
-            });
+            .spawn(move || run(receiver));
         if let Err(error) = spawned {
             log::warn!("could not start the screen saver inhibitor: {error}");
         }
@@ -37,70 +25,74 @@ impl Inhibitor {
 
     /// Requests the screen to stay awake (true) or allows it to sleep.
     pub fn set(&self, inhibit: bool) {
-        let _ = self.requests.send(inhibit);
+        let _ = self.requests.try_send(inhibit);
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
-#[derive(Default)]
-struct Backend {
-    connection: Option<zbus::blocking::Connection>,
-    cookie: Option<u32>,
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn run(receiver: async_channel::Receiver<bool>) {
+    let mut backend = Backend::default();
+    while let Ok(wanted) = receiver.recv_blocking() {
+        backend.set(wanted);
+    }
+    backend.set(false);
 }
 
+/// Linux: `org.freedesktop.ScreenSaver.Inhibit`, through zbus, which is
+/// async and driven on this thread.
 #[cfg(all(unix, not(target_os = "macos")))]
-impl Backend {
+fn run(receiver: async_channel::Receiver<bool>) {
     const SERVICE: &str = "org.freedesktop.ScreenSaver";
     const PATH: &str = "/org/freedesktop/ScreenSaver";
 
-    fn connection(&mut self) -> Option<&zbus::blocking::Connection> {
-        if self.connection.is_none() {
-            match zbus::blocking::Connection::session() {
-                Ok(connection) => self.connection = Some(connection),
-                Err(error) => log::warn!(
-                    "no D-Bus session bus; the screen may sleep during playback: {error}"
-                ),
-            }
-        }
-        self.connection.as_ref()
-    }
-
-    fn set(&mut self, inhibit: bool) {
-        if inhibit && self.cookie.is_none() {
-            let Some(connection) = self.connection() else {
+    zbus::block_on(async move {
+        let connection = match zbus::Connection::session().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                log::warn!("no D-Bus session bus; the screen may sleep during playback: {error}");
                 return;
-            };
-            let reply = connection.call_method(
-                Some(Self::SERVICE),
-                Self::PATH,
-                Some(Self::SERVICE),
-                "Inhibit",
-                &("Patina", "Playing media"),
-            );
-            match reply.and_then(|reply| reply.body().deserialize::<u32>()) {
-                Ok(cookie) => {
-                    log::debug!("screen saver inhibited (cookie {cookie})");
-                    self.cookie = Some(cookie);
+            }
+        };
+        let mut cookie: Option<u32> = None;
+        let mut wanted = false;
+        loop {
+            let next = receiver.recv().await;
+            // Shutting down releases the inhibition too.
+            let inhibit = *next.as_ref().unwrap_or(&false);
+            if inhibit != wanted || next.is_err() {
+                wanted = inhibit;
+                if inhibit && cookie.is_none() {
+                    let reply = connection
+                        .call_method(
+                            Some(SERVICE),
+                            PATH,
+                            Some(SERVICE),
+                            "Inhibit",
+                            &("Patina", "Playing media"),
+                        )
+                        .await;
+                    match reply.and_then(|reply| reply.body().deserialize::<u32>()) {
+                        Ok(value) => {
+                            log::debug!("screen saver inhibited (cookie {value})");
+                            cookie = Some(value);
+                        }
+                        Err(error) => log::warn!("could not keep the screen awake: {error}"),
+                    }
+                } else if !inhibit && let Some(value) = cookie.take() {
+                    match connection
+                        .call_method(Some(SERVICE), PATH, Some(SERVICE), "UnInhibit", &(value,))
+                        .await
+                    {
+                        Ok(_) => log::debug!("screen saver released"),
+                        Err(error) => log::warn!("could not release the screen saver: {error}"),
+                    }
                 }
-                Err(error) => log::warn!("could not keep the screen awake: {error}"),
             }
-        } else if !inhibit && let Some(cookie) = self.cookie.take() {
-            let Some(connection) = self.connection() else {
-                return;
-            };
-            if let Err(error) = connection.call_method(
-                Some(Self::SERVICE),
-                Self::PATH,
-                Some(Self::SERVICE),
-                "UnInhibit",
-                &(cookie,),
-            ) {
-                log::warn!("could not release the screen saver: {error}");
-            } else {
-                log::debug!("screen saver released");
+            if next.is_err() {
+                break;
             }
         }
-    }
+    });
 }
 
 #[cfg(target_os = "windows")]

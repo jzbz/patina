@@ -1,8 +1,9 @@
-//! mpv's OpenGL render API.
+//! mpv's render API, for OpenGL and for software rendering.
 //!
-//! The render context belongs to the thread whose OpenGL context was current
-//! when it was created; every method here must be called on that thread with
-//! that context current.
+//! An OpenGL render context belongs to the thread whose OpenGL context was
+//! current when it was created; every method must be called on that thread
+//! with that context current. A software context has no such tie but is
+//! still used from one thread at a time (it is not `Sync`).
 
 use super::{Mpv, Result, check, ffi};
 use std::ffi::{c_int, c_void};
@@ -87,6 +88,72 @@ impl RenderContext {
             update: None,
             mpv,
         })
+    }
+
+    /// Creates a software render context, which renders into memory.
+    pub fn new_software(mpv: Arc<Mpv>) -> Result<Self> {
+        let api = mpv.api();
+        let mut params = [
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_API_TYPE,
+                data: ffi::MPV_RENDER_API_TYPE_SW.as_ptr() as *mut c_void,
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
+        ];
+        let mut raw = ptr::null_mut();
+        // SAFETY: terminated parameter list whose pointees outlive the call.
+        let code =
+            unsafe { (api.mpv_render_context_create)(&mut raw, mpv.raw(), params.as_mut_ptr()) };
+        check(code, || "creating the mpv software renderer".to_owned())?;
+        let raw = NonNull::new(raw)
+            .ok_or_else(|| super::Error::new(-1, "mpv returned no render context"))?;
+        Ok(Self {
+            raw,
+            update: None,
+            mpv,
+        })
+    }
+
+    /// Renders the current frame of a software context into `pixels`, as
+    /// `width`×`height` RGB with an unused fourth byte per pixel.
+    pub fn render_software(&self, width: u32, height: u32, pixels: &mut [u8]) -> Result<()> {
+        let stride = width as usize * 4;
+        if pixels.len() < stride * height as usize {
+            return Err(super::Error::new(-4, "pixel buffer too small"));
+        }
+        let mut size: [c_int; 2] = [width as c_int, height as c_int];
+        let mut stride_param: usize = stride;
+        let mut params = [
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_SW_SIZE,
+                data: size.as_mut_ptr().cast(),
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_SW_FORMAT,
+                data: c"rgb0".as_ptr() as *mut c_void,
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_SW_STRIDE,
+                data: (&raw mut stride_param).cast(),
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_SW_POINTER,
+                data: pixels.as_mut_ptr().cast(),
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
+        ];
+        // SAFETY: valid context; the buffer holds `stride * height` bytes and
+        // outlives the call, as do the other parameters.
+        let code = unsafe {
+            (self.mpv.api().mpv_render_context_render)(self.raw.as_ptr(), params.as_mut_ptr())
+        };
+        check(code, || "rendering a software frame".to_owned())
     }
 
     /// Calls `callback` whenever mpv has a new frame or wants a redraw.

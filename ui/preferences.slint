@@ -1,0 +1,713 @@
+import { LineEdit, ComboBox, TextEdit, ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Switch, TextButton, IconButton } from "widgets.slint";
+
+// One row of a preferences page. `kind` is "heading", "switch", "number",
+// "choice", "text", "path", "lines" or "button".
+export struct PrefRow {
+    key: string,
+    kind: string,
+    label: string,
+    detail: string,
+    on: bool,
+    number: float,
+    text: string,
+    choices: [string],
+    choice: int,
+    unit: string,
+    enabled: bool,
+}
+
+export struct BindingRow {
+    keys: string,
+    action: string,
+    patina: bool,
+}
+
+component SidebarItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked;
+    height: 30px;
+    border-radius: Theme.control-radius;
+    background: root.selected ? Theme.accent : touch.has-hover ? Theme.hover : transparent;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    Text {
+        x: 12px;
+        text: root.text;
+        color: root.selected ? Theme.accent-text : Theme.text;
+        font-size: Theme.font-normal;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component RowLabel inherits VerticalLayout {
+    in property <string> label;
+    in property <string> detail;
+    in property <bool> enabled: true;
+    alignment: center;
+    spacing: 1px;
+
+    Text {
+        text: root.label;
+        color: root.enabled ? Theme.text : Theme.disabled-text;
+        font-size: Theme.font-normal;
+        wrap: word-wrap;
+    }
+    if root.detail != "": Text {
+        text: root.detail;
+        color: root.enabled ? Theme.tertiary-text : Theme.disabled-text;
+        font-size: Theme.font-small;
+        wrap: word-wrap;
+    }
+}
+
+component PrefRowView inherits Rectangle {
+    in property <PrefRow> entry;
+    callback set-bool(string, bool);
+    callback set-number(string, float);
+    callback set-choice(string, int);
+    callback set-text(string, string);
+    callback browse(string);
+    callback run(string);
+
+    height: layout.preferred-height;
+
+    pure function number-text(value: float) -> string {
+        return (round(value * 100) / 100) + "";
+    }
+
+    layout := VerticalLayout {
+        padding-top: root.entry.kind == "heading" ? 20px : 5px;
+        padding-bottom: root.entry.kind == "heading" ? 4px : 5px;
+
+        if root.entry.kind == "heading": VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: root.entry.label;
+                color: Theme.secondary-text;
+                font-size: Theme.font-small;
+                font-weight: 700;
+            }
+            Rectangle {
+                height: 1px;
+                background: Theme.panel-divider;
+            }
+        }
+
+        if root.entry.kind == "button": HorizontalLayout {
+            spacing: 14px;
+            alignment: start;
+            TextButton {
+                text: root.entry.label;
+                enabled: root.entry.enabled;
+                clicked => {
+                    root.run(root.entry.key);
+                }
+            }
+            Text {
+                text: root.entry.detail;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        if root.entry.kind == "lines": VerticalLayout {
+            spacing: 6px;
+            RowLabel {
+                label: root.entry.label;
+                detail: root.entry.detail;
+                enabled: root.entry.enabled;
+            }
+            TextEdit {
+                height: 110px;
+                text: root.entry.text;
+                enabled: root.entry.enabled;
+                changed has-focus => {
+                    if !self.has-focus {
+                        root.set-text(root.entry.key, self.text);
+                    }
+                }
+            }
+        }
+
+        if root.entry.kind != "heading" && root.entry.kind != "button" && root.entry.kind != "lines": HorizontalLayout {
+            spacing: 18px;
+            min-height: 30px;
+
+            RowLabel {
+                horizontal-stretch: 1;
+                label: root.entry.label;
+                detail: root.entry.detail;
+                enabled: root.entry.enabled;
+            }
+
+            if root.entry.kind == "switch": VerticalLayout {
+                alignment: center;
+                Switch {
+                    checked: root.entry.on;
+                    enabled: root.entry.enabled;
+                    toggled(on) => {
+                        root.set-bool(root.entry.key, on);
+                    }
+                }
+            }
+
+            if root.entry.kind == "number": HorizontalLayout {
+                spacing: 6px;
+                alignment: end;
+                LineEdit {
+                    width: 110px;
+                    text: root.number-text(root.entry.number);
+                    input-type: decimal;
+                    enabled: root.entry.enabled;
+                    horizontal-alignment: right;
+                    accepted(text) => {
+                        if text.is-float() {
+                            root.set-number(root.entry.key, text.to-float());
+                        }
+                    }
+                    changed has-focus => {
+                        if !self.has-focus && self.text.is-float() {
+                            root.set-number(root.entry.key, self.text.to-float());
+                        }
+                    }
+                }
+                Text {
+                    width: 34px;
+                    text: root.entry.unit;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.entry.kind == "choice": ComboBox {
+                width: 300px;
+                model: root.entry.choices;
+                current-index: root.entry.choice;
+                enabled: root.entry.enabled;
+                selected => {
+                    root.set-choice(root.entry.key, self.current-index);
+                }
+            }
+
+            if root.entry.kind == "text": LineEdit {
+                width: 300px;
+                text: root.entry.text;
+                enabled: root.entry.enabled;
+                accepted(text) => {
+                    root.set-text(root.entry.key, text);
+                }
+                changed has-focus => {
+                    if !self.has-focus {
+                        root.set-text(root.entry.key, self.text);
+                    }
+                }
+            }
+
+            if root.entry.kind == "path": HorizontalLayout {
+                spacing: 6px;
+                width: 300px;
+                LineEdit {
+                    text: root.entry.text;
+                    enabled: root.entry.enabled;
+                    accepted(text) => {
+                        root.set-text(root.entry.key, text);
+                    }
+                    changed has-focus => {
+                        if !self.has-focus {
+                            root.set-text(root.entry.key, self.text);
+                        }
+                    }
+                }
+                TextButton {
+                    text: "Browse…";
+                    enabled: root.entry.enabled;
+                    clicked => {
+                        root.browse(root.entry.key);
+                    }
+                }
+            }
+        }
+    }
+}
+
+component KeyBindingsPage inherits VerticalLayout {
+    in property <[string]> sets;
+    in property <int> set-index;
+    in property <bool> builtin;
+    in property <[BindingRow]> bindings;
+    callback choose-set(int);
+    callback duplicate-set();
+    callback delete-set();
+    callback reveal-set();
+    callback filter(string);
+    callback add();
+    callback edit(int);
+    callback remove(int);
+    spacing: 10px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Binding set";
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        ComboBox {
+            width: 220px;
+            model: root.sets;
+            current-index: root.set-index;
+            selected => {
+                root.choose-set(self.current-index);
+            }
+        }
+        TextButton {
+            text: "Duplicate";
+            clicked => {
+                root.duplicate-set();
+            }
+        }
+        TextButton {
+            text: "Delete";
+            enabled: !root.builtin;
+            clicked => {
+                root.delete-set();
+            }
+        }
+        TextButton {
+            text: "Show File";
+            enabled: !root.builtin;
+            clicked => {
+                root.reveal-set();
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+    }
+
+    if root.builtin: Text {
+        text: "The default set can't be changed. Editing a binding makes a copy named “My Bindings” and switches to it.";
+        color: Theme.tertiary-text;
+        font-size: Theme.font-small;
+        wrap: word-wrap;
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+        LineEdit {
+            placeholder-text: "Search keys and actions";
+            edited(text) => {
+                root.filter(text);
+            }
+        }
+        TextButton {
+            text: "Add";
+            icon: @image-url("icons/plus.svg");
+            clicked => {
+                root.add();
+            }
+        }
+    }
+
+    ListView {
+        vertical-stretch: 1;
+        for binding[index] in root.bindings: Rectangle {
+            height: 30px;
+            border-radius: Theme.control-radius;
+            background: touch.has-hover ? Theme.hover : transparent;
+
+            touch := TouchArea {
+                double-clicked => {
+                    root.edit(index);
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 4px;
+                spacing: 12px;
+                Text {
+                    width: 170px;
+                    text: binding.keys;
+                    color: Theme.playing;
+                    font-size: Theme.font-normal;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: binding.action;
+                    color: Theme.text;
+                    font-size: Theme.font-normal;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                IconButton {
+                    y: 3px;
+                    width: 24px;
+                    height: 24px;
+                    icon: @image-url("icons/settings.svg");
+                    icon-size: 14px;
+                    hover-background: true;
+                    tooltip: "Edit";
+                    clicked => {
+                        root.edit(index);
+                    }
+                }
+                IconButton {
+                    y: 3px;
+                    width: 24px;
+                    height: 24px;
+                    icon: @image-url("icons/close.svg");
+                    icon-size: 12px;
+                    hover-background: true;
+                    tooltip: "Remove";
+                    clicked => {
+                        root.remove(index);
+                    }
+                }
+            }
+        }
+    }
+}
+
+component BindingEditor inherits Rectangle {
+    in property <string> title;
+    in property <string> keys;
+    in-out property <string> command;
+    in-out property <bool> patina;
+    in property <string> error;
+    in property <[string]> presets;
+    callback key(string, bool, bool, bool, bool);
+    callback preset(int);
+    callback save();
+    callback cancel();
+
+    background: #00000080;
+
+    TouchArea { }
+
+    init => {
+        capture.focus();
+    }
+
+    Rectangle {
+        width: min(480px, root.width - 32px);
+        height: layout.preferred-height;
+        border-radius: 12px;
+        background: Theme.panel-background;
+        border-width: 1px;
+        border-color: Theme.osc-border;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #00000080;
+
+        layout := VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-heading;
+                font-weight: 600;
+            }
+
+            capture := FocusScope {
+                height: 54px;
+                key-pressed(event) => {
+                    if event.text == Key.Tab {
+                        return reject;
+                    }
+                    root.key(event.text, event.modifiers.shift, event.modifiers.control, event.modifiers.alt, event.modifiers.meta);
+                    return accept;
+                }
+
+                Rectangle {
+                    border-radius: Theme.control-radius;
+                    background: Theme.field;
+                    border-width: capture.has-focus ? 2px : 1px;
+                    border-color: capture.has-focus ? Theme.accent : Theme.field-border;
+                    Text {
+                        text: root.keys != "" ? root.keys : capture.has-focus ? "Press a key or key combination" : "Click here, then press a key";
+                        color: root.keys != "" ? Theme.playing : Theme.tertiary-text;
+                        font-size: root.keys != "" ? 18px : Theme.font-normal;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => {
+                            capture.focus();
+                        }
+                    }
+                }
+            }
+
+            ComboBox {
+                model: root.presets;
+                current-index: 0;
+                selected => {
+                    root.preset(self.current-index);
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    text: "Patina action";
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Switch {
+                    y: 4px;
+                    checked: root.patina;
+                    toggled(on) => {
+                        root.patina = on;
+                    }
+                }
+            }
+
+            LineEdit {
+                text <=> root.command;
+                placeholder-text: root.patina ? "e.g. open-file" : "an mpv command, e.g. seek 5";
+                accepted => {
+                    root.save();
+                }
+            }
+
+            if root.error != "": Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: Theme.font-small;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                TextButton {
+                    text: "Cancel";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                TextButton {
+                    text: "Save";
+                    primary: true;
+                    enabled: root.keys != "" && root.command != "";
+                    clicked => {
+                        root.save();
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component PreferencesWindow inherits Window {
+    title: "Patina Preferences";
+    icon: @image-url("icons/patina.svg");
+    background: #1c1c1e;
+    preferred-width: 880px;
+    preferred-height: 640px;
+    min-width: 680px;
+    min-height: 440px;
+    default-font-size: Theme.font-normal;
+
+    in property <[string]> pages;
+    in property <int> page;
+    in property <string> heading;
+    in property <[PrefRow]> rows;
+    in property <bool> searching;
+
+    in property <bool> bindings-page;
+    in property <[string]> binding-sets;
+    in property <int> binding-set;
+    in property <bool> binding-builtin;
+    in property <[BindingRow]> bindings;
+
+    in-out property <bool> editor-open;
+    in property <string> editor-title;
+    in property <string> editor-keys;
+    in-out property <string> editor-command;
+    in-out property <bool> editor-patina;
+    in property <string> editor-error;
+    in property <[string]> editor-presets;
+
+    callback select-page(int);
+    callback search(string);
+    callback set-bool(string, bool);
+    callback set-number(string, float);
+    callback set-choice(string, int);
+    callback set-text(string, string);
+    callback browse(string);
+    callback run(string);
+
+    callback choose-binding-set(int);
+    callback duplicate-binding-set();
+    callback delete-binding-set();
+    callback reveal-binding-set();
+    callback filter-bindings(string);
+    callback add-binding();
+    callback edit-binding(int);
+    callback remove-binding(int);
+    callback editor-key(string, bool, bool, bool, bool);
+    callback editor-preset(int);
+    callback editor-save();
+    callback editor-cancel();
+
+    HorizontalLayout {
+        Rectangle {
+            width: 210px;
+            background: #18181a;
+
+            VerticalLayout {
+                padding: 12px;
+                padding-top: 16px;
+                spacing: 4px;
+
+                LineEdit {
+                    placeholder-text: "Search";
+                    edited(text) => {
+                        root.search(text);
+                    }
+                }
+                Rectangle {
+                    height: 8px;
+                }
+                for title[index] in root.pages: SidebarItem {
+                    text: title;
+                    selected: index == root.page && !root.searching;
+                    clicked => {
+                        root.select-page(index);
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+            }
+
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                background: Theme.panel-divider;
+            }
+        }
+
+        VerticalLayout {
+            padding: 22px;
+            padding-top: 18px;
+            padding-right: 12px;
+            spacing: 6px;
+
+            Text {
+                text: root.heading;
+                color: Theme.text;
+                font-size: 20px;
+                font-weight: 700;
+            }
+
+            if !root.bindings-page || root.searching: ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding-right: 12px;
+                    padding-bottom: 20px;
+                    for row in root.rows: PrefRowView {
+                        entry: row;
+                        set-bool(key, value) => {
+                            root.set-bool(key, value);
+                        }
+                        set-number(key, value) => {
+                            root.set-number(key, value);
+                        }
+                        set-choice(key, value) => {
+                            root.set-choice(key, value);
+                        }
+                        set-text(key, value) => {
+                            root.set-text(key, value);
+                        }
+                        browse(key) => {
+                            root.browse(key);
+                        }
+                        run(key) => {
+                            root.run(key);
+                        }
+                    }
+                    if root.rows.length == 0: Text {
+                        text: "No settings match.";
+                        color: Theme.tertiary-text;
+                    }
+                }
+            }
+
+            if root.bindings-page && !root.searching: KeyBindingsPage {
+                vertical-stretch: 1;
+                sets: root.binding-sets;
+                set-index: root.binding-set;
+                builtin: root.binding-builtin;
+                bindings: root.bindings;
+                choose-set(index) => {
+                    root.choose-binding-set(index);
+                }
+                duplicate-set => {
+                    root.duplicate-binding-set();
+                }
+                delete-set => {
+                    root.delete-binding-set();
+                }
+                reveal-set => {
+                    root.reveal-binding-set();
+                }
+                filter(text) => {
+                    root.filter-bindings(text);
+                }
+                add => {
+                    root.add-binding();
+                }
+                edit(index) => {
+                    root.edit-binding(index);
+                }
+                remove(index) => {
+                    root.remove-binding(index);
+                }
+            }
+        }
+    }
+
+    if root.editor-open: BindingEditor {
+        title: root.editor-title;
+        keys: root.editor-keys;
+        command <=> root.editor-command;
+        patina <=> root.editor-patina;
+        error: root.editor-error;
+        presets: root.editor-presets;
+        key(text, shift, ctrl, alt, meta) => {
+            root.editor-key(text, shift, ctrl, alt, meta);
+        }
+        preset(index) => {
+            root.editor-preset(index);
+        }
+        save => {
+            root.editor-save();
+        }
+        cancel => {
+            root.editor-cancel();
+        }
+    }
+}

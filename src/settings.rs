@@ -29,8 +29,9 @@ impl Paths {
         self.config.join("settings.json")
     }
 
-    pub fn input_conf(&self) -> PathBuf {
-        self.config.join("input.conf")
+    /// User key binding sets, one `.conf` file each.
+    pub fn input_conf_dir(&self) -> PathBuf {
+        self.config.join("input_conf")
     }
 
     /// mpv's own configuration directory: `mpv.conf`, `scripts/`, `fonts/`.
@@ -40,6 +41,10 @@ impl Paths {
 
     pub fn watch_later_dir(&self) -> PathBuf {
         self.data.join("watch-later")
+    }
+
+    pub fn thumbnail_cache_dir(&self) -> PathBuf {
+        self.data.join("thumbnails")
     }
 
     pub fn history_file(&self) -> PathBuf {
@@ -57,19 +62,37 @@ pub enum ResizeWindow {
     Never,
 }
 
-/// User preferences. Defaults follow IINA's.
+/// User preferences. Defaults follow IINA's. Every field is a plain JSON
+/// value so the preferences window can edit any of them by key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Preferences {
     // General.
+    /// "welcome" or "open-dialog".
+    pub launch_action: String,
     pub open_in_new_window: bool,
+    pub pause_when_open: bool,
+    pub fullscreen_when_open: bool,
+    pub pause_when_minimized: bool,
+    pub keep_open: bool,
+    pub auto_play_next: bool,
     pub playlist_auto_add: bool,
     pub resume_playback: bool,
     pub record_history: bool,
     pub recent_limit: usize,
-    pub pause_when_minimized: bool,
+    pub prevent_screensaver: bool,
+    /// Empty for the platform's Pictures folder.
+    pub screenshot_dir: String,
+    pub screenshot_format: String,
+    pub screenshot_subtitles: bool,
 
     // Interface.
+    /// "auto", "custom" (Patina's title bar) or "system".
+    pub titlebar: String,
+    pub resize_window: ResizeWindow,
+    /// "fit", "0.5", "1", "1.5" or "2".
+    pub window_size: String,
+    pub always_on_top: bool,
     pub osc_timeout: f32,
     pub toolbar_buttons: Vec<String>,
     pub arrow_action: String,
@@ -78,46 +101,107 @@ pub struct Preferences {
     pub osd_enabled: bool,
     pub osd_timeout: f32,
     pub osd_font_size: f32,
-    pub resize_window: ResizeWindow,
-    pub always_on_top: bool,
-    /// Draw Patina's own title bar; `None` picks the platform default.
-    pub custom_titlebar: Option<bool>,
+    pub thumbnails: bool,
+    /// Width in logical pixels; generated at twice that for HiDPI screens.
+    pub thumbnail_width: u32,
+    pub thumbnail_cache_mb: u64,
 
-    // Playback.
-    pub hardware_decoding: bool,
+    // Video.
+    /// mpv `hwdec`: "no", "auto-safe" or "auto-copy-safe".
+    pub hwdec: String,
+    pub deinterlace: String,
+    pub tone_mapping: String,
+    /// Peak brightness in nits for tone mapping; 0 for automatic.
+    pub target_peak: f64,
+
+    // Audio.
+    /// The volume when Patina last closed.
     pub volume: f64,
+    pub use_initial_volume: bool,
+    pub initial_volume: f64,
     pub max_volume: f64,
-    pub seek_step: f64,
-    pub volume_step: f64,
+    pub audio_device: String,
+    pub audio_language: String,
+    pub replaygain: String,
+    pub replaygain_preamp: f64,
+    pub replaygain_clip: bool,
+    pub gapless_audio: String,
 
-    // Mouse.
+    // Subtitles.
+    pub sub_auto: String,
+    pub sub_language: String,
+    pub sub_codepage: String,
+    pub sub_font: String,
+    pub sub_font_size: f64,
+    pub sub_bold: bool,
+    pub sub_italic: bool,
+    pub sub_color: String,
+    pub sub_border_color: String,
+    pub sub_border_size: f64,
+    pub sub_shadow_offset: f64,
+    pub sub_back_color: String,
+    pub sub_pos: f64,
+    pub sub_scale_by_window: bool,
+    pub sub_use_margins: bool,
+    pub sub_ass_override: String,
+
+    // Network.
+    pub cache: bool,
+    pub cache_secs: f64,
+    pub demuxer_max_mb: f64,
+    pub cache_pause_initial: bool,
+    pub cache_pause_wait: f64,
+    pub user_agent: String,
+    pub http_proxy: String,
+    pub rtsp_transport: String,
+    pub ytdl: bool,
+    pub ytdl_path: String,
+    pub ytdl_raw_options: String,
+
+    // Control.
     pub single_click: String,
     pub double_click: String,
     pub right_click: String,
     pub middle_click: String,
     pub vertical_scroll: String,
     pub horizontal_scroll: String,
+    pub seek_step: f64,
+    pub volume_step: f64,
+    /// "keyframes" or "exact", for relative seeks.
+    pub seek_mode: String,
+    /// Media keys and the desktop's now-playing controls.
+    pub media_keys: bool,
 
-    // Screenshots.
-    pub screenshot_dir: Option<PathBuf>,
-    pub screenshot_format: String,
-
-    // Network.
-    pub ytdl_path: Option<String>,
+    // Key bindings: a set in the input_conf folder, or empty for the default.
+    pub key_bindings: String,
 
     // Advanced.
+    pub use_mpv_config: bool,
     pub mpv_options: Vec<(String, String)>,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            launch_action: "welcome".into(),
             open_in_new_window: true,
+            pause_when_open: false,
+            fullscreen_when_open: false,
+            pause_when_minimized: false,
+            keep_open: true,
+            auto_play_next: true,
             playlist_auto_add: true,
             resume_playback: true,
             record_history: true,
             recent_limit: 12,
-            pause_when_minimized: false,
+            prevent_screensaver: true,
+            screenshot_dir: String::new(),
+            screenshot_format: "png".into(),
+            screenshot_subtitles: true,
+            titlebar: "auto".into(),
+            resize_window: ResizeWindow::OnOpen,
+            window_size: "1".into(),
+            always_on_top: false,
             osc_timeout: 2.5,
             toolbar_buttons: vec!["pip".into(), "playlist".into(), "settings".into()],
             arrow_action: "speed".into(),
@@ -126,14 +210,50 @@ impl Default for Preferences {
             osd_enabled: true,
             osd_timeout: 1.0,
             osd_font_size: 20.0,
-            resize_window: ResizeWindow::OnOpen,
-            always_on_top: false,
-            custom_titlebar: None,
-            hardware_decoding: true,
+            thumbnails: true,
+            thumbnail_width: 120,
+            thumbnail_cache_mb: 500,
+            hwdec: "auto-safe".into(),
+            deinterlace: "no".into(),
+            tone_mapping: "auto".into(),
+            target_peak: 0.0,
             volume: 100.0,
+            use_initial_volume: false,
+            initial_volume: 100.0,
             max_volume: 100.0,
-            seek_step: 5.0,
-            volume_step: 2.0,
+            audio_device: "auto".into(),
+            audio_language: String::new(),
+            replaygain: "no".into(),
+            replaygain_preamp: 0.0,
+            replaygain_clip: false,
+            gapless_audio: "weak".into(),
+            sub_auto: "fuzzy".into(),
+            sub_language: String::new(),
+            sub_codepage: "auto".into(),
+            sub_font: "sans-serif".into(),
+            sub_font_size: 55.0,
+            sub_bold: false,
+            sub_italic: false,
+            sub_color: "#FFFFFF".into(),
+            sub_border_color: "#000000".into(),
+            sub_border_size: 3.0,
+            sub_shadow_offset: 0.0,
+            sub_back_color: "#00000000".into(),
+            sub_pos: 100.0,
+            sub_scale_by_window: true,
+            sub_use_margins: true,
+            sub_ass_override: "scale".into(),
+            cache: true,
+            cache_secs: 36000.0,
+            demuxer_max_mb: 150.0,
+            cache_pause_initial: false,
+            cache_pause_wait: 1.0,
+            user_agent: String::new(),
+            http_proxy: String::new(),
+            rtsp_transport: "tcp".into(),
+            ytdl: true,
+            ytdl_path: String::new(),
+            ytdl_raw_options: String::new(),
             single_click: "toggle-osc".into(),
             double_click: "fullscreen".into(),
             // IINA pauses on right click; without a global menu bar, Linux
@@ -147,27 +267,136 @@ impl Default for Preferences {
             middle_click: "none".into(),
             vertical_scroll: "volume".into(),
             horizontal_scroll: "seek".into(),
-            screenshot_dir: None,
-            screenshot_format: "png".into(),
-            ytdl_path: None,
+            seek_step: 5.0,
+            volume_step: 2.0,
+            seek_mode: "keyframes".into(),
+            media_keys: true,
+            key_bindings: String::new(),
+            use_mpv_config: true,
             mpv_options: Vec::new(),
         }
     }
 }
 
+fn yes_no(value: bool) -> String {
+    if value { "yes" } else { "no" }.into()
+}
+
 impl Preferences {
     pub fn custom_titlebar(&self) -> bool {
-        self.custom_titlebar.unwrap_or(!cfg!(target_os = "macos"))
+        match self.titlebar.as_str() {
+            "custom" => true,
+            "system" => false,
+            _ => !cfg!(target_os = "macos"),
+        }
     }
 
     pub fn screenshot_dir(&self) -> PathBuf {
-        self.screenshot_dir.clone().unwrap_or_else(|| {
-            directories::UserDirs::new()
-                .and_then(|dirs| dirs.picture_dir().map(Path::to_path_buf))
-                .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
-                .unwrap_or_else(std::env::temp_dir)
-                .join("Patina")
-        })
+        if !self.screenshot_dir.is_empty() {
+            return PathBuf::from(&self.screenshot_dir);
+        }
+        directories::UserDirs::new()
+            .and_then(|dirs| dirs.picture_dir().map(Path::to_path_buf))
+            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Patina")
+    }
+
+    /// The volume a new window starts at.
+    pub fn start_volume(&self) -> f64 {
+        let volume = if self.use_initial_volume {
+            self.initial_volume
+        } else {
+            self.volume
+        };
+        volume.clamp(0.0, self.max_volume.max(100.0))
+    }
+
+    /// The mpv options these preferences set, in the order they apply. They
+    /// are set before a core starts and again on running cores when the
+    /// preferences change, so each must also work as a runtime property.
+    pub fn mpv_options(&self) -> Vec<(&'static str, String)> {
+        let mut options = vec![
+            ("hwdec", self.hwdec.clone()),
+            ("deinterlace", self.deinterlace.clone()),
+            ("tone-mapping", self.tone_mapping.clone()),
+            (
+                "target-peak",
+                if self.target_peak > 0.0 {
+                    format!("{}", self.target_peak)
+                } else {
+                    "auto".into()
+                },
+            ),
+            ("volume-max", format!("{}", self.max_volume.max(100.0))),
+            ("audio-device", self.audio_device.clone()),
+            ("alang", self.audio_language.clone()),
+            ("replaygain", self.replaygain.clone()),
+            ("replaygain-preamp", format!("{}", self.replaygain_preamp)),
+            ("replaygain-clip", yes_no(self.replaygain_clip)),
+            ("gapless-audio", self.gapless_audio.clone()),
+            ("sub-auto", self.sub_auto.clone()),
+            ("slang", self.sub_language.clone()),
+            ("sub-codepage", self.sub_codepage.clone()),
+            ("sub-font", self.sub_font.clone()),
+            ("sub-font-size", format!("{}", self.sub_font_size)),
+            ("sub-bold", yes_no(self.sub_bold)),
+            ("sub-italic", yes_no(self.sub_italic)),
+            ("sub-color", self.sub_color.clone()),
+            ("sub-outline-color", self.sub_border_color.clone()),
+            ("sub-outline-size", format!("{}", self.sub_border_size)),
+            ("sub-shadow-offset", format!("{}", self.sub_shadow_offset)),
+            ("sub-back-color", self.sub_back_color.clone()),
+            ("sub-pos", format!("{}", self.sub_pos)),
+            ("sub-scale-by-window", yes_no(self.sub_scale_by_window)),
+            ("sub-use-margins", yes_no(self.sub_use_margins)),
+            ("sub-ass-force-margins", yes_no(self.sub_use_margins)),
+            ("sub-ass-override", self.sub_ass_override.clone()),
+            ("cache", if self.cache { "auto" } else { "no" }.into()),
+            ("cache-secs", format!("{}", self.cache_secs)),
+            (
+                "demuxer-max-bytes",
+                format!("{}MiB", self.demuxer_max_mb.max(1.0)),
+            ),
+            ("cache-pause-initial", yes_no(self.cache_pause_initial)),
+            ("cache-pause-wait", format!("{}", self.cache_pause_wait)),
+            ("http-proxy", self.http_proxy.clone()),
+            ("rtsp-transport", self.rtsp_transport.clone()),
+            ("ytdl", yes_no(self.ytdl)),
+            ("ytdl-raw-options", self.ytdl_raw_options.clone()),
+            (
+                "keep-open",
+                if !self.auto_play_next {
+                    "always"
+                } else if self.keep_open {
+                    "yes"
+                } else {
+                    "no"
+                }
+                .into(),
+            ),
+            (
+                "autocreate-playlist",
+                if self.playlist_auto_add { "same" } else { "no" }.into(),
+            ),
+            ("screenshot-format", self.screenshot_format.clone()),
+            (
+                "screenshot-directory",
+                self.screenshot_dir().to_string_lossy().into_owned(),
+            ),
+            ("save-position-on-quit", yes_no(self.resume_playback)),
+            ("resume-playback", yes_no(self.resume_playback)),
+        ];
+        if !self.user_agent.is_empty() {
+            options.push(("user-agent", self.user_agent.clone()));
+        }
+        if !self.ytdl_path.is_empty() {
+            options.push((
+                "script-opts",
+                format!("ytdl_hook-ytdl_path={}", self.ytdl_path),
+            ));
+        }
+        options
     }
 }
 
@@ -211,6 +440,44 @@ impl History {
     pub fn recent(&self, limit: usize) -> impl Iterator<Item = &HistoryEntry> {
         self.entries.iter().take(limit)
     }
+}
+
+/// Loads the preferences, keeping every setting that can still be read
+/// when others are invalid (say, after a setting changed type).
+pub fn load_preferences(path: &Path) -> Preferences {
+    let value: serde_json::Value = match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("ignoring unreadable {}: {error}", path.display());
+                return Preferences::default();
+            }
+        },
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("could not read {}: {error}", path.display());
+            }
+            return Preferences::default();
+        }
+    };
+    if let Ok(prefs) = serde_json::from_value(value.clone()) {
+        return prefs;
+    }
+    let mut prefs = Preferences::default();
+    let Some(entries) = value.as_object() else {
+        return prefs;
+    };
+    for (key, entry) in entries {
+        let mut merged = serde_json::to_value(&prefs).unwrap_or_default();
+        if let Some(object) = merged.as_object_mut() {
+            object.insert(key.clone(), entry.clone());
+        }
+        match serde_json::from_value(merged) {
+            Ok(updated) => prefs = updated,
+            Err(_) => log::warn!("ignoring the setting {key} = {entry} in {}", path.display()),
+        }
+    }
+    prefs
 }
 
 pub fn load_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> T {
@@ -265,6 +532,23 @@ mod tests {
     }
 
     #[test]
+    fn every_option_is_accepted_by_mpv() {
+        let Some(mpv) = crate::mpv::testing::headless() else {
+            return;
+        };
+        let prefs = Preferences {
+            user_agent: "Patina".into(),
+            ytdl_path: "/usr/bin/yt-dlp".into(),
+            ..Default::default()
+        };
+        for (name, value) in prefs.mpv_options() {
+            if let Err(error) = mpv.set_property(name, value.as_str()) {
+                panic!("{name}={value}: {error}");
+            }
+        }
+    }
+
+    #[test]
     fn history_keeps_one_entry_per_file_newest_first() {
         let mut history = History::default();
         let entry = |path: &str, played_at| HistoryEntry {
@@ -284,6 +568,23 @@ mod tests {
         assert_eq!(paths, ["a", "b"]);
         history.update_progress("b", 30.0, 60.0);
         assert_eq!(history.entries[1].position, 30.0);
+    }
+
+    #[test]
+    fn unreadable_settings_keep_the_readable_ones() {
+        let dir = std::env::temp_dir().join(format!("patina-lenient-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"volume": 40, "screenshot-dir": null, "osd-timeout": 3}"#,
+        )
+        .unwrap();
+        let prefs = load_preferences(&path);
+        assert_eq!(prefs.volume, 40.0);
+        assert_eq!(prefs.osd_timeout, 3.0);
+        assert_eq!(prefs.screenshot_dir, "");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

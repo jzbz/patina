@@ -67,6 +67,10 @@ export global Playback {
     in property <bool> shuffle;
     in property <float> ab-a: -1;
     in property <float> ab-b: -1;
+    // The seek-bar preview: thumbnail for the hovered time, and its chapter.
+    in property <image> preview-image;
+    in property <bool> preview-ready;
+    in property <string> preview-chapter;
 
     // Video.
     in property <int> aspect-index;
@@ -134,6 +138,7 @@ export global Prefs {
     in property <string> double-click: "fullscreen";
     in property <string> right-click: "context-menu";
     in property <string> middle-click: "none";
+    in property <length> thumbnail-width: 120px;
 }
 
 export global Actions {
@@ -159,4 +164,6 @@ export global Actions {
     callback set-eq(int, float);
     // Any pointer or keyboard activity from the user.
     callback activity();
+    // The seek bar is hovered at this time; fills in the preview.
+    callback preview(float);
 }

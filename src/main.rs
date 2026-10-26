@@ -5,10 +5,13 @@ mod app;
 mod cli;
 mod inhibit;
 mod input;
+mod media_controls;
 mod mpv;
 mod platform;
 mod player;
+mod preferences;
 mod settings;
+mod thumbnails;
 mod util;
 mod video;
 mod window;
@@ -64,7 +67,13 @@ fn main() -> ExitCode {
         let (enqueue, fullscreen) = (options.enqueue, options.fullscreen);
         slint::Timer::single_shot(std::time::Duration::ZERO, move || {
             let window = if sources.is_empty() {
-                app.new_window()
+                let window = app.new_window();
+                if let Some(window) = &window
+                    && app.prefs().launch_action == "open-dialog"
+                {
+                    window.run_action("open-file");
+                }
+                window
             } else {
                 app.open_sources(sources, enqueue)
             };

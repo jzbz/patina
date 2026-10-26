@@ -271,6 +271,29 @@ impl Mpv {
         check(code, || format!("setting {name} to {value:?}"))
     }
 
+    /// Reads a property, waiting for mpv. Never call this on the UI thread.
+    pub fn get_property(&self, name: &str) -> Result<Node> {
+        let cname = cstring(name)?;
+        let mut raw = std::mem::MaybeUninit::<ffi::mpv_node>::zeroed();
+        // SAFETY: valid handle; MPV_FORMAT_NODE writes an mpv_node.
+        let code = unsafe {
+            (self.api.mpv_get_property)(
+                self.ptr(),
+                cname.as_ptr(),
+                ffi::MPV_FORMAT_NODE,
+                raw.as_mut_ptr().cast(),
+            )
+        };
+        check(code, || format!("reading {name}"))?;
+        // SAFETY: mpv initialized the node on success; copy and free it.
+        unsafe {
+            let mut raw = raw.assume_init();
+            let node = Node::from_raw(&raw);
+            (self.api.mpv_free_node_contents)(&mut raw);
+            Ok(node)
+        }
+    }
+
     /// Reports changes of `name` as [`Event::PropertyChange`] with `userdata`.
     pub fn observe_property(&self, userdata: u64, name: &str) -> Result<()> {
         let cname = cstring(name)?;
@@ -341,28 +364,6 @@ impl Mpv {
             unsafe { (self.api.mpv_set_property)(self.ptr(), cname.as_ptr(), format, data) }
         })?;
         check(code, || format!("setting {name} to {value:?}"))
-    }
-
-    pub fn get_property(&self, name: &str) -> Result<Node> {
-        let cname = cstring(name)?;
-        let mut raw = std::mem::MaybeUninit::<ffi::mpv_node>::zeroed();
-        // SAFETY: valid handle; MPV_FORMAT_NODE writes an mpv_node.
-        let code = unsafe {
-            (self.api.mpv_get_property)(
-                self.ptr(),
-                cname.as_ptr(),
-                ffi::MPV_FORMAT_NODE,
-                raw.as_mut_ptr().cast(),
-            )
-        };
-        check(code, || format!("reading {name}"))?;
-        // SAFETY: mpv initialized the node on success; copy and free it.
-        unsafe {
-            let mut raw = raw.assume_init();
-            let node = Node::from_raw(&raw);
-            (self.api.mpv_free_node_contents)(&mut raw);
-            Ok(node)
-        }
     }
 
     pub fn get_f64(&self, name: &str) -> Result<f64> {

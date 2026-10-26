@@ -151,8 +151,13 @@ pub const MPV_RENDER_PARAM_X11_DISPLAY: mpv_render_param_type = 8;
 pub const MPV_RENDER_PARAM_WL_DISPLAY: mpv_render_param_type = 9;
 pub const MPV_RENDER_PARAM_ADVANCED_CONTROL: mpv_render_param_type = 10;
 pub const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: mpv_render_param_type = 12;
+pub const MPV_RENDER_PARAM_SW_SIZE: mpv_render_param_type = 17;
+pub const MPV_RENDER_PARAM_SW_FORMAT: mpv_render_param_type = 18;
+pub const MPV_RENDER_PARAM_SW_STRIDE: mpv_render_param_type = 19;
+pub const MPV_RENDER_PARAM_SW_POINTER: mpv_render_param_type = 20;
 
 pub const MPV_RENDER_API_TYPE_OPENGL: &[u8] = b"opengl\0";
+pub const MPV_RENDER_API_TYPE_SW: &[u8] = b"sw\0";
 pub const MPV_RENDER_UPDATE_FRAME: u64 = 1;
 
 #[repr(C)]

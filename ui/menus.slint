@@ -67,6 +67,13 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuSeparator { }
             MenuItem {
+                title: "Preferences…";
+                activated => {
+                    Actions.patina("preferences");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
                 title: "New Window";
                 activated => {
                     Actions.patina("new-window");

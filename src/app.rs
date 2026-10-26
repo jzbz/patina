@@ -2,6 +2,7 @@
 //! bindings, and the list of open player windows.
 
 use crate::input::Bindings;
+use crate::media_controls::{self, MediaControls, NowPlaying};
 use crate::player::CoreOptions;
 use crate::player::state::{TrackKind, file_name};
 use crate::settings::{self, History, HistoryEntry, Paths, Preferences};
@@ -9,7 +10,13 @@ use crate::window::PlayerController;
 use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+
+thread_local! {
+    /// The app, for callbacks that arrive from other threads through
+    /// `slint::invoke_from_event_loop` and can only carry `Send` data.
+    static CURRENT: RefCell<Weak<App>> = const { RefCell::new(Weak::new()) };
+}
 
 pub const MEDIA_EXTENSIONS: &[&str] = &[
     "3g2", "3gp", "aac", "ac3", "aif", "aiff", "alac", "ape", "asf", "avi", "dts", "eac3", "f4v",
@@ -25,35 +32,50 @@ pub struct App {
     paths: Paths,
     prefs: RefCell<Rc<Preferences>>,
     history: RefCell<History>,
-    bindings: Rc<Bindings>,
+    bindings: RefCell<Rc<Bindings>>,
     windows: RefCell<Vec<Rc<PlayerController>>>,
     verbose: bool,
     /// mpv options given on the command line, applied after the preferences'.
     cli_mpv_options: Vec<(String, String)>,
     inhibitor: crate::inhibit::Inhibitor,
+    media: RefCell<Option<MediaControls>>,
+    media_started: std::cell::Cell<bool>,
+    /// What the system media controls show now.
+    now_playing: RefCell<NowPlaying>,
+    /// The window media keys act on: the one focused most recently.
+    active: RefCell<Weak<PlayerController>>,
+    preferences: RefCell<Option<Rc<crate::preferences::PreferencesController>>>,
 }
 
 impl App {
     pub fn new(paths: Paths, verbose: bool, cli_mpv_options: Vec<(String, String)>) -> Rc<Self> {
-        let prefs: Preferences = settings::load_json(&paths.settings_file());
+        let prefs = settings::load_preferences(&paths.settings_file());
         let history: History = settings::load_json(&paths.history_file());
-        let conf = match std::fs::read_to_string(paths.input_conf()) {
-            Ok(conf) => {
-                log::info!("using key bindings from {}", paths.input_conf().display());
-                conf
-            }
-            Err(_) => crate::input::default_conf(),
-        };
-        Rc::new(Self {
+        let conf = binding_conf(&paths, &prefs.key_bindings);
+        let app = Rc::new(Self {
             paths,
             prefs: RefCell::new(Rc::new(prefs)),
             history: RefCell::new(history),
-            bindings: Rc::new(Bindings::parse(&conf)),
+            bindings: RefCell::new(Rc::new(Bindings::parse(&conf))),
             windows: RefCell::new(Vec::new()),
             verbose,
             cli_mpv_options,
             inhibitor: crate::inhibit::Inhibitor::new(),
-        })
+            media: RefCell::new(None),
+            media_started: std::cell::Cell::new(false),
+            now_playing: RefCell::new(NowPlaying::default()),
+            active: RefCell::new(Weak::new()),
+            preferences: RefCell::new(None),
+        });
+        CURRENT.with(|current| *current.borrow_mut() = Rc::downgrade(&app));
+        app
+    }
+
+    /// Runs `f` with the app, on the UI thread.
+    pub fn with_current(f: impl FnOnce(&Rc<App>)) {
+        if let Some(app) = CURRENT.with(|current| current.borrow().upgrade()) {
+            f(&app);
+        }
     }
 
     pub fn prefs(&self) -> Rc<Preferences> {
@@ -61,40 +83,125 @@ impl App {
     }
 
     pub fn update_prefs(&self, update: impl FnOnce(&mut Preferences)) {
-        let mut prefs = (*self.prefs()).clone();
+        let old = self.prefs();
+        let mut prefs = (*old).clone();
         update(&mut prefs);
-        if prefs != *self.prefs() {
-            settings::save_json(&self.paths.settings_file(), &prefs);
-            *self.prefs.borrow_mut() = Rc::new(prefs);
+        if prefs == *old {
+            return;
+        }
+        settings::save_json(&self.paths.settings_file(), &prefs);
+        *self.prefs.borrow_mut() = Rc::new(prefs);
+        self.prefs_changed(&old);
+    }
+
+    /// Applies changed preferences to everything already running, as IINA
+    /// does: interface settings at once, mpv options on every core.
+    fn prefs_changed(&self, old: &Preferences) {
+        let prefs = self.prefs();
+        let before = old.mpv_options();
+        let changed: Vec<(&'static str, String)> = prefs
+            .mpv_options()
+            .into_iter()
+            .filter(|option| !before.contains(option))
+            .collect();
+        let windows = self.windows.borrow().clone();
+        for window in &windows {
+            window.apply_interface_preferences();
+            window.apply_mpv_options(&changed);
+        }
+        if prefs.media_keys != old.media_keys {
+            if prefs.media_keys {
+                self.media_started.set(false);
+                if let Some(first) = windows.first() {
+                    self.start_media_controls(first);
+                }
+                *self.now_playing.borrow_mut() = NowPlaying::default();
+                if let Some(active) = self.active.borrow().upgrade() {
+                    active.publish_now_playing();
+                }
+            } else {
+                self.media.borrow_mut().take();
+            }
+        }
+        if prefs.key_bindings != old.key_bindings {
+            self.reload_bindings();
+        }
+        self.playback_changed();
+        if prefs.recent_limit != old.recent_limit {
+            self.history_changed();
         }
     }
 
+    pub fn paths(&self) -> &Paths {
+        &self.paths
+    }
+
     pub fn bindings(&self) -> Rc<Bindings> {
-        self.bindings.clone()
+        self.bindings.borrow().clone()
+    }
+
+    /// Reads the selected key binding set again.
+    pub fn reload_bindings(&self) {
+        let conf = binding_conf(&self.paths, &self.prefs().key_bindings);
+        *self.bindings.borrow_mut() = Rc::new(Bindings::parse(&conf));
+    }
+
+    /// The user's key binding sets, by name.
+    pub fn binding_sets(&self) -> Vec<String> {
+        let mut sets: Vec<String> = std::fs::read_dir(self.paths.input_conf_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension()? != "conf" {
+                    return None;
+                }
+                Some(path.file_stem()?.to_string_lossy().into_owned())
+            })
+            .collect();
+        sets.sort_by(|a, b| crate::window::natural_cmp(a, b));
+        sets
+    }
+
+    /// Saves `bindings` as the user set `name` and makes it the active set.
+    pub fn save_binding_set(&self, name: &str, bindings: &Bindings) -> std::io::Result<()> {
+        let dir = self.paths.input_conf_dir();
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(format!("{name}.conf")), bindings.to_conf())?;
+        if self.prefs().key_bindings == name {
+            self.reload_bindings();
+        } else {
+            self.update_prefs(|prefs| prefs.key_bindings = name.to_owned());
+        }
+        Ok(())
+    }
+
+    pub fn delete_binding_set(&self, name: &str) {
+        let path = self.paths.input_conf_dir().join(format!("{name}.conf"));
+        if let Err(error) = std::fs::remove_file(&path) {
+            log::warn!("could not delete {}: {error}", path.display());
+        }
+        if self.prefs().key_bindings == name {
+            self.update_prefs(|prefs| prefs.key_bindings.clear());
+        }
     }
 
     pub fn core_options(&self) -> CoreOptions {
         let prefs = self.prefs();
         let mpv_config = self.paths.mpv_config_dir();
+        let mut options: Vec<(String, String)> = prefs
+            .mpv_options()
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect();
+        options.push(("volume".into(), format!("{}", prefs.start_volume())));
+        options.extend(prefs.mpv_options.iter().cloned());
+        options.extend(self.cli_mpv_options.iter().cloned());
         CoreOptions {
-            config_dir: mpv_config.is_dir().then_some(mpv_config),
+            config_dir: (prefs.use_mpv_config && mpv_config.is_dir()).then_some(mpv_config),
             watch_later_dir: self.paths.watch_later_dir(),
-            resume_playback: prefs.resume_playback,
-            hwdec: if prefs.hardware_decoding {
-                "auto-safe"
-            } else {
-                "no"
-            }
-            .into(),
-            screenshot_dir: prefs.screenshot_dir(),
-            screenshot_format: prefs.screenshot_format.clone(),
-            ytdl_path: prefs.ytdl_path.clone(),
-            extra_options: prefs
-                .mpv_options
-                .iter()
-                .chain(&self.cli_mpv_options)
-                .cloned()
-                .collect(),
+            options,
             verbose: self.verbose,
         }
     }
@@ -105,6 +212,8 @@ impl App {
         match PlayerController::new(self) {
             Ok(controller) => {
                 self.windows.borrow_mut().push(controller.clone());
+                self.set_active(&controller);
+                self.start_media_controls(&controller);
                 Some(controller)
             }
             Err(error) => {
@@ -155,7 +264,8 @@ impl App {
             .borrow()
             .iter()
             .any(|window| window.is_playing());
-        self.inhibitor.set(playing);
+        self.inhibitor
+            .set(playing && self.prefs().prevent_screensaver);
     }
 
     pub fn window_closed(&self, controller: &PlayerController) {
@@ -163,6 +273,18 @@ impl App {
             .borrow_mut()
             .retain(|window| !std::ptr::eq(Rc::as_ptr(window), controller));
         self.playback_changed();
+        let active_closed = self
+            .active
+            .borrow()
+            .upgrade()
+            .is_none_or(|active| std::ptr::eq(Rc::as_ptr(&active), controller));
+        if active_closed {
+            let next = self.windows.borrow().last().cloned();
+            match next {
+                Some(next) => self.set_active(&next),
+                None => self.publish_now_playing(NowPlaying::default()),
+            }
+        }
         if self.windows.borrow().is_empty() {
             let _ = slint::quit_event_loop();
         }
@@ -174,6 +296,127 @@ impl App {
             window.close();
         }
         let _ = slint::quit_event_loop();
+    }
+
+    // ---- Preferences ----------------------------------------------------
+
+    pub fn open_preferences(self: &Rc<Self>) {
+        let existing = self.preferences.borrow().clone();
+        let controller = match existing {
+            Some(controller) => controller,
+            None => match crate::preferences::PreferencesController::new(self) {
+                Ok(controller) => {
+                    *self.preferences.borrow_mut() = Some(controller.clone());
+                    controller
+                }
+                Err(error) => {
+                    log::error!("could not open the preferences: {error}");
+                    return;
+                }
+            },
+        };
+        controller.show();
+    }
+
+    /// Audio devices as (name, description), from the active player.
+    pub fn audio_devices(&self) -> Vec<(String, String)> {
+        let window = self
+            .active
+            .borrow()
+            .upgrade()
+            .or_else(|| self.windows.borrow().last().cloned());
+        let mut devices = window
+            .map(|window| window.audio_devices())
+            .unwrap_or_default();
+        if devices.is_empty() {
+            devices.push(("auto".into(), "Autoselect device".into()));
+        }
+        devices
+    }
+
+    // ---- System media controls ------------------------------------------
+
+    fn start_media_controls(&self, first: &PlayerController) {
+        if self.media_started.replace(true) || !self.prefs().media_keys {
+            return;
+        }
+        use raw_window_handle::HasWindowHandle;
+        use slint::winit_030::WinitWindowAccessor;
+        let window = first
+            .window()
+            .window()
+            .with_winit_window(|winit| winit.window_handle().ok().map(|handle| handle.as_raw()))
+            .flatten();
+        let handler: media_controls::Handler = std::sync::Arc::new(|command| {
+            let _ = slint::invoke_from_event_loop(move || {
+                App::with_current(|app| app.media_command(command));
+            });
+        });
+        *self.media.borrow_mut() = MediaControls::start(handler, window);
+    }
+
+    pub fn set_active(&self, controller: &Rc<PlayerController>) {
+        let changed = self
+            .active
+            .borrow()
+            .upgrade()
+            .is_none_or(|active| !Rc::ptr_eq(&active, controller));
+        if changed {
+            *self.active.borrow_mut() = Rc::downgrade(controller);
+            controller.publish_now_playing();
+        }
+    }
+
+    pub fn is_active(&self, controller: &PlayerController) -> bool {
+        self.active
+            .borrow()
+            .upgrade()
+            .is_some_and(|active| std::ptr::eq(Rc::as_ptr(&active), controller))
+    }
+
+    /// Shows `now` in the system's media controls, if it changed.
+    pub fn publish_now_playing(&self, now: NowPlaying) {
+        if *self.now_playing.borrow() == now {
+            return;
+        }
+        if let Some(media) = &*self.media.borrow() {
+            let track_changed = self.now_playing.borrow().track != now.track;
+            media.update(&now);
+            if track_changed {
+                media.seeked(0.0);
+            }
+        }
+        *self.now_playing.borrow_mut() = now;
+    }
+
+    pub fn media_position(&self, seconds: f64, jumped: bool) {
+        if let Some(media) = &*self.media.borrow() {
+            if jumped {
+                media.seeked(seconds);
+            } else {
+                media.set_position(seconds);
+            }
+        }
+    }
+
+    fn media_command(self: &Rc<Self>, command: media_controls::Command) {
+        log::debug!("media control: {command:?}");
+        match command {
+            media_controls::Command::Quit => self.quit(),
+            media_controls::Command::OpenUri(uri) => {
+                self.open_sources(vec![uri], false);
+            }
+            command => {
+                let target = self
+                    .active
+                    .borrow()
+                    .upgrade()
+                    .or_else(|| self.windows.borrow().last().cloned());
+                if let Some(target) = target {
+                    target.media_command(command);
+                }
+            }
+        }
     }
 
     // ---- History --------------------------------------------------------
@@ -401,6 +644,22 @@ impl App {
             .find(|window| std::ptr::eq(Rc::as_ptr(window), controller))
             .cloned()
     }
+}
+
+/// The text of key binding set `name`, or the defaults for the built-in set
+/// (or a set that can no longer be read).
+fn binding_conf(paths: &Paths, name: &str) -> String {
+    if name.is_empty() {
+        return crate::input::default_conf();
+    }
+    let path = paths.input_conf_dir().join(format!("{name}.conf"));
+    std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        log::warn!(
+            "could not read {}: {error}; using the default bindings",
+            path.display()
+        );
+        crate::input::default_conf()
+    })
 }
 
 fn spawn(future: impl std::future::Future<Output = ()> + 'static) {

@@ -44,8 +44,15 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
   nodes, render context.
 - `src/video/`: mpv-to-texture rendering inside Slint's rendering notifier,
   and the GL function resolver.
-- `src/input.rs`: input.conf parsing, key normalization, default bindings.
-- `src/settings.rs`, `src/cli.rs`, `src/util.rs`, `src/platform.rs`.
+- `src/input.rs`: input.conf parsing and writing, key normalization,
+  default bindings.
+- `src/settings.rs`: preferences, their mpv options, history, directories.
+- `src/preferences/`: the preferences window; `schema.rs` lists every
+  setting.
+- `src/thumbnails.rs`: seek-bar thumbnails from a headless mpv core.
+- `src/media_controls/`: MPRIS, SMTC and MediaPlayer integration.
+- `src/inhibit.rs`: keeping the screen awake during playback.
+- `src/cli.rs`, `src/util.rs`, `src/platform.rs`.
 - `ui/`: the Slint interface (`app.slint` is the window; see
   architecture.md); `ui/icons/` are Patina's own SVG icons.
 
@@ -58,6 +65,9 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
   redraw.
 - Open files only after the render context exists (`PlayerController::open`
   queues them).
+- New preferences are a `Preferences` field with a default plus an entry in
+  `src/preferences/schema.rs`; map them to mpv in
+  `Preferences::mpv_options` when mpv should see them.
 - Keep mpv authoritative for playback state; the window mirrors mpv's
   `fullscreen`, `ontop` and `window-scale`.
 - New user-facing actions are Patina actions in `run_action`, named after

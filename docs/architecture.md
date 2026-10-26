@@ -115,21 +115,61 @@ interface, the menu and the keyboard alike. They're implemented in
 ## Input
 
 `input.rs` parses `input.conf` files, normalizes key names the way mpv does,
-and maps Slint key events onto the same names. The default bindings are
-IINA's, with Ctrl in place of Command outside macOS. Mouse actions and
-scrolling follow IINA's control preferences and are configured in
-`settings.json`.
+maps Slint key events onto the same names, and writes binding sets back out.
+The built-in set is IINA's defaults with Ctrl in place of Command outside
+macOS; user sets live in the config folder's `input_conf/`. Mouse actions and
+scrolling follow IINA's control preferences.
 
 ## Settings and history
 
-`settings.rs` holds `Preferences` (serde with defaults for every field, so
-old or partial files keep working), the playback history, and the platform
-directories. Resume positions use mpv's own watch-later files.
+`settings.rs` holds `Preferences`, the playback history, and the platform
+directories. Every preference is a plain JSON value with a default, so old
+or partial files keep working (an unreadable field falls back on its own),
+and the preferences window can edit any of them by key.
+`Preferences::mpv_options` maps them onto mpv options: they are set before
+each core starts, and when preferences change, `App` sets the ones that
+changed on every running core, as IINA's option observers do. Resume
+positions use mpv's own watch-later files.
+
+## Preferences window
+
+`src/preferences/schema.rs` lists every setting: page, section, label, and
+control (switch, number, choice, text, path, lines or button).
+`src/preferences/mod.rs` turns the schema plus the current values into rows
+for `ui/preferences.slint`, and writes edits back through the JSON form of
+`Preferences`. Adding a setting means adding a field with a default and a
+schema entry; the window needs no other change. The Key Bindings page edits
+binding sets; changing the built-in set first copies it to a user set.
+
+## Seek-bar thumbnails
+
+`thumbnails.rs` makes 100 thumbnails per local video on a thread of its own,
+with a second, headless mpv core: the file is opened paused, and for each
+thumbnail mpv seeks to the nearest keyframe and renders it through the
+software render API at twice the display width. Frames are rendered as soon
+as mpv announces them, because mpv holds a seek back until the previous
+frame has been drawn. Thumbnails reach the window as they are made, and are
+cached as JPEGs keyed by path, size and modification time, with the least
+recently used files evicted past a size limit.
+
+## System media controls
+
+`media_controls/` publishes what the active window plays (the window focused
+most recently) and turns media keys into `Command`s: MPRIS over D-Bus on
+Linux, the System Media Transport Controls on Windows, and MediaPlayer's
+remote command and now-playing centers on macOS. zbus is async, so the MPRIS
+service and the screen-saver inhibitor each run `zbus::block_on` on a thread
+of their own. Commands arrive on other threads and reach the UI thread
+through `slint::invoke_from_event_loop`. As in IINA, a media key runs the
+user's binding for it (`PLAYPAUSE`, `NEXT`, ...) when one exists.
 
 ## Testing
 
 - `cargo test` runs unit tests, plus tests that drive a real headless mpv
   core (`vo=null`, `ao=null`); those are skipped when libmpv is missing.
+- Tests also check that every preference-driven mpv option is accepted by
+  mpv, that the schema matches `Preferences`, and that thumbnails are made
+  and cached for a generated clip (when ffmpeg is installed).
 - `tools/smoke.sh` runs Patina on a private Xvfb display, sends input with
   xdotool and saves screenshots, for checking the interface end to end. Xvfb
   only has software OpenGL, so it uses software decoding.

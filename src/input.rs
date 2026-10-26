@@ -131,17 +131,47 @@ impl KeyCombo {
         })
     }
 
+    /// The name as written in input.conf, e.g. `Ctrl+Shift+LEFT`.
+    pub fn conf_name(&self) -> String {
+        let mut name = String::new();
+        for (bit, modifier) in [
+            (CTRL, "Ctrl"),
+            (ALT, "Alt"),
+            (SHIFT, "Shift"),
+            (META, "Meta"),
+        ] {
+            if self.mods & bit != 0 {
+                name.push_str(modifier);
+                name.push('+');
+            }
+        }
+        // '#' would start a comment.
+        name.push_str(if self.key == "#" { "SHARP" } else { &self.key });
+        name
+    }
+
     /// A readable label, e.g. "Ctrl+Shift+→".
     pub fn label(&self) -> String {
         let mut label = String::new();
         let primary_is_meta = cfg!(target_os = "macos");
+        // mpv writes Shift+letter as the capital letter; spell the Shift out
+        // and show letters in capitals, the way menus do.
+        let mut chars = self.key.chars();
+        let letter = match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_alphabetic() => Some(c),
+            _ => None,
+        };
+        let mut mods = self.mods;
+        if letter.is_some_and(char::is_uppercase) {
+            mods |= SHIFT;
+        }
         for (bit, name) in [
             (CTRL, "Ctrl"),
             (ALT, if primary_is_meta { "Option" } else { "Alt" }),
             (SHIFT, "Shift"),
             (META, if primary_is_meta { "Cmd" } else { "Super" }),
         ] {
-            if self.mods & bit != 0 {
+            if mods & bit != 0 {
                 label.push_str(name);
                 label.push('+');
             }
@@ -162,7 +192,13 @@ impl KeyCombo {
             "HOME" => "Home",
             "END" => "End",
             "INS" => "Insert",
-            key => key,
+            key => {
+                if let Some(letter) = letter {
+                    label.extend(letter.to_uppercase());
+                    return label;
+                }
+                key
+            }
         });
         label
     }
@@ -177,7 +213,64 @@ pub enum Binding {
     Patina(String),
 }
 
+/// Quotes an mpv command argument when input.conf would split or misread it.
+fn quote_argument(arg: &str) -> String {
+    let plain = !arg.is_empty()
+        && !arg
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '#' | '\\'));
+    if plain {
+        return arg.to_owned();
+    }
+    let mut quoted = String::from('"');
+    for c in arg.chars() {
+        match c {
+            '"' | '\\' => {
+                quoted.push('\\');
+                quoted.push(c);
+            }
+            '\n' => quoted.push_str("\\n"),
+            '\t' => quoted.push_str("\\t"),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 impl Binding {
+    /// The command as written after the key in input.conf.
+    pub fn conf_command(&self) -> String {
+        match self {
+            Binding::Mpv(commands) => commands
+                .iter()
+                .map(|command| {
+                    command
+                        .iter()
+                        .map(|arg| quote_argument(arg))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+            Binding::Patina(action) => action.clone(),
+        }
+    }
+
+    /// Parses what the binding editor's command field holds.
+    pub fn from_command(command: &str, patina: bool) -> Option<Binding> {
+        let command = command.trim();
+        if command.is_empty() {
+            return None;
+        }
+        if patina {
+            return Some(Binding::Patina(command.to_owned()));
+        }
+        split_commands(command)
+            .filter(|commands| !commands.is_empty())
+            .map(Binding::Mpv)
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Binding::Mpv(commands) => commands
@@ -243,6 +336,47 @@ impl Bindings {
 
     pub fn get(&self, combo: &KeyCombo) -> Option<&Binding> {
         self.map.get(combo)
+    }
+
+    /// Binds `combo`, keeping its place if it was bound already.
+    pub fn set(&mut self, combo: KeyCombo, binding: Binding) {
+        if self.map.insert(combo.clone(), binding).is_none() {
+            self.order.push(combo);
+        }
+    }
+
+    /// Moves `old`'s binding to `new`, keeping its place in the list.
+    pub fn rebind(&mut self, old: &KeyCombo, new: KeyCombo, binding: Binding) {
+        match self.order.iter().position(|combo| combo == old) {
+            Some(index) if *old != new => {
+                self.map.remove(old);
+                self.order.retain(|combo| *combo != new);
+                let index = index.min(self.order.len());
+                self.order.insert(index, new.clone());
+                self.map.insert(new, binding);
+            }
+            _ => self.set(new, binding),
+        }
+    }
+
+    pub fn remove(&mut self, combo: &KeyCombo) {
+        self.map.remove(combo);
+        self.order.retain(|existing| existing != combo);
+    }
+
+    /// Writes the bindings back out in input.conf form.
+    pub fn to_conf(&self) -> String {
+        let mut conf = String::from(
+            "# Patina key bindings, in mpv input.conf format.\n# Lines starting with \"#@patina KEY action\" run Patina actions.\n\n",
+        );
+        for (combo, binding) in self.iter() {
+            let line = match binding {
+                Binding::Mpv(_) => format!("{} {}\n", combo.conf_name(), binding.conf_command()),
+                Binding::Patina(action) => format!("#@patina {} {action}\n", combo.conf_name()),
+            };
+            conf.push_str(&line);
+        }
+        conf
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&KeyCombo, &Binding)> {
@@ -357,6 +491,7 @@ const DEFAULT_CONF: &str = r##"# Patina key bindings, in mpv input.conf format.
 #@patina PRIMARY+q quit
 #@patina PRIMARY+n new-window
 #@patina PRIMARY+j jump-to
+#@patina PRIMARY+, preferences
 #@patina PRIMARY+Shift+v video-panel
 #@patina PRIMARY+Shift+a audio-panel
 #@patina PRIMARY+Shift+s sub-panel
@@ -448,6 +583,23 @@ E cycle edition
 [ multiply speed 0.9091
 ] multiply speed 1.1
 BS set speed 1.0
+
+# Media keys, headset buttons and the desktop's player controls.
+POWER quit
+PLAY cycle pause
+PAUSE cycle pause
+PLAYPAUSE cycle pause
+PLAYONLY set pause no
+PAUSEONLY set pause yes
+STOP stop
+FORWARD seek 15
+REWIND seek -15
+NEXT playlist-next
+PREV playlist-prev
+VOLUME_UP add volume 2
+VOLUME_DOWN add volume -2
+MUTE cycle mute
+CLOSE_WIN quit
 "##;
 
 #[cfg(test)]
@@ -494,6 +646,16 @@ mod tests {
     }
 
     #[test]
+    fn labels_spell_out_shift_for_capital_letters() {
+        let label = |text| KeyCombo::parse(text).unwrap().label();
+        assert_eq!(label("Ctrl+o"), "Ctrl+O");
+        assert_eq!(label("Ctrl+O"), "Ctrl+Shift+O");
+        assert_eq!(label("Z"), "Shift+Z");
+        assert_eq!(label("("), "(");
+        assert_eq!(label("Alt+LEFT"), "Alt+←");
+    }
+
+    #[test]
     fn commands_split_on_quotes_and_semicolons() {
         assert_eq!(
             split_commands(r#"cycle-values loop-file "inf" "no""#),
@@ -537,6 +699,47 @@ mod tests {
         );
         assert!(bindings.get(&KeyCombo::parse("x").unwrap()).is_none());
         assert_eq!(bindings.iter().count(), 3);
+    }
+
+    #[test]
+    fn bindings_round_trip_through_conf_text() {
+        let mut bindings = Bindings::parse(&default_conf());
+        bindings.set(
+            KeyCombo::parse("Ctrl+#").unwrap(),
+            Binding::Mpv(vec![vec![
+                "show-text".into(),
+                "a \"quoted\" text; with # signs".into(),
+            ]]),
+        );
+        bindings.remove(&KeyCombo::parse("SPACE").unwrap());
+        let first = bindings
+            .iter()
+            .next()
+            .map(|(combo, _)| combo.clone())
+            .unwrap();
+        bindings.rebind(
+            &first,
+            KeyCombo::parse("Ctrl+F12").unwrap(),
+            Binding::Patina("about".into()),
+        );
+        assert_eq!(
+            bindings.iter().next().unwrap().0,
+            &KeyCombo::parse("Ctrl+F12").unwrap()
+        );
+        assert!(bindings.get(&first).is_none());
+        let reparsed = Bindings::parse(&bindings.to_conf());
+        let before: Vec<_> = bindings.iter().collect();
+        let after: Vec<_> = reparsed.iter().collect();
+        assert_eq!(before, after);
+        assert!(reparsed.get(&KeyCombo::parse("SPACE").unwrap()).is_none());
+        assert_eq!(
+            Binding::from_command("seek 5; show-progress", false),
+            Some(Binding::Mpv(vec![
+                vec!["seek".into(), "5".into()],
+                vec!["show-progress".into()]
+            ]))
+        );
+        assert_eq!(Binding::from_command("  ", false), None);
     }
 
     #[test]

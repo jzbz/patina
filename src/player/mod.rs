@@ -20,13 +20,9 @@ pub struct CoreOptions {
     /// Directory holding an optional `mpv.conf` and `scripts/`.
     pub config_dir: Option<PathBuf>,
     pub watch_later_dir: PathBuf,
-    pub resume_playback: bool,
-    pub hwdec: String,
-    pub screenshot_dir: PathBuf,
-    pub screenshot_format: String,
-    pub ytdl_path: Option<String>,
-    /// Extra `name=value` options from the user's preferences.
-    pub extra_options: Vec<(String, String)>,
+    /// `name=value` options from the preferences, then the user's own raw
+    /// mpv options, then the command line's; later ones win.
+    pub options: Vec<(String, String)>,
     pub verbose: bool,
 }
 
@@ -69,37 +65,23 @@ impl Player {
         set("audio-client-name", "Patina".into())?;
         set("title", "Patina".into())?;
         set("video-timing-offset", 0.0f64.into())?;
-        set("hwdec", options.hwdec.as_str().into())?;
-        set(
-            "screenshot-directory",
-            options.screenshot_dir.to_string_lossy().as_ref().into(),
-        )?;
-        set(
-            "screenshot-format",
-            options.screenshot_format.as_str().into(),
-        )?;
         set("screenshot-template", "Patina %F %wH.%wM.%wS".into())?;
         set(
             "watch-later-dir",
             options.watch_later_dir.to_string_lossy().as_ref().into(),
         )?;
-        set("save-position-on-quit", options.resume_playback.into())?;
-        set("resume-playback", options.resume_playback.into())?;
         set(
             "watch-later-options",
             "start,vid,aid,sid,secondary-sid,audio-delay,sub-delay,speed,volume,mute,video-rotate,video-aspect-override,deinterlace,ab-loop-a,ab-loop-b"
                 .into(),
         )?;
-        if let Some(path) = &options.ytdl_path {
-            set("script-opts", format!("ytdl_hook-ytdl_path={path}").into())?;
-        }
         set("terminal", options.verbose.into())?;
         if options.verbose {
             set("msg-level", "all=v".into())?;
         }
-        for (name, value) in &options.extra_options {
+        for (name, value) in &options.options {
             if let Err(error) = builder.set_option(name, value.as_str()) {
-                log::warn!("ignoring mpv option from preferences: {error}");
+                log::warn!("ignoring mpv option: {error}");
             }
         }
 
@@ -149,6 +131,13 @@ impl Player {
     pub fn set(&self, name: &str, value: impl Into<Value>) {
         if let Err(error) = self.mpv.set_property_async(REPLY_REPORT, name, value) {
             log::warn!("{error}");
+        }
+    }
+
+    /// Sets a property; a failure is only logged.
+    pub fn set_quiet(&self, name: &str, value: impl Into<Value>) {
+        if let Err(error) = self.mpv.set_property_async(REPLY_QUIET, name, value) {
+            log::debug!("{error}");
         }
     }
 

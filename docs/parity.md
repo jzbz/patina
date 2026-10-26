@@ -15,8 +15,8 @@ testing has been on Linux (X11 and Wayland).
 
 | Milestone | Scope | State |
 | --- | --- | --- |
-| M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | in progress: most of it is in place |
-| M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, encodings and styling, history window, inspector | planned |
+| M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (macOS menu bar and title bar still to do) |
+| M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | in progress: media keys, preferences, key binding editor and thumbnails are done |
 | M3 Advanced parity | music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | planned |
 | M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | planned |
 | M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | planned |
@@ -29,8 +29,8 @@ testing has been on Linux (X11 and Wayland).
 | WIN-02 | Multiple player windows, idle cores reused | done: each window has its own mpv core; idle windows are reused; "open in new window" preference |
 | WIN-03 | One window per file or grouped | partial: multi-file opens go into one playlist |
 | WIN-04 | Welcome window with resume, open, open URL, recents | partial: shown inside the idle player window; no keyboard navigation of the list yet |
-| WIN-05 | Action after launch | planned |
-| WIN-06 | Fit window to video on open | partial: 1× fit limited to 85% of the screen, timing always / on open / never; scale option and physical-resolution option planned |
+| WIN-05 | Action after launch | done: welcome screen or an Open dialog |
+| WIN-06 | Fit window to video on open | done: fit the screen, 0.5×, 1×, 1.5× or 2×; always, on open or never (physical-resolution option planned) |
 | WIN-07 | Initial geometry | planned |
 | WIN-08 | Lock window aspect ratio | planned |
 | WIN-09 | Edge-to-edge or docked controls | partial: edge-to-edge only |
@@ -41,7 +41,7 @@ testing has been on Linux (X11 and Wayland).
 | WIN-14 | Float on top | done: menu, title-bar pin, `ontop` sync, preference |
 | WIN-15 | Full screen | done: borderless full screen through the window system |
 | WIN-16 | Black out other monitors | planned |
-| WIN-17 | Full-screen auto play/pause | planned |
+| WIN-17 | Full-screen auto play/pause | partial: full screen when media opens; play/pause on entering or leaving planned |
 | WIN-18 | Pause when minimized / inactive / asleep | partial: pause when minimized (preference; not yet tested) |
 | WIN-19 | Keep open at end of file | done: `keep-open=yes` |
 | WIN-20 | Remember window position | planned |
@@ -59,14 +59,14 @@ testing has been on Linux (X11 and Wayland).
 | OSC-01 | Floating, top or bottom layout | partial: floating |
 | OSC-02 | Draggable floating panel | partial: draggable; position memory and snap-to-centre planned |
 | OSC-03 | Volume, transport, toolbar, seek row | done |
-| OSC-04 | Configurable toolbar buttons | partial: set in `settings.json` (PiP, playlist, settings, fullscreen, screenshot, subtitles); customization sheet planned |
+| OSC-04 | Configurable toolbar buttons | done: chosen in Preferences > Interface (PiP, playlist, settings, subtitles, screenshot, full screen); drag-to-reorder planned |
 | OSC-05 | Subtitle-track button menu | planned |
 | OSC-06 | Arrow buttons: speed ladder, playlist or seek | done (press-and-hold acceleration planned) |
 | OSC-07 | Auto-hide with cursor | done |
-| OSC-08 | Seek bar: cache, chapters, A-B loop, hover preview | partial: cache, chapter ticks, A-B range and hover time; thumbnails and draggable loop knobs planned |
+| OSC-08 | Seek bar: cache, chapters, A-B loop, hover preview | partial: cache, chapter ticks, A-B range, and a preview with thumbnail, time and chapter; draggable loop knobs planned |
 | OSC-09 | Elapsed / remaining toggle | done (precision menu planned) |
 | OSC-10 | Volume slider up to the maximum volume | done |
-| OSC-11 | Thumbnail preview | planned |
+| OSC-11 | Thumbnail preview | done |
 | OSC-12 | Clock and battery in full screen | planned |
 | OSC-13 | Buffering indicator | partial: spinner with percentage |
 
@@ -93,7 +93,7 @@ testing has been on Linux (X11 and Wayland).
 | PLC-05 | Drag to reorder, drop to insert | partial: move up/down buttons; drag reordering planned |
 | PLC-06 | Row context menu | planned |
 | PLC-07 | Add files from the same folder | done (mpv `autocreate-playlist=same`) |
-| PLC-08 | Auto-play next, repeat on open | partial: auto-play next |
+| PLC-08 | Auto-play next, repeat on open | partial: auto-play next (preference); repeat on open planned |
 | PLC-10 | Save playlist | partial: writes `.m3u8`; not yet tested |
 | PLC-11 | Delete current file | planned |
 | PLC-12 | Chapters tab | done |
@@ -128,16 +128,24 @@ testing has been on Linux (X11 and Wayland).
 
 ## 7. Preferences
 
-All IINA preferences are tracked by their inventory IDs (PREF-GEN, UI, VID,
-AUD, SUB, NET, CTL, KEY, ADV, UTL). Patina currently reads a subset from
-`settings.json`: multiple windows, folder auto-add, resume, history, recents
-size, pause when minimized, controller timeout, toolbar buttons, arrow
-action, chapter ticks, remaining time, OSD switch/timeout/size, window
-fitting, float on top, title bar style, hardware decoding, volume and
-maximum volume, seek and volume steps, mouse click and scroll actions,
-screenshot folder and format, yt-dlp path, and raw mpv options. A
-`mpv.conf`, `scripts/` and `fonts/` in Patina's `mpv` config folder are
-loaded (PREF-ADV-06). The preferences window itself is planned for M2.
+The preferences window has IINA's pages: General, Interface, Video, Audio,
+Subtitles, Network, Control, Key Bindings, Advanced and Utilities, with a
+search field that finds settings on any page (OTH-01). Changes are saved at
+once and applied to running players, as IINA's option observers do
+(CORE-02). Settings are tracked by their inventory IDs:
+
+| Area | Patina |
+| --- | --- |
+| PREF-GEN | done: launch action, multiple windows, start paused, full screen on open, auto-play next, keep open, folder auto-add, resume, pause when minimized, keep the screen awake, history, recent files, screenshot folder, format and subtitles. Planned: pause when inactive or asleep, grouping simultaneous opens, clipboard and screenshot preview |
+| PREF-UI | done: title bar, window fitting and size, float on top, controller timeout, arrow buttons, toolbar buttons, chapter marks, remaining time, OSD switch, timeout and size, thumbnails. Planned: theme, compact UI, controller position, initial geometry, PiP behaviour, animations |
+| PREF-VID | done: hardware decoding (off / automatic / copy-back), deinterlacing, tone mapping, target peak. Planned: ICC profiles, HDR mode |
+| PREF-AUD | done: start volume, maximum volume, device, gapless, preferred languages, ReplayGain. Planned: S/PDIF passthrough |
+| PREF-SUB | done: loading mode (mpv's matching), languages, encoding, font, size, style, colors, position, letterbox, ASS override. Planned: IINA's intelligent matching, online subtitles |
+| PREF-NET | done: cache, buffer size, buffering, user agent, proxy, RTSP transport, yt-dlp and its options |
+| PREF-CTL | done: click and scroll actions, seek mode, scroll steps, media keys. Planned: pinch and Force Touch where available |
+| PREF-KEY | done: see INP-06..08 |
+| PREF-ADV | done: load mpv.conf and scripts from the mpv folder, extra mpv options. Planned: log level and log files |
+| PREF-UTL | done: clear history, saved positions and thumbnails; open the settings folder; restore defaults. Planned: default-app registration |
 
 ## 8. Input
 
@@ -146,11 +154,11 @@ loaded (PREF-ADV-06). The preferences window itself is planned for M2.
 | INP-01..03 | input.conf format, IINA commands, key names | done: `#@iina` and `#@patina` lines, normalized keys, IINA's defaults with Ctrl in place of Command off macOS |
 | INP-04 | Dispatch through menus first | adapted: bindings are dispatched directly |
 | INP-05 | Intercepted commands | done: `quit`, `screenshot`, `show-progress`, `show-text`, `set window-scale` |
-| INP-06..08 | Readable binding list, editor, preset sets | partial: Help > Keyboard Shortcuts lists the bindings; editor and preset sets planned |
-| INP-11 | Click actions | done: single, double (with single-click delay), right, middle |
-| INP-12 | Scroll actions | done: volume and seek; speed planned |
+| INP-06..08 | Readable binding list, editor, preset sets | done: Preferences > Key Bindings lists bindings with readable names, edits them with a key recorder and common actions, and keeps user sets; the built-in set is copied on first edit. Bundled mpv/VLC/Movist presets planned |
+| INP-11 | Click actions | done: single, double (with single-click delay), right, middle; all of IINA's actions plus the menu |
+| INP-12 | Scroll actions | done: volume, seek and speed |
 | INP-13..14, 16 | Pinch, Force Touch, haptics | planned where the platform offers them |
-| INP-17 | Media keys | planned: MPRIS (Linux), SMTC (Windows), MediaPlayer (macOS) |
+| INP-17 | Media keys | done: MPRIS on Linux (tested); SMTC on Windows and MediaPlayer on macOS (written, not yet run). Media keys go through `PLAYPAUSE`/`NEXT`/... bindings when present, as in IINA |
 | KB-* | Default bindings | done: all 91 IINA defaults, adapted per platform |
 
 ## 9–10. Subtitles and filters
@@ -162,9 +170,9 @@ loaded (PREF-ADV-06). The preferences window itself is planned for M2.
 | SUB-03 | External subtitles | done: dialog, drop |
 | SUB-04..05 | Intelligent auto-matching | planned (mpv's own exact-name matching applies today) |
 | SUB-06..09 | Online subtitles | planned |
-| SUB-10 | Preferred languages | planned (mpv `slang`/`alang` work through raw mpv options) |
-| SUB-11 | Encodings | planned |
-| SUB-12..14 | Styling and font picker | planned |
+| SUB-10 | Preferred languages | done (plain text field; ISO 639 autocompletion planned) |
+| SUB-11 | Encodings | partial: default encoding preference; the per-file Encoding menu is planned |
+| SUB-12..14 | Styling and font picker | partial: font, size, bold, italic, colors, outline, shadow, position, ASS override; font picker and color wells planned |
 | FLT-01..06 | Filter windows, presets, saved filters | planned |
 | FLT-03 | Labelled internal filters | done: `@patina-flip`, `@patina-mirror`, `@patina-eq` |
 
@@ -177,11 +185,11 @@ loaded (PREF-ADV-06). The preferences window itself is planned for M2.
 | HIS-01 | Resume through watch-later | done |
 | HIS-02..03 | History window | partial: history is recorded with position and duration; the window is planned |
 | HIS-04..05 | Recent files and resume button | done |
-| HIS-06 | Clearing data | partial: Clear Menu clears history |
+| HIS-06 | Clearing data | done: Preferences > Utilities clears history, saved positions and thumbnails |
 | INS-01..05 | Inspector | planned (video and audio details show in Quick Settings) |
 | SHOT-01..02 | Screenshots | done: with or without subtitles, folder, format |
 | SHOT-03 | Preview card | planned |
-| SHOT-05 | Seek-bar thumbnails | planned |
+| SHOT-05 | Seek-bar thumbnails | done: 100 per local video from a background mpv, cached as JPEG with a size limit |
 
 ## 16–17. Network, command line, integration
 
@@ -189,7 +197,7 @@ loaded (PREF-ADV-06). The preferences window itself is planned for M2.
 | --- | --- | --- |
 | NET-01 | Open URL | done: tested with an HTTP stream (HTTP authentication planned) |
 | NET-03 | Buffering display | partial |
-| NET-04 | Cache and network preferences | planned (available through raw mpv options) |
+| NET-04 | Cache and network preferences | done |
 | NET-05 | yt-dlp | partial: mpv's `ytdl_hook` with a path preference; not yet tested |
 | NET-07 | Browser extensions | planned with the URL scheme |
 | CLI-01..02 | Command line with `--mpv-*` options | done |
@@ -207,7 +215,7 @@ few or no changes, and web views for overlays, sidebar tabs and windows.
 
 | Item | IINA | Patina |
 | --- | --- | --- |
-| PLAT-01..02 | Now Playing and remote commands | planned |
+| PLAT-01..02 | Now Playing and remote commands | partial: title, artist, album, duration, position, rate, loop and shuffle are published; artwork planned |
 | PLAT-03 | Touch Bar | not planned (discontinued hardware) |
 | PLAT-04 | Updates | planned with packaging |
 | PLAT-05..06 | Logging and log viewer | partial: `--verbose` logs Patina and mpv to stderr |

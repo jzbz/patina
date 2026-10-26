@@ -6,8 +6,9 @@ import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
 import { PromptDialog, AboutDialog, ShortcutsDialog, ShortcutItem } from "dialogs.slint";
 import { Spinner, IconButton } from "widgets.slint";
+import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
 
-export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem }
+export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow }
 
 export component PlayerWindow inherits Window {
     title: Playback.has-media ? Playback.title : "Patina";
@@ -83,6 +84,12 @@ export component PlayerWindow inherits Window {
             }
         } else if action == "context-menu" {
             menu.show({ x: video-touch.mouse-x, y: video-touch.mouse-y });
+        } else if action == "pip" {
+            Actions.patina("toggle-pip");
+        } else if action == "ab-loop" {
+            Actions.mpv(["ab-loop"]);
+        } else if action == "reset-speed" {
+            Actions.set("speed", "1");
         }
     }
 

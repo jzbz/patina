@@ -7,6 +7,8 @@ feature parity with IINA on all three platforms.
 
 ![Patina playing a video, with the floating controller](docs/images/player.png)
 
+![The preferences window](docs/images/preferences.png)
+
 Patina is at an early stage. Playback, the IINA-style window and controls,
 the sidebars, menus, key bindings and history work today; much of IINA is
 still to come. [docs/parity.md](docs/parity.md) tracks every IINA feature
@@ -20,8 +22,9 @@ and its state in Patina.
   that fade out together, a draggable controller, and a welcome view with
   resume, open and recent files
 - The controller: volume, play/pause, IINA's speed-ladder arrow buttons,
-  toolbar buttons, a seek bar with buffered range, chapter ticks, A-B loop
-  range and a time preview
+  toolbar buttons, a seek bar with buffered range, chapter ticks and A-B
+  loop range, and a hover preview with a thumbnail, the time and the chapter
+  (thumbnails are made in the background and cached)
 - On-screen messages for volume, seeking, speed, delays, tracks, loops,
   chapters and video adjustments
 - The playlist and chapters sidebar, with other files from the same folder
@@ -32,10 +35,15 @@ and its state in Patina.
   (primary and secondary tracks, external files, delay, scale, position)
 - An application menu (right click, or the title bar's menu button) with
   IINA's File, Playback, Video, Audio, Subtitles, Window and Help menus
-- Key bindings in mpv's `input.conf` format with IINA's defaults; IINA's
-  `#@iina` lines work as-is
+- A preferences window with IINA's pages and a search field; changes
+  apply to running players immediately
+- Key bindings in mpv's `input.conf` format with IINA's defaults, edited in
+  the preferences with a key recorder; IINA's `#@iina` lines work as-is
+- Media keys and the desktop's player controls (MPRIS on Linux; the
+  Windows and macOS equivalents are written but not yet tested)
 - Mouse actions: click, double click, right and middle click, and the
-  scroll wheel for volume and seeking, as in IINA's control preferences
+  scroll wheel for volume, seeking or speed, as in IINA's control
+  preferences
 - Several windows at once, each with its own player
 - Keeping the screen awake during playback
 - Resuming where you left off, history, screenshots, URLs and network
@@ -108,6 +116,7 @@ Help > Keyboard Shortcuts lists all of them.
 | Shift+Z / Shift+X, Shift+C | Subtitle delay, reset |
 | ( / ), _ | Audio delay, reset |
 | Ctrl+J | Jump to a time |
+| Ctrl+, | Preferences |
 | Ctrl+W, Ctrl+Q | Close the window, quit |
 
 With the mouse: double click toggles full screen, a click shows or hides the
@@ -123,11 +132,11 @@ drag the controller to move it.
 | macOS | `~/Library/Application Support/io.github.jzbz.Patina` | same |
 | Windows | `%APPDATA%\jzbz\Patina\config` | `%APPDATA%\jzbz\Patina\data` |
 
-- `settings.json` holds the preferences; any key left out takes its default
-  (see `src/settings.rs`). A preferences window is planned.
-- `input.conf`, if present, replaces the default key bindings. It uses
-  mpv's syntax; lines like `#@patina Ctrl+o open-file` (or IINA's
-  `#@iina ...`) run Patina actions.
+- `settings.json` holds the preferences (Ctrl+, opens the window that
+  edits them); any key left out takes its default.
+- `input_conf/` holds your key binding sets, one `.conf` file each in mpv's
+  syntax. Lines like `#@patina Ctrl+o open-file` (or IINA's `#@iina ...`)
+  run Patina actions, so IINA's binding files can be copied in as they are.
 - An `mpv` folder holds mpv's own `mpv.conf`, `scripts/`, `script-opts/`
   and `fonts/`.
 
