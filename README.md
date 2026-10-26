@@ -63,7 +63,9 @@ when minimized.
 ## Requirements
 
 - Rust 1.99.1, which `rust-toolchain.toml` selects automatically
-- libmpv with client API 2 (mpv 0.35 or newer; developed against 0.41)
+- libmpv from mpv 0.39 or newer, built with Lua (developed against 0.41).
+  Ubuntu 26.04 and Debian 13 ship a recent enough one; Ubuntu 24.04 (0.37)
+  and Debian 12 (0.35) are too old
 - OpenGL 3 or OpenGL ES 3 (mpv's minimum is OpenGL 2.1 or ES 2.0)
 
 Patina loads libmpv when it starts rather than linking to it, so building
@@ -76,15 +78,18 @@ system search path, and on macOS in Homebrew's and MacPorts' prefixes.
 
 Install mpv from your distribution (Arch: `mpv`; Debian and Ubuntu:
 `libmpv2`). Building the interface also needs `pkg-config` and the
-fontconfig and xkbcommon development files (Debian and Ubuntu:
-`libfontconfig-dev libxkbcommon-dev`). Wayland and X11 both work.
+fontconfig development files (Debian and Ubuntu: `libfontconfig-dev`).
+Wayland and X11 both work.
 
 ### macOS and Windows
 
-Patina has not been run on macOS or Windows yet; the code compiles for both. On macOS, Homebrew's
-`mpv` provides libmpv. On Windows, put `libmpv-2.dll` (for example from the
-`mpv-dev` archives at [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake/releases))
-beside `patina.exe`.
+CI builds Patina and runs its tests on both, but the player itself has not
+been run there yet. On macOS, Homebrew's `mpv` provides libmpv. On Windows,
+put `libmpv-2.dll` beside `patina.exe`, for example from an `mpv-dev`
+archive of [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild/releases)
+or [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake/releases).
+Those builds also need `vulkan-1.dll`, which mpv's own Windows release ships
+beside `mpv.exe`.
 
 ## Building and running
 

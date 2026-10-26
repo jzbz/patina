@@ -252,6 +252,7 @@ pub fn api() -> Result<&'static Api, String> {
 }
 
 fn load() -> Result<Api, String> {
+    let explicit = std::env::var_os("PATINA_LIBMPV").map(PathBuf::from);
     let mut tried = Vec::new();
     for candidate in library_candidates() {
         // SAFETY: loading libmpv runs only its library constructors, which have
@@ -281,6 +282,15 @@ fn load() -> Result<Api, String> {
                     version & 0xffff
                 );
                 return Ok(api);
+            }
+            // A library named explicitly is the one wanted: falling back on
+            // another copy would hide why it didn't load (a missing
+            // dependency, say).
+            Err(error) if explicit.as_ref() == Some(&candidate) => {
+                return Err(format!(
+                    "could not load PATINA_LIBMPV ({}): {error}",
+                    candidate.display()
+                ));
             }
             Err(error) => tried.push(format!("{}: {error}", candidate.display())),
         }

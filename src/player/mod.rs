@@ -45,9 +45,17 @@ impl Player {
     ) -> Result<(Player, async_channel::Receiver<Vec<Event>>), String> {
         let builder = Mpv::builder()?;
         let set = |name: &str, value: Value| {
-            builder
-                .set_option(name, value)
-                .map_err(|error| format!("could not set mpv option: {error}"))
+            builder.set_option(name, value).map_err(|error| {
+                // MPV_ERROR_OPTION_NOT_FOUND: an old libmpv, or one built
+                // without Lua, which is what provides `osc`.
+                if error.code == -5 {
+                    format!(
+                        "this libmpv has no `{name}` option: Patina needs mpv 0.39 or newer, built with Lua"
+                    )
+                } else {
+                    format!("could not set mpv option: {error}")
+                }
+            })
         };
 
         if let Some(dir) = &options.config_dir {
@@ -82,6 +90,11 @@ impl Player {
             "start,vid,aid,sid,secondary-sid,audio-delay,sub-delay,speed,volume,mute,video-rotate,video-aspect-override,deinterlace,ab-loop-a,ab-loop-b"
                 .into(),
         )?;
+        // Not needed at this value (the preferences set the real one below),
+        // but mpv 0.39 is the oldest with it, so an older libmpv fails here
+        // with the message above rather than starting with folder playlists,
+        // playlist durations and subtitle outlines quietly missing.
+        set("autocreate-playlist", "no".into())?;
         set("terminal", options.verbose.into())?;
         if options.verbose {
             set("msg-level", "all=v".into())?;
@@ -235,6 +248,28 @@ fn log_mpv_message(message: &crate::mpv::LogMessage) {
 mod tests {
     use super::*;
     use crate::mpv::Node;
+
+    #[test]
+    fn the_core_starts_with_the_default_options() {
+        // Every option Player::start insists on exists in this libmpv; the
+        // preferences' options are checked by the settings tests.
+        if crate::mpv::testing::headless().is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("patina-core-{}", std::process::id()));
+        let options = CoreOptions {
+            watch_later_dir: dir.join("watch-later"),
+            options: crate::settings::Preferences::default()
+                .mpv_options()
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+            ..Default::default()
+        };
+        let (mut player, _events) = Player::start(&options).unwrap();
+        player.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn change(userdata: u64, value: f64) -> Event {
         Event::PropertyChange {

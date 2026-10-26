@@ -134,6 +134,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("tone.mka");
         let made = std::process::Command::new("ffmpeg")
+            .stdin(std::process::Stdio::null())
             .args([
                 "-loglevel",
                 "error",
@@ -148,7 +149,7 @@ mod tests {
             .status()
             .is_ok_and(|status| status.success());
         if !made {
-            eprintln!("skipping: needs ffmpeg");
+            crate::mpv::testing::skip("PATINA_TEST_REQUIRE_FFMPEG", "needs ffmpeg");
             return;
         }
         let (prober, results) = Prober::start();

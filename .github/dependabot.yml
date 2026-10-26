@@ -1,0 +1,30 @@
+version: 2
+
+# GitHub Actions only, deliberately.
+#
+# ci.yml pins its actions by commit SHA, which makes them immutable and also
+# lets them go stale silently, security fixes included: nothing about a SHA
+# says it is out of date. Dependabot is the other half of that decision. It
+# raises each bump as a pull request with the release notes attached, and
+# rewrites the "# vX.Y.Z" comment beside the SHA as long as the comment ends
+# with the version.
+#
+# Not covered: the Windows downloads pinned by digest in ci.yml's `env`, which
+# no Dependabot ecosystem reads. They are bumped by hand, as described there.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # A week before taking a new release, so one pulled for being
+    # compromised or broken is gone before it is proposed here.
+    cooldown:
+      default-days: 7
+    # actions/cache/restore and actions/cache/save are pinned as separate
+    # dependencies, so without a group they would arrive as two pull requests
+    # that each leave the other half on the old SHA.
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

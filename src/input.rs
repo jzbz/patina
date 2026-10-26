@@ -654,7 +654,12 @@ mod tests {
         assert_eq!(label("Ctrl+O"), "Ctrl+Shift+O");
         assert_eq!(label("Z"), "Shift+Z");
         assert_eq!(label("("), "(");
-        assert_eq!(label("Alt+LEFT"), "Alt+←");
+        let alt = if cfg!(target_os = "macos") {
+            "Option+←"
+        } else {
+            "Alt+←"
+        };
+        assert_eq!(label("Alt+LEFT"), alt);
     }
 
     #[test]

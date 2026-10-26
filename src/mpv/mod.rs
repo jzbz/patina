@@ -629,12 +629,22 @@ pub(crate) mod testing {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// Ends a test early for want of `what`, unless the environment
+    /// variable `require` is 1, as CI sets it: then the test fails, so a
+    /// missing libmpv or ffmpeg can't pass for a green run.
+    pub fn skip(require: &str, what: &str) {
+        if std::env::var_os(require).is_some_and(|value| value == "1") {
+            panic!("{what} ({require}=1)");
+        }
+        eprintln!("skipping: {what}");
+    }
+
     /// A headless core, or None when libmpv is not installed.
     pub fn headless() -> Option<Mpv> {
         let builder = match Mpv::builder() {
             Ok(builder) => builder,
             Err(error) => {
-                eprintln!("skipping: {error}");
+                skip("PATINA_TEST_REQUIRE_MPV", &error);
                 return None;
             }
         };

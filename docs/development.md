@@ -10,9 +10,15 @@ explains the design.
 ## Build and verify
 
 - The toolchain is pinned in `rust-toolchain.toml`; rustup installs it on
-  first use. libmpv (client API 2) must be installed to run Patina or the
-  mpv-backed tests, but not to build it.
+  first use. libmpv (mpv 0.39 or newer, built with Lua) must be installed
+  to run Patina or the mpv-backed tests, but not to build it.
 - `cargo test`: unit tests, plus tests against a real headless mpv core.
+  Tests that need libmpv or ffmpeg skip without them; set
+  `PATINA_TEST_REQUIRE_MPV=1` and `PATINA_TEST_REQUIRE_FFMPEG=1` to make
+  them fail instead, as CI does.
+- CI (`.github/workflows/ci.yml`) runs formatting, clippy, a build and the
+  tests on Ubuntu 26.04, macOS and Windows. Its header comments explain each
+  choice, including how to bump the Windows libmpv pin.
 - `cargo clippy --all-targets -- -D warnings` must stay clean.
 - `cargo fmt` after editing Rust.
 - `cargo build` also compiles the Slint UI (`build.rs`); Slint errors show
@@ -50,6 +56,11 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
 - `src/preferences/`: the preferences window; `schema.rs` lists every
   setting.
 - `src/thumbnails.rs`: seek-bar thumbnails from a headless mpv core.
+- `src/probe.rs`: playlist durations and tags from a headless mpv core.
+- `src/subtitle_match.rs`: finding the subtitle files that belong to a
+  video.
+- `src/history.rs`, `src/inspector.rs`: the playback history and inspector
+  windows.
 - `src/media_controls/`: MPRIS, SMTC and MediaPlayer integration.
 - `src/inhibit.rs`: keeping the screen awake during playback.
 - `src/cli.rs`, `src/util.rs`, `src/platform.rs`.

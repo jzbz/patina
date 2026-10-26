@@ -192,8 +192,13 @@ user's binding for it (`PLAYPAUSE`, `NEXT`, ...) when one exists.
 
 ## Testing
 
-- `cargo test` runs unit tests, plus tests that drive a real headless mpv
-  core (`vo=null`, `ao=null`); those are skipped when libmpv is missing.
+- `cargo test` runs unit tests, plus tests that drive real mpv cores with no
+  window and no audio output; those are skipped when libmpv is missing,
+  unless `PATINA_TEST_REQUIRE_MPV=1` (and `PATINA_TEST_REQUIRE_FFMPEG=1` for
+  the ones that make clips with ffmpeg) turns a skip into a failure. CI sets
+  both on Linux, macOS and Windows.
+- A test starts a full player core with the default options, so a libmpv
+  older than Patina's minimum (mpv 0.39) fails a test, not only the app.
 - Tests also check that every preference-driven mpv option is accepted by
   mpv, that the schema matches `Preferences`, and that thumbnails are made
   and cached for a generated clip (when ffmpeg is installed).

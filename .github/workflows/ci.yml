@@ -1,0 +1,335 @@
+# Formatting, lints, a build and the whole test suite on Linux, macOS and
+# Windows.
+#
+# Until this workflow Patina had only ever run on a Linux desktop. macOS and
+# Windows were known to compile, through `cargo clippy --target`, which proves
+# nothing about linking and less about behaviour. Each job here builds natively
+# and runs the tests against a real libmpv and ffmpeg.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to a pull request makes its check pointless, so it replaces
+# it. Each push to master gets a group of its own instead, so every commit
+# there gets a result, and the runs that save the caches every other run
+# starts from are never cut short.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
+# Read-only, and written here rather than left to the repository's default,
+# which can change without this file changing. The jobs run the build scripts
+# of every dependency and all of the test code, and nothing they do needs to
+# write. For the same reason the checkout leaves no credential on disk.
+#
+# Actions are pinned by commit SHA, not by tag: a tag is mutable, so whoever
+# controls the action's repository could change what runs here after the
+# fact. Dependabot keeps the SHAs current (.github/dependabot.yml).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Both for the size of each job's cache, all of which has to fit in the
+  # repository's 10 GB. Incremental state only speeds up rebuilding Patina
+  # itself against the run that saved it; line tables still give a backtrace
+  # a file and line for each frame.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # The tests that need libmpv or ffmpeg skip when either is missing, which is
+  # a convenience on a developer's machine and here would be a green run that
+  # tested no playback code at all. Set to 1, they fail instead.
+  PATINA_TEST_REQUIRE_MPV: "1"
+  PATINA_TEST_REQUIRE_FFMPEG: "1"
+  # Windows has no package of libmpv, so the job downloads these, each pinned
+  # by digest; GitHub release assets are not immutable.
+  #
+  # libmpv: zhongfly/mpv-winbuild's LGPL build, the library a Windows package
+  # of Patina would bundle. It is a snapshot of mpv's master branch, and
+  # zhongfly deletes releases after about 30 days, so this URL stops working
+  # around late November. The download cache below keeps the job going for as
+  # long as master runs at least once a week; once it has gone cold, bump the
+  # pin to a release at least a day old (zhongfly replaces a same-day rebuild
+  # under the same tag):
+  #   gh api repos/zhongfly/mpv-winbuild/releases --jq '.[] | .assets[] | select(.name | test("^mpv-dev-lgpl-x86_64-[0-9]")) | "\(.browser_download_url) \(.digest | ltrimstr("sha256:"))"'
+  WIN_LIBMPV_URL: https://github.com/zhongfly/mpv-winbuild/releases/download/2026-10-25-baa3e11d42/mpv-dev-lgpl-x86_64-20261025-git-baa3e11d42.7z
+  WIN_LIBMPV_SHA256: 6429ebba4b6bfc5dd18ac5ac084f00776db0db4e767ef1bfb815fc78ec5bda2a
+  # vulkan-1.dll: libmpv-2.dll imports it directly (no delay load), and a
+  # runner without a GPU driver has none, so the DLL would fail to load. This
+  # is mpv's own 0.41.0 release for Windows, which ships the loader beside
+  # mpv.exe; its copy needs only system DLLs.
+  WIN_VULKAN_URL: https://github.com/mpv-player/mpv/releases/download/v0.41.0/mpv-v0.41.0-x86_64-pc-windows-msvc.zip
+  WIN_VULKAN_SHA256: 4e197f729f5071c6772f35fffd96e0f36e3e8a044bd9479b136bb09b7c6a80ff
+  # ffmpeg: Gyan's "essentials" release build, which includes libx264 (the
+  # thumbnail test encodes with it). Gyan keeps release tags.
+  WIN_FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.7z
+  WIN_FFMPEG_SHA256: 4705843ccaaf54257c16ad90f3e952ece33c17df964ecf7bfdbb0f49c7171077
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # Well above a cold build on the slowest runner. A run still going at an
+    # hour is wedged, not busy; GitHub's own ceiling is six.
+    timeout-minutes: 60
+    strategy:
+      # One platform failing should not hide what the others would have said.
+      fail-fast: false
+      matrix:
+        # ubuntu-26.04 rather than ubuntu-latest: the label is moving from
+        # 24.04 to 26.04 until 2026-11-19, and 24.04's libmpv (mpv 0.37) is
+        # older than Patina supports, so the floating label would test a
+        # different mpv from one run to the next. 26.04 ships mpv 0.41.
+        os: [ubuntu-26.04, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the compiler, which the images don't ship
+      # under that name, so this installs it with the file's components.
+      # --no-self-update keeps rustup itself as the image has it.
+      #
+      # The version goes into the cache key below: cargo rebuilds what another
+      # rustc compiled rather than reuse it. `shell: bash` brings pipefail.
+      - name: Toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --no-self-update
+          rustc -Vv
+          v=$(rustc -V | tr -cs '[:alnum:].' '-')
+          echo "rustc=${v%-}" >> "$GITHUB_OUTPUT"
+
+      # fontconfig is the one library the build needs: Slint finds fonts with
+      # it, and yeslogic-fontconfig-sys's build script fails the build if
+      # pkg-config can't find it. libmpv2 and ffmpeg are for the tests.
+      # --no-install-recommends leaves out yt-dlp, which libmpv2 recommends.
+      #
+      # apt has no wall-clock bound of its own: its timeout is an inactivity
+      # timer that every arriving byte resets, so a mirror that accepts the
+      # connection and then goes quiet holds it open indefinitely. The
+      # runners' mirrors do this (actions/runner-images#15040: `apt-get
+      # update` silent for over a quarter of an hour), so the bound comes from
+      # outside apt.
+      - name: libmpv, ffmpeg and fontconfig (Linux)
+        if: runner.os == 'Linux'
+        # Backstop above the loop's worst case, so its own message is what
+        # fails rather than a bare step timeout.
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          opts=(
+            -o Acquire::Retries=2
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            -o Acquire::Languages=none
+          )
+          attempts=2
+          for attempt in $(seq 1 $attempts); do
+            rc=0
+            # `sudo timeout`, not `timeout sudo`: the kill has to reach
+            # apt-get, or it orphans one still holding the lists lock. The
+            # variable goes inside sudo because sudoers resets the environment.
+            sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
+              apt-get "${opts[@]}" update || rc=$?
+            # A failed update usually means the install would 404 on a stale
+            # index, but on the last attempt try anyway: the image ships
+            # lists, and these packages come from the release pocket.
+            if [ "$rc" -eq 0 ] || [ "$attempt" -eq "$attempts" ]; then
+              rc=0
+              sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 300s \
+                apt-get "${opts[@]}" install -y --no-install-recommends \
+                libfontconfig-dev libmpv2 ffmpeg || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=10s 60s \
+                  dpkg --configure -a || true
+              fi
+            fi
+            if [ "$rc" -eq 0 ]; then
+              dpkg-query -W libmpv2 ffmpeg libfontconfig-dev
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed with $rc (124 = timed out, 137 = had to be killed)"
+            if [ "$attempt" -lt "$attempts" ]; then
+              sleep 5
+            fi
+          done
+          echo "::error::apt failed twice; see the warnings above"
+          exit 1
+
+      # One formula gives both: mpv depends on ffmpeg, whose Homebrew build
+      # includes libx264. Patina's loader finds /opt/homebrew/lib/libmpv.2.dylib
+      # by itself, which is the point: nothing here tells it where to look.
+      # The image already turns Homebrew's auto-update off; the variables say
+      # so where it matters rather than relying on the image.
+      - name: libmpv and ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 10
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
+        run: |
+          brew install mpv || { sleep 30; brew install mpv; }
+          brew list --versions mpv ffmpeg
+          ls -l "$(brew --prefix)/lib/libmpv.2.dylib"
+          command -v ffmpeg
+
+      # The downloads are cached by digest, so a pin bump downloads afresh and
+      # an unchanged pin survives its asset being deleted upstream.
+      - name: Restore the Windows downloads
+        if: runner.os == 'Windows'
+        id: downloads
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/downloads
+          key: windows-downloads-${{ env.WIN_LIBMPV_SHA256 }}-${{ env.WIN_VULKAN_SHA256 }}-${{ env.WIN_FFMPEG_SHA256 }}
+
+      - name: Download libmpv, vulkan-1.dll and ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'downloads'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $pins = @(
+            @{ Url = $env:WIN_LIBMPV_URL; Sha256 = $env:WIN_LIBMPV_SHA256 },
+            @{ Url = $env:WIN_VULKAN_URL; Sha256 = $env:WIN_VULKAN_SHA256 },
+            @{ Url = $env:WIN_FFMPEG_URL; Sha256 = $env:WIN_FFMPEG_SHA256 }
+          )
+          foreach ($pin in $pins) {
+            $url = $pin.Url
+            $sha256 = $pin.Sha256
+            $file = Join-Path $dir ([IO.Path]::GetFileName($url))
+            if (-not (Test-Path -LiteralPath $file)) {
+              curl.exe -fsSL --retry 3 -o $file $url
+              if ($LASTEXITCODE -ne 0) {
+                throw "could not download $url; if it was deleted upstream, bump its pin in ci.yml"
+              }
+            }
+            $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
+            if ($got -ne $sha256) {
+              throw "SHA256 mismatch for $url`n expected $sha256`n got      $got"
+            }
+          }
+
+      # The digest proves these are the bytes that were pinned; this proves
+      # they came from zhongfly's own workflow on a GitHub-hosted runner. It
+      # matters when the pin moves, which is when the cache misses.
+      - name: Check libmpv's build provenance (Windows)
+        if: runner.os == 'Windows' && steps.downloads.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $file = Join-Path $env:RUNNER_TEMP ('downloads\' + [IO.Path]::GetFileName($env:WIN_LIBMPV_URL))
+          gh attestation verify $file --repo zhongfly/mpv-winbuild `
+            --signer-workflow zhongfly/mpv-winbuild/.github/workflows/mpv.yml `
+            --deny-self-hosted-runners
+          if ($LASTEXITCODE -ne 0) { throw "libmpv's attestation did not verify" }
+
+      # Saved straight away, not at the end of the job, so a red test run
+      # still keeps the downloads. Only from master, whose cache every branch
+      # and pull request can restore.
+      - name: Save the Windows downloads
+        if: runner.os == 'Windows' && github.ref == 'refs/heads/master' && steps.downloads.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/downloads
+          key: ${{ steps.downloads.outputs.cache-primary-key }}
+
+      # PATINA_LIBMPV names the DLL, since the test binary runs from
+      # target\debug\deps, where nothing is beside it. Its directory also goes
+      # on PATH for vulkan-1.dll: Windows looks for a DLL's own imports along
+      # the normal search path, not in the directory it was loaded from.
+      - name: Install libmpv and ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'downloads'
+          $lib = Join-Path $env:RUNNER_TEMP 'libmpv'
+          $bin = Join-Path $env:RUNNER_TEMP 'ffmpeg'
+          function Extract($url, $out, $name) {
+            $archive = Join-Path $dir ([IO.Path]::GetFileName($url))
+            7z e -y -r -bso0 -bsp0 "-o$out" $archive $name
+            if ($LASTEXITCODE -ne 0) { throw "7z could not extract $name from $archive" }
+            if (-not (Test-Path -LiteralPath (Join-Path $out $name))) { throw "$name is not in $archive" }
+          }
+          Extract $env:WIN_LIBMPV_URL $lib 'libmpv-2.dll'
+          Extract $env:WIN_VULKAN_URL $lib 'vulkan-1.dll'
+          Extract $env:WIN_FFMPEG_URL $bin 'ffmpeg.exe'
+          Add-Content -Path $env:GITHUB_ENV -Value "PATINA_LIBMPV=$(Join-Path $lib 'libmpv-2.dll')"
+          Add-Content -Path $env:GITHUB_PATH -Value $lib
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          # Read in full: cutting the output short could leave a nonzero
+          # exit code, which pwsh makes the step's.
+          $version = & (Join-Path $bin 'ffmpeg.exe') -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw "ffmpeg.exe does not run" }
+          $version[0]
+
+      # Restored under its exact key or not at all. Falling back on an older
+      # entry and saving the two together grows target/ by every dependency
+      # that moved, and one run's entries can then pass the repository's
+      # 10 GB. So a miss builds from nothing: on master once per compiler,
+      # per change to Cargo.lock or the manifest, and per change to the `env`
+      # above that alters the build, which the key names. Bump the v1 when
+      # this file changes the build some other way. A pull request that
+      # moves any of these builds cold on every push, since only master
+      # saves.
+      - name: Restore the build cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-v1-${{ steps.toolchain.outputs.rustc }}-incremental${{ env.CARGO_INCREMENTAL }}-debug-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+
+      - name: Formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      # Warnings are errors because the tree is at zero, and that only stays
+      # true if letting one through fails the build. Run on every platform:
+      # each one compiles code behind its own cfg that no other job sees.
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # A real link of the binary: clippy never links, and `cargo test` builds
+      # only the test harness, which on Linux doesn't even link fontconfig.
+      - name: Build
+        id: build
+        run: cargo build --locked
+
+      - name: Test
+        run: cargo test --locked
+
+      # Only from master, and only when the restore missed: on a hit the entry
+      # is already what this job would save. Kept when the tests fail, since
+      # the build they ran on is sound, so fixing them doesn't mean a cold
+      # build each time.
+      - name: Save the build cache
+        if: >-
+          !cancelled() && steps.build.outcome == 'success'
+          && github.ref == 'refs/heads/master' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}

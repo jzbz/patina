@@ -366,7 +366,7 @@ fn similarity(a: &str, b: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mpv::testing::{headless, wait_for};
+    use crate::mpv::testing::{headless, skip, wait_for};
     use crate::mpv::{Event, Node};
 
     fn paths(names: &[&str]) -> Vec<PathBuf> {
@@ -502,13 +502,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let video = dir.join("Clip.S01E03.mkv");
         let made = std::process::Command::new("ffmpeg")
+            .stdin(std::process::Stdio::null())
             .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i"])
             .args(["testsrc=duration=2:size=64x48:rate=10"])
             .arg(&video)
             .status()
             .is_ok_and(|status| status.success());
         if !made {
-            eprintln!("skipping: needs ffmpeg");
+            skip("PATINA_TEST_REQUIRE_FFMPEG", "needs ffmpeg");
             return;
         }
         let cue = "1\n00:00:00,000 --> 00:00:02,000\nHello\n";
@@ -542,6 +543,8 @@ mod tests {
                 })
                 .collect()
         };
+        // The runner's own UI language must not pick the subtitle.
+        mpv.set_property("subs-match-os-language", false).unwrap();
         mpv.hook_add(7, "on_load", 0).unwrap();
         let english = subtitles(&[]);
         mpv.set_property("slang", "ja").unwrap();

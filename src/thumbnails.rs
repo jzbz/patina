@@ -443,14 +443,19 @@ mod tests {
         // A short clip made on the fly, so the test needs no fixtures.
         crate::mpv::testing::headless()?;
         let path = dir.join("clip.mkv");
-        let status = std::process::Command::new("ffmpeg")
+        let made = std::process::Command::new("ffmpeg")
+            .stdin(std::process::Stdio::null())
             .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i"])
             .arg("testsrc2=size=320x180:rate=10:duration=6")
             .args(["-c:v", "libx264", "-g", "5", "-pix_fmt", "yuv420p"])
             .arg(&path)
             .status()
-            .ok()?;
-        status.success().then_some(path)
+            .is_ok_and(|status| status.success());
+        if !made {
+            crate::mpv::testing::skip("PATINA_TEST_REQUIRE_FFMPEG", "needs ffmpeg with libx264");
+            return None;
+        }
+        Some(path)
     }
 
     #[test]
@@ -458,7 +463,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("patina-thumbs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let Some(path) = test_video(&dir) else {
-            eprintln!("skipping: needs libmpv and ffmpeg");
+            let _ = std::fs::remove_dir_all(&dir);
             return;
         };
         let request = || Request {
