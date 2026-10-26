@@ -13,7 +13,17 @@ pub struct Paths {
 
 impl Paths {
     pub fn discover() -> Self {
-        let dirs = directories::ProjectDirs::from("io.github", "jzbz", "Patina");
+        // Each platform's own convention, after patina.video: a reverse-DNS
+        // name on macOS (video.patina.Patina), the application's name on
+        // Windows (%APPDATA%\Patina), lower case on Linux (~/.config/patina).
+        let name = if cfg!(target_os = "macos") {
+            crate::APP_ID
+        } else if cfg!(windows) {
+            "Patina"
+        } else {
+            "patina"
+        };
+        let dirs = directories::ProjectDirs::from_path(PathBuf::from(name));
         let config = std::env::var_os("PATINA_CONFIG_DIR")
             .map(PathBuf::from)
             .or_else(|| dirs.as_ref().map(|dirs| dirs.config_dir().to_path_buf()))

@@ -1,6 +1,6 @@
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Platform } from "globals.slint";
+import { Platform, Actions } from "globals.slint";
 import { TextButton } from "widgets.slint";
 
 export struct ShortcutItem {
@@ -148,6 +148,13 @@ export component AboutDialog inherits Modal {
         HorizontalLayout {
             alignment: center;
             padding-top: 6px;
+            spacing: 8px;
+            TextButton {
+                text: "Website";
+                clicked => {
+                    Actions.patina("open-website");
+                }
+            }
             TextButton {
                 text: "Close";
                 clicked => {

@@ -80,7 +80,7 @@ fn track_path(now: &NowPlaying) -> String {
     if now.status == Status::Stopped && now.title.is_empty() {
         NO_TRACK.into()
     } else {
-        format!("/io/github/jzbz/patina/track/{}", now.track)
+        format!("/video/patina/Patina/track/{}", now.track)
     }
 }
 
@@ -216,7 +216,7 @@ impl Root {
 
     #[zbus(property)]
     fn desktop_entry(&self) -> String {
-        "patina".into()
+        crate::APP_ID.into()
     }
 
     #[zbus(property)]

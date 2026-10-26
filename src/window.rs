@@ -1415,7 +1415,7 @@ impl PlayerController {
                     crate::platform::reveal(std::path::Path::new(&path));
                 }
             }
-            "open-website" => crate::platform::open_url("https://github.com/jzbz/patina"),
+            "open-website" => crate::platform::open_url(crate::WEBSITE),
             "save-playlist" => app.save_playlist_dialog(self),
             "clear-playlist" => self.player().command(&["playlist-clear"]),
             "clear-recent" => app.clear_history(),

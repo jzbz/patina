@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.99"
 description = "A modern media player for Linux, macOS and Windows, powered by mpv"
 license = "MIT"
+homepage = "https://patina.video/"
 repository = "https://github.com/jzbz/patina"
 build = "build.rs"
 

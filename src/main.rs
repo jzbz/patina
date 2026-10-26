@@ -24,6 +24,13 @@ use std::process::ExitCode;
 
 slint::include_modules!();
 
+/// Patina's website, from Cargo.toml.
+pub const WEBSITE: &str = env!("CARGO_PKG_HOMEPAGE");
+/// Patina's application ID: patina.video, reversed, plus the name. It names
+/// the settings folder on macOS, and the desktop entry the system media
+/// controls point at on Linux.
+pub const APP_ID: &str = "video.patina.Patina";
+
 fn main() -> ExitCode {
     let options = match cli::parse(std::env::args().skip(1)) {
         Ok(cli::Command::Run(options)) => options,

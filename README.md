@@ -1,5 +1,7 @@
 # Patina
 
+[patina.video](https://patina.video/)
+
 Patina is a media player for Linux, macOS and Windows, written in Rust with a
 [Slint](https://slint.dev) interface on top of [mpv](https://mpv.io). It
 follows [IINA](https://iina.io)'s design and behaviour, and its goal is
@@ -142,8 +144,8 @@ drag the controller to move it.
 | Platform | Settings | Data (history, resume positions) |
 | --- | --- | --- |
 | Linux | `~/.config/patina` | `~/.local/share/patina` |
-| macOS | `~/Library/Application Support/io.github.jzbz.Patina` | same |
-| Windows | `%APPDATA%\jzbz\Patina\config` | `%APPDATA%\jzbz\Patina\data` |
+| macOS | `~/Library/Application Support/video.patina.Patina` | same |
+| Windows | `%APPDATA%\Patina\config` | `%APPDATA%\Patina\data` |
 
 - `settings.json` holds the preferences (Ctrl+, opens the window that
   edits them); any key left out takes its default.
