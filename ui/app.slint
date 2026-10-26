@@ -1,0 +1,417 @@
+import { Theme } from "theme.slint";
+import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem } from "globals.slint";
+import { ControlBar, TitleBar, OsdView, SeekPreview } from "controls.slint";
+import { Sidebar } from "sidebar.slint";
+import { MainMenu } from "menus.slint";
+import { WelcomeView } from "welcome.slint";
+import { PromptDialog, AboutDialog, ShortcutsDialog, ShortcutItem } from "dialogs.slint";
+import { Spinner, IconButton } from "widgets.slint";
+
+export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem }
+
+export component PlayerWindow inherits Window {
+    title: Playback.has-media ? Playback.title : "Patina";
+    icon: @image-url("icons/patina.svg");
+    background: black;
+    no-frame: Platform.custom-titlebar;
+    resize-border-width: Platform.custom-titlebar && !root.full-screen && !root.maximized ? 6px : 0px;
+    min-width: 360px;
+    min-height: 220px;
+    preferred-width: 960px;
+    preferred-height: 600px;
+    default-font-size: Theme.font-normal;
+    always-on-top: root.float-on-top;
+
+    in-out property <bool> float-on-top;
+    // The compact always-on-top window that stands in for picture-in-picture.
+    in-out property <bool> pip;
+    in-out property <bool> sidebar-open;
+    in-out property <string> sidebar-tab: "playlist";
+    in-out property <bool> controls-visible: true;
+    in-out property <bool> drop-active;
+    // "", "open-url", "add-url", "jump-to", "about", "shortcuts".
+    in-out property <string> dialog;
+    in-out property <string> dialog-text;
+    in property <[ShortcutItem]> shortcuts;
+    in property <string> error;
+    in-out property <length> osc-offset-x;
+    in-out property <length> osc-offset-y;
+    // Set while a dialog or menu needs the pointer, so controls stay put.
+    property <bool> keep-controls: !Playback.has-media || root.dialog != "" || osc-hover.has-hover || root.title-hovered || osc.seek-hovering;
+    property <bool> title-hovered;
+    property <bool> show-chrome: root.controls-visible || root.keep-controls;
+    property <string> pending-click;
+
+    callback dialog-confirmed(string, string);
+
+    public function show-controls() {
+        root.controls-visible = true;
+        hide-timer.restart();
+    }
+
+    public function toggle-sidebar(tab: string) {
+        let same-group = (tab == "playlist" || tab == "chapters") == (root.sidebar-tab == "playlist" || root.sidebar-tab == "chapters");
+        if root.sidebar-open && (tab == root.sidebar-tab || (tab == "settings" && same-group)) {
+            root.sidebar-open = false;
+        } else {
+            if tab != "settings" || !same-group {
+                root.sidebar-tab = tab == "settings" ? "video" : tab;
+            }
+            root.sidebar-open = true;
+        }
+    }
+
+    public function close-sidebar() {
+        root.sidebar-open = false;
+    }
+
+    public function show-menu-at(x: length, y: length) {
+        menu.show({ x: x, y: y });
+    }
+
+    function run-mouse-action(action: string) {
+        if action == "pause" {
+            Actions.mpv(["cycle", "pause"]);
+        } else if action == "fullscreen" {
+            Actions.patina("toggle-fullscreen");
+        } else if action == "toggle-osc" {
+            if root.controls-visible {
+                root.controls-visible = false;
+                hide-timer.stop();
+            } else {
+                root.show-controls();
+            }
+        } else if action == "context-menu" {
+            menu.show({ x: video-touch.mouse-x, y: video-touch.mouse-y });
+        }
+    }
+
+    hide-timer := Timer {
+        interval: Prefs.osc-timeout;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.controls-visible = false;
+        }
+    }
+
+    click-timer := Timer {
+        interval: 280ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.run-mouse-action(root.pending-click);
+        }
+    }
+
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            Actions.activity();
+            if event.text == Key.Escape && root.sidebar-open && !root.full-screen {
+                root.sidebar-open = false;
+                return accept;
+            }
+            if Actions.key(event.text, event.modifiers.shift, event.modifiers.control, event.modifiers.alt, event.modifiers.meta, event.repeat) {
+                return accept;
+            }
+            return reject;
+        }
+
+        menu := MainMenu {
+            fullscreen: root.full-screen;
+            always-on-top: root.always-on-top;
+            enabled: false;
+
+            // The video, drawn by mpv into a texture.
+            if Playback.has-media: Image {
+                width: parent.width;
+                height: parent.height;
+                source: Playback.video-frame;
+                image-fit: fill;
+            }
+
+            if !Playback.has-media: WelcomeView {
+                width: parent.width;
+                height: parent.height;
+                drop-active: root.drop-active;
+            }
+
+            WindowMoveArea {
+                enabled: !root.full-screen;
+
+                video-touch := TouchArea {
+                    mouse-cursor: Playback.has-media && !root.show-chrome ? MouseCursor.none : MouseCursor.default;
+                    moved => {
+                        root.show-controls();
+                    }
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.move {
+                            root.show-controls();
+                            return;
+                        }
+                        if event.kind != PointerEventKind.down {
+                            return;
+                        }
+                        Actions.activity();
+                        if event.button == PointerEventButton.right {
+                            root.run-mouse-action(Prefs.right-click);
+                        } else if event.button == PointerEventButton.middle {
+                            root.run-mouse-action(Prefs.middle-click);
+                        }
+                    }
+                    clicked => {
+                        if !Playback.has-media {
+                            return;
+                        }
+                        if Prefs.double-click == "none" {
+                            root.run-mouse-action(Prefs.single-click);
+                        } else {
+                            root.pending-click = Prefs.single-click;
+                            click-timer.restart();
+                            click-timer.running = true;
+                        }
+                    }
+                    double-clicked => {
+                        click-timer.running = false;
+                        if Playback.has-media {
+                            root.run-mouse-action(Prefs.double-click);
+                        }
+                    }
+                    scroll-event(event) => {
+                        if !Playback.has-media {
+                            return reject;
+                        }
+                        Actions.activity();
+                        Actions.wheel(event.delta-x / 1px, event.delta-y / 1px);
+                        return accept;
+                    }
+                }
+            }
+        }
+
+        if Playback.buffering && Playback.has-media: VerticalLayout {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 120px;
+            height: 80px;
+            spacing: 10px;
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                Spinner {
+                    size: 36px;
+                }
+            }
+            Text {
+                text: Playback.buffering-percent > 0 ? "Buffering " + Playback.buffering-percent + "%" : "Loading…";
+                color: Theme.secondary-text;
+                font-size: Theme.font-normal;
+                horizontal-alignment: center;
+            }
+        }
+
+        if root.error != "": Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(460px, parent.width - 40px);
+            height: error-text.preferred-height + 28px;
+            border-radius: Theme.panel-radius;
+            background: Theme.osd-background;
+            error-text := Text {
+                x: 16px;
+                width: parent.width - 32px;
+                text: root.error;
+                color: Theme.text;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+            }
+        }
+
+        // Title bar, faded with the controller like IINA's.
+        if Platform.custom-titlebar && !root.full-screen && !root.pip: Rectangle {
+            y: 0;
+            height: Theme.titlebar-height;
+            opacity: root.show-chrome ? 1 : 0;
+            visible: self.opacity > 0;
+            animate opacity { duration: 250ms; }
+
+            TouchArea {
+                moved => {
+                    root.show-controls();
+                }
+                changed has-hover => {
+                    root.title-hovered = self.has-hover;
+                }
+
+                TitleBar {
+                    width: parent.width;
+                    always-on-top: root.always-on-top;
+                    maximized: root.maximized;
+                    show-menu(x, y) => {
+                        menu.show({ x: x, y: y });
+                    }
+                    toggle-maximized => {
+                        root.maximized = !root.maximized;
+                    }
+                    minimize => {
+                        root.minimized = true;
+                    }
+                    close => {
+                        Actions.patina("close-window");
+                    }
+                }
+            }
+        }
+
+        if Prefs.osd-font-size > 0: OsdView {
+            x: 14px;
+            y: (Platform.custom-titlebar && !root.full-screen && root.show-chrome ? Theme.titlebar-height : 0px) + 12px;
+            animate y { duration: 200ms; }
+        }
+
+        // The floating controller.
+        osc-area := Rectangle {
+            property <length> base-width: min(460px, root.width - 24px);
+            width: self.base-width;
+            height: 74px;
+            x: clamp((root.width - self.width) / 2 + root.osc-offset-x, 8px, max(8px, root.width - self.width - 8px - (root.sidebar-open ? Theme.sidebar-width : 0px)));
+            y: clamp(root.height - self.height - 24px + root.osc-offset-y, (Platform.custom-titlebar ? Theme.titlebar-height : 0px) + 8px, root.height - self.height - 8px);
+            opacity: root.show-chrome && Playback.has-media && !root.pip ? 1 : 0;
+            visible: self.opacity > 0;
+            animate opacity { duration: 250ms; }
+
+            osc-hover := TouchArea {
+                moved => {
+                    root.show-controls();
+                }
+
+                osc := ControlBar {
+                    width: parent.width;
+                    fullscreen: root.full-screen;
+                    sidebar: root.sidebar-open ? root.sidebar-tab : "";
+                    drag(dx, dy) => {
+                        root.osc-offset-x += dx;
+                        root.osc-offset-y += dy;
+                    }
+                }
+            }
+
+            if osc.seek-hovering && osc.seek-hover-time >= 0 && Playback.duration > 0: SeekPreview {
+                time: osc.seek-hover-time;
+                x: clamp(osc.seek-hover-x - self.width / 2, 0, parent.width - self.width);
+                y: -self.height - 6px;
+            }
+        }
+
+        // Picture in picture gets IINA's minimal controls instead.
+        if root.pip && Playback.has-media: Rectangle {
+            opacity: root.show-chrome ? 1 : 0;
+            visible: self.opacity > 0;
+            animate opacity { duration: 200ms; }
+            background: @linear-gradient(180deg, #00000060 0%, #00000000 40%, #00000000 60%, #00000080 100%);
+
+            IconButton {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 52px;
+                height: 52px;
+                icon: Playback.paused ? @image-url("icons/play.svg") : @image-url("icons/pause.svg");
+                icon-size: 30px;
+                tooltip: Playback.paused ? "Play" : "Pause";
+                clicked => {
+                    Actions.mpv(["cycle", "pause"]);
+                }
+            }
+
+            IconButton {
+                x: parent.width - self.width - 6px;
+                y: 6px;
+                icon: @image-url("icons/pip.svg");
+                icon-size: 16px;
+                hover-background: true;
+                tooltip: "Exit Picture in Picture";
+                clicked => {
+                    Actions.patina("toggle-pip");
+                }
+            }
+
+            Rectangle {
+                x: 10px;
+                y: parent.height - 10px;
+                width: parent.width - 20px;
+                height: 3px;
+                border-radius: 1.5px;
+                background: Theme.track;
+                Rectangle {
+                    x: 0;
+                    width: Playback.duration > 0 ? parent.width * clamp(Playback.position / Playback.duration, 0, 1) : 0;
+                    border-radius: parent.border-radius;
+                    background: Theme.track-fill;
+                }
+            }
+        }
+
+        sidebar := Sidebar {
+            x: root.sidebar-open ? root.width - self.width : root.width;
+            y: Platform.custom-titlebar && !root.full-screen ? Theme.titlebar-height : 0px;
+            height: root.height - self.y;
+            tab <=> root.sidebar-tab;
+            visible: self.x < root.width;
+            animate x { duration: 200ms; easing: ease-out; }
+            close => {
+                root.sidebar-open = false;
+            }
+        }
+
+        if root.dialog == "open-url" || root.dialog == "add-url": PromptDialog {
+            title: root.dialog == "open-url" ? "Open URL" : "Add URL to Playlist";
+            message: "A file path, stream, or any site supported by yt-dlp.";
+            placeholder: "https://";
+            confirm-label: root.dialog == "open-url" ? "Open" : "Add";
+            text <=> root.dialog-text;
+            cancel => {
+                root.dialog = "";
+                keys.focus();
+            }
+            confirm(value) => {
+                root.dialog-confirmed(root.dialog, value);
+                root.dialog = "";
+                keys.focus();
+            }
+        }
+
+        if root.dialog == "jump-to": PromptDialog {
+            title: "Jump To";
+            message: "A time such as 1:23:45, 12:30 or 90, or a percentage such as 50%.";
+            placeholder: "00:00";
+            confirm-label: "Jump";
+            text <=> root.dialog-text;
+            cancel => {
+                root.dialog = "";
+                keys.focus();
+            }
+            confirm(value) => {
+                root.dialog-confirmed("jump-to", value);
+                root.dialog = "";
+                keys.focus();
+            }
+        }
+
+        if root.dialog == "about": AboutDialog {
+            cancel => {
+                root.dialog = "";
+                keys.focus();
+            }
+        }
+
+        if root.dialog == "shortcuts": ShortcutsDialog {
+            shortcuts: root.shortcuts;
+            cancel => {
+                root.dialog = "";
+                keys.focus();
+            }
+        }
+    }
+}

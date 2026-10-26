@@ -1,0 +1,162 @@
+// State shared between Rust and the interface. Each window has its own
+// instance of these globals.
+
+export struct PlaylistItem {
+    title: string,
+    detail: string,
+    duration: string,
+    current: bool,
+}
+
+export struct TrackItem {
+    id: int,
+    title: string,
+    detail: string,
+    selected: bool,
+}
+
+export struct ChapterItem {
+    title: string,
+    time: float,
+    time-text: string,
+    current: bool,
+}
+
+export struct RecentItem {
+    title: string,
+    path: string,
+    detail: string,
+}
+
+export struct DeviceItem {
+    name: string,
+    description: string,
+    selected: bool,
+}
+
+export global Platform {
+    in property <bool> macos;
+    in property <bool> windows;
+    // Draw our own title bar and window buttons (Linux and Windows).
+    in property <bool> custom-titlebar: true;
+    in property <string> version;
+}
+
+export global Playback {
+    in property <bool> ready;
+    in property <bool> has-media;
+    in property <bool> has-video;
+    in property <bool> audio-only;
+    in property <bool> paused: true;
+    in property <bool> buffering;
+    in property <int> buffering-percent;
+    in property <bool> seekable;
+    in property <float> position;
+    in property <float> duration;
+    in property <float> cache-end;
+    in property <float> volume: 100;
+    in property <float> volume-max: 100;
+    in property <bool> muted;
+    in property <float> speed: 1;
+    in property <string> title;
+    in property <string> path;
+    in property <image> video-frame;
+    in property <[float]> chapter-marks;
+    in property <bool> loop-file;
+    in property <bool> loop-playlist;
+    in property <bool> shuffle;
+    in property <float> ab-a: -1;
+    in property <float> ab-b: -1;
+
+    // Video.
+    in property <int> aspect-index;
+    in property <int> crop-index;
+    in property <int> rotation;
+    in property <bool> flipped;
+    in property <bool> mirrored;
+    in property <bool> deinterlace;
+    in property <bool> hwdec;
+    in property <string> hwdec-current;
+    in property <int> brightness;
+    in property <int> contrast;
+    in property <int> saturation;
+    in property <int> gamma;
+    in property <int> hue;
+    in property <string> video-info;
+
+    // Audio.
+    in property <float> audio-delay;
+    in property <[float]> eq-gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    in property <string> audio-info;
+
+    // Subtitles.
+    in property <float> sub-delay;
+    in property <float> secondary-sub-delay;
+    in property <float> sub-scale: 1;
+    in property <float> sub-pos: 100;
+    in property <bool> sub-visible: true;
+    in property <bool> secondary-sub-visible: true;
+}
+
+export global Media {
+    in property <[PlaylistItem]> playlist;
+    in property <int> playlist-pos: -1;
+    in property <string> playlist-summary;
+    in property <[TrackItem]> video-tracks;
+    in property <[TrackItem]> audio-tracks;
+    in property <[TrackItem]> sub-tracks;
+    in property <[TrackItem]> secondary-sub-tracks;
+    in property <[ChapterItem]> chapters;
+    in property <int> chapter: -1;
+    in property <[RecentItem]> recent;
+    in property <string> resume-title;
+    in property <[DeviceItem]> audio-devices;
+}
+
+export global Osd {
+    in property <string> text;
+    in property <string> detail;
+    // 0..1 for a progress bar, or negative for none.
+    in property <float> progress: -1;
+    in property <bool> visible;
+}
+
+export global Prefs {
+    in-out property <bool> show-remaining-time;
+    in property <bool> show-chapter-marks;
+    in property <duration> osc-timeout: 2500ms;
+    in property <length> osd-font-size: 20px;
+    // "speed", "seek" or "playlist".
+    in property <string> arrow-action: "speed";
+    in property <[string]> toolbar-buttons: ["pip", "playlist", "settings"];
+    // "none", "pause", "fullscreen", "toggle-osc", "context-menu".
+    in property <string> single-click: "toggle-osc";
+    in property <string> double-click: "fullscreen";
+    in property <string> right-click: "context-menu";
+    in property <string> middle-click: "none";
+}
+
+export global Actions {
+    // Runs an mpv command.
+    callback mpv([string]);
+    // Sets an mpv property.
+    callback set(string, string);
+    // Runs a Patina action such as "open-file" or "toggle-sidebar playlist".
+    callback patina(string);
+    // Seeks to an absolute time; exact on release, fast while dragging.
+    callback seek(float, bool);
+    // A key press, as text plus modifiers. Returns true when handled.
+    callback key(string, bool, bool, bool, bool, bool) -> bool;
+    // A scroll over the video in logical pixels.
+    callback wheel(float, float);
+    callback select-track(string, int);
+    callback select-secondary-sub(int);
+    callback play-index(int);
+    callback remove-index(int);
+    callback move-index(int, int);
+    callback select-chapter(int);
+    callback open-recent(int);
+    callback set-eq(int, float);
+    // Any pointer or keyboard activity from the user.
+    callback activity();
+}

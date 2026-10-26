@@ -1,0 +1,411 @@
+import { Theme } from "theme.slint";
+import { Playback, Prefs, Actions, Osd, Platform } from "globals.slint";
+import { IconButton, Slider, SeekBar, Format } from "widgets.slint";
+
+component ToolbarButton inherits IconButton {
+    in property <string> kind;
+    in property <bool> fullscreen;
+    in property <string> sidebar;
+    icon: root.kind == "pip" ? @image-url("icons/pip.svg")
+        : root.kind == "playlist" ? @image-url("icons/playlist.svg")
+        : root.kind == "settings" ? @image-url("icons/settings.svg")
+        : root.kind == "fullscreen" ? (root.fullscreen ? @image-url("icons/fullscreen-exit.svg") : @image-url("icons/fullscreen.svg"))
+        : root.kind == "music" ? @image-url("icons/music.svg")
+        : root.kind == "screenshot" ? @image-url("icons/camera.svg")
+        : root.kind == "subtitles" ? @image-url("icons/subtitles.svg")
+        : root.kind == "plugins" ? @image-url("icons/plugins.svg")
+        : @image-url("icons/more.svg");
+    tooltip: root.kind == "pip" ? "Picture in Picture"
+        : root.kind == "playlist" ? "Playlist"
+        : root.kind == "settings" ? "Quick Settings"
+        : root.kind == "fullscreen" ? "Fullscreen"
+        : root.kind == "music" ? "Music Mode"
+        : root.kind == "screenshot" ? "Screenshot"
+        : root.kind == "subtitles" ? "Subtitles"
+        : root.kind == "plugins" ? "Plugins"
+        : root.kind;
+    active: (root.kind == "playlist" && (root.sidebar == "playlist" || root.sidebar == "chapters"))
+        || (root.kind == "settings" && (root.sidebar == "video" || root.sidebar == "audio"))
+        || (root.kind == "subtitles" && root.sidebar == "subtitles");
+    icon-size: 17px;
+    width: 24px;
+}
+
+// The floating on-screen controller.
+export component ControlBar inherits Rectangle {
+    in property <bool> fullscreen;
+    in property <string> sidebar;
+    out property <bool> seek-hovering: seek.hovering || seek.dragging;
+    out property <length> seek-hover-x: seek.x + seek.hover-x;
+    out property <float> seek-hover-time: seek.dragging ? -1 : seek.hover-time;
+    // Drag the bar around; the parent moves it.
+    callback drag(length, length);
+
+    property <image> volume-icon: Playback.muted || Playback.volume <= 0 ? @image-url("icons/volume-mute.svg")
+        : Playback.volume < 34 ? @image-url("icons/volume-low.svg")
+        : Playback.volume < 67 ? @image-url("icons/volume-medium.svg")
+        : @image-url("icons/volume-high.svg");
+
+    width: 460px;
+    height: 74px;
+    border-radius: Theme.osc-radius;
+    background: Theme.osc-background;
+    border-width: 1px;
+    border-color: Theme.osc-border;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #00000059;
+
+    // Background: dragging it moves the bar, as in IINA.
+    TouchArea {
+        mouse-cursor: self.pressed ? grabbing : default;
+        moved => {
+            if self.pressed {
+                root.drag(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+            }
+        }
+    }
+
+    // Top row: volume, transport, toolbar.
+    IconButton {
+        x: 12px;
+        y: 8px;
+        icon: root.volume-icon;
+        icon-size: 18px;
+        tooltip: Playback.muted ? "Unmute" : "Mute";
+        clicked => {
+            Actions.mpv(["cycle", "mute"]);
+        }
+    }
+
+    Slider {
+        x: 42px;
+        y: 14px;
+        width: 76px;
+        knob-size: 12px;
+        value: Playback.volume;
+        maximum: Playback.volume-max;
+        scroll-step: 2;
+        changed(value) => {
+            Actions.set("volume", round(value));
+        }
+    }
+
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: 4px;
+        width: 150px;
+        height: 36px;
+
+        rewind := IconButton {
+            x: 6px;
+            y: 4px;
+            width: 34px;
+            icon: Prefs.arrow-action == "playlist" ? @image-url("icons/previous.svg") : @image-url("icons/rewind.svg");
+            icon-size: 22px;
+            enabled: Playback.has-media;
+            tooltip: Prefs.arrow-action == "speed" ? "Slow down" : Prefs.arrow-action == "seek" ? "Back 10 seconds" : "Previous";
+            clicked => {
+                Actions.patina("osc-left");
+            }
+        }
+
+        IconButton {
+            x: (parent.width - self.width) / 2;
+            y: 0;
+            width: 40px;
+            height: 36px;
+            icon: Playback.paused ? @image-url("icons/play.svg") : @image-url("icons/pause.svg");
+            icon-size: 26px;
+            enabled: Playback.has-media;
+            tooltip: Playback.paused ? "Play" : "Pause";
+            clicked => {
+                Actions.mpv(["cycle", "pause"]);
+            }
+        }
+
+        IconButton {
+            x: parent.width - self.width - 6px;
+            y: 4px;
+            width: 34px;
+            icon: Prefs.arrow-action == "playlist" ? @image-url("icons/next.svg") : @image-url("icons/fast-forward.svg");
+            icon-size: 22px;
+            enabled: Playback.has-media;
+            tooltip: Prefs.arrow-action == "speed" ? "Speed up" : Prefs.arrow-action == "seek" ? "Forward 10 seconds" : "Next";
+            clicked => {
+                Actions.patina("osc-right");
+            }
+        }
+
+        // IINA shows the current speed beside the button that changed it.
+        if Prefs.arrow-action == "speed" && Playback.speed != 1: Text {
+            x: Playback.speed < 1 ? -self.width + 6px : parent.width - 6px;
+            y: 12px;
+            text: (round(Playback.speed * 100) / 100) + "×";
+            color: Theme.secondary-text;
+            font-size: 10px;
+        }
+    }
+
+    toolbar := HorizontalLayout {
+        x: root.width - self.width - 10px;
+        y: 8px;
+        width: self.preferred-width;
+        height: 28px;
+        spacing: 2px;
+        for kind in Prefs.toolbar-buttons: ToolbarButton {
+            kind: kind;
+            fullscreen: root.fullscreen;
+            sidebar: root.sidebar;
+            clicked => {
+                Actions.patina("toolbar " + kind);
+            }
+        }
+    }
+
+    // Bottom row: elapsed time, seek bar, duration or remaining time.
+    Text {
+        x: 10px;
+        y: 44px;
+        width: 54px;
+        height: 18px;
+        text: Format.time(seek.dragging ? seek.hover-time : Playback.position);
+        color: Theme.secondary-text;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    seek := SeekBar {
+        x: 66px;
+        y: 44px;
+        width: root.width - 132px;
+        position: Playback.position;
+        duration: Playback.duration;
+        cache-end: Playback.cache-end;
+        enabled: Playback.seekable;
+        chapters: Playback.chapter-marks;
+        show-chapters: Prefs.show-chapter-marks;
+        ab-a: Playback.ab-a;
+        ab-b: Playback.ab-b;
+        seek(time, exact) => {
+            Actions.seek(time, exact);
+        }
+    }
+
+    Text {
+        x: root.width - 64px;
+        y: 44px;
+        width: 54px;
+        height: 18px;
+        text: Playback.duration <= 0 ? "--:--" : Prefs.show-remaining-time ? "-" + Format.time(Playback.duration - Playback.position) : Format.time(Playback.duration);
+        color: Theme.secondary-text;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+
+        TouchArea {
+            clicked => {
+                Prefs.show-remaining-time = !Prefs.show-remaining-time;
+                Actions.patina("save-ui-prefs");
+            }
+        }
+    }
+}
+
+// The time shown above the seek bar while hovering it.
+export component SeekPreview inherits Rectangle {
+    in property <float> time;
+    width: label.preferred-width + 14px;
+    height: 22px;
+    border-radius: 5px;
+    background: Theme.osd-background;
+    border-width: 1px;
+    border-color: Theme.osc-border;
+
+    label := Text {
+        text: Format.time(root.time);
+        color: Theme.text;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component WindowButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> danger;
+    in property <string> tooltip;
+    callback clicked;
+    width: 40px;
+    height: Theme.titlebar-height;
+    background: touch.has-hover ? (root.danger ? Theme.close-hover : Theme.hover) : transparent;
+    accessible-role: button;
+    accessible-label: root.tooltip;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    Image {
+        source: root.icon;
+        width: 14px;
+        colorize: touch.has-hover ? white : Theme.icon;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The title bar shown over the video, hidden together with the controller.
+export component TitleBar inherits Rectangle {
+    in property <bool> always-on-top;
+    in property <bool> maximized;
+    callback show-menu(length, length);
+    callback toggle-maximized;
+    callback minimize;
+    callback close;
+
+    height: Theme.titlebar-height;
+    background: Theme.titlebar-background;
+
+    WindowMoveArea {
+        TouchArea {
+            double-clicked => {
+                root.toggle-maximized();
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Platform.macos ? 76px : 4px;
+            spacing: 6px;
+
+            if !Platform.macos: menu-button := IconButton {
+                y: 2px;
+                icon: @image-url("icons/menu.svg");
+                icon-size: 16px;
+                hover-background: true;
+                tooltip: "Menu";
+                clicked => {
+                    root.show-menu(self.x, self.y + self.height + 4px);
+                }
+            }
+
+            Image {
+                source: @image-url("icons/file-video.svg");
+                width: 15px;
+                colorize: #8cb4ff;
+                visible: Playback.has-media;
+            }
+
+            Text {
+                text: Playback.has-media ? Playback.title : "Patina";
+                color: Theme.text;
+                font-size: Theme.font-title;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            IconButton {
+                y: 2px;
+                icon: @image-url("icons/pip.svg");
+                icon-size: 16px;
+                hover-background: true;
+                tooltip: "Picture in Picture";
+                enabled: Playback.has-video;
+                clicked => {
+                    Actions.patina("toggle-pip");
+                }
+            }
+
+            IconButton {
+                y: 2px;
+                icon: root.always-on-top ? @image-url("icons/pin-filled.svg") : @image-url("icons/pin.svg");
+                icon-size: 16px;
+                hover-background: true;
+                active: root.always-on-top;
+                tooltip: root.always-on-top ? "Don't Float on Top" : "Float on Top";
+                clicked => {
+                    Actions.patina("toggle-ontop");
+                }
+            }
+
+            if Platform.custom-titlebar: HorizontalLayout {
+                padding-left: 4px;
+                WindowButton {
+                    icon: @image-url("icons/minimize.svg");
+                    tooltip: "Minimize";
+                    clicked => {
+                        root.minimize();
+                    }
+                }
+                WindowButton {
+                    icon: root.maximized ? @image-url("icons/restore.svg") : @image-url("icons/maximize.svg");
+                    tooltip: root.maximized ? "Restore" : "Maximize";
+                    clicked => {
+                        root.toggle-maximized();
+                    }
+                }
+                WindowButton {
+                    icon: @image-url("icons/close.svg");
+                    danger: true;
+                    tooltip: "Close";
+                    clicked => {
+                        root.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// On-screen display messages, shown in the top-left corner.
+export component OsdView inherits Rectangle {
+    width: min(layout.preferred-width, 420px);
+    height: layout.preferred-height;
+    border-radius: 8px;
+    background: Theme.osd-background;
+    border-width: 1px;
+    border-color: Theme.osc-border;
+    opacity: Osd.visible ? 1 : 0;
+    animate opacity { duration: Osd.visible ? 80ms : 300ms; }
+
+    layout := VerticalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 8px;
+        padding-bottom: 9px;
+        spacing: 5px;
+
+        Text {
+            text: Osd.text;
+            color: Theme.text;
+            font-size: Prefs.osd-font-size;
+            overflow: elide;
+        }
+
+        if Osd.detail != "": Text {
+            text: Osd.detail;
+            color: Theme.secondary-text;
+            font-size: Prefs.osd-font-size * 0.6;
+            overflow: elide;
+        }
+
+        if Osd.progress >= 0: Rectangle {
+            height: 5px;
+            min-width: 180px;
+            border-radius: 2.5px;
+            background: Theme.track;
+
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(Osd.progress, 0, 1);
+                border-radius: parent.border-radius;
+                background: Theme.track-fill;
+            }
+        }
+    }
+}

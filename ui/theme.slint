@@ -1,0 +1,52 @@
+// Colors and metrics. The palette follows IINA's dark vibrancy look: smoky
+// translucent panels over the video, white text at a few opacities, and the
+// system-style blue for selections.
+
+export global Theme {
+    // Panels drawn over the video.
+    out property <color> osc-background: #1d1d1fe0;
+    out property <color> osc-border: #ffffff1a;
+    out property <color> panel-background: #1b1b1df2;
+    out property <color> panel-divider: #ffffff14;
+    out property <color> titlebar-background: #242426d0;
+    out property <color> osd-background: #1d1d1fd8;
+    out property <color> menu-background: #2a2a2cf5;
+
+    // Text.
+    out property <color> text: #ffffffeb;
+    out property <color> secondary-text: #ffffff99;
+    out property <color> tertiary-text: #ffffff5c;
+    out property <color> disabled-text: #ffffff40;
+
+    // Controls.
+    out property <color> icon: #ffffffd9;
+    out property <color> icon-hover: #ffffff;
+    out property <color> icon-disabled: #ffffff4d;
+    out property <color> hover: #ffffff14;
+    out property <color> pressed: #ffffff24;
+    out property <color> track: #ffffff38;
+    out property <color> track-fill: #ffffffcc;
+    out property <color> track-cache: #ffffff5c;
+    out property <color> knob: #ffffff;
+    out property <color> field: #00000059;
+    out property <color> field-border: #ffffff1f;
+    out property <color> accent: #2f7ef6;
+    out property <color> accent-text: #ffffff;
+    out property <color> selection: #2f7ef640;
+    out property <color> playing: #6cc4ac;
+    out property <color> danger: #ff6b6b;
+
+    // Window chrome.
+    out property <color> close-hover: #e5484d;
+
+    // Metrics.
+    out property <length> osc-radius: 10px;
+    out property <length> panel-radius: 8px;
+    out property <length> control-radius: 6px;
+    out property <length> titlebar-height: 32px;
+    out property <length> sidebar-width: 340px;
+    out property <length> font-small: 11px;
+    out property <length> font-normal: 13px;
+    out property <length> font-title: 13px;
+    out property <length> font-heading: 15px;
+}

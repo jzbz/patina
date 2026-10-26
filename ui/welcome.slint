@@ -1,0 +1,205 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Media, Actions, Platform } from "globals.slint";
+
+component WelcomeAction inherits Rectangle {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> detail;
+    callback clicked;
+    height: 44px;
+    border-radius: Theme.panel-radius;
+    background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 12px;
+        Image {
+            source: root.icon;
+            width: 20px;
+            colorize: Theme.playing;
+        }
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-normal;
+                font-weight: 600;
+                overflow: elide;
+            }
+            if root.detail != "": Text {
+                text: root.detail;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Shown while nothing is loaded, laid out like IINA's welcome window.
+export component WelcomeView inherits Rectangle {
+    in property <bool> drop-active;
+    background: #141416;
+
+    HorizontalLayout {
+        padding: 28px;
+        padding-top: 52px;
+        spacing: 28px;
+
+        VerticalLayout {
+            width: min(300px, root.width * 0.45);
+            spacing: 6px;
+            alignment: start;
+
+            Image {
+                source: @image-url("icons/patina.svg");
+                width: 76px;
+                height: 76px;
+            }
+            Text {
+                text: "Patina";
+                color: Theme.text;
+                font-size: 26px;
+                font-weight: 700;
+            }
+            Text {
+                text: "Version " + Platform.version;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+            }
+            Rectangle {
+                height: 18px;
+            }
+            if Media.resume-title != "": WelcomeAction {
+                icon: @image-url("icons/play.svg");
+                title: "Resume Last Playback";
+                detail: Media.resume-title;
+                clicked => {
+                    Actions.open-recent(0);
+                }
+            }
+            WelcomeAction {
+                icon: @image-url("icons/folder.svg");
+                title: "Open…";
+                detail: "Files or a folder";
+                clicked => {
+                    Actions.patina("open-file");
+                }
+            }
+            WelcomeAction {
+                icon: @image-url("icons/link.svg");
+                title: "Open URL…";
+                detail: "Streams and online video";
+                clicked => {
+                    Actions.patina("open-url");
+                }
+            }
+        }
+
+        Rectangle {
+            border-radius: Theme.panel-radius;
+            background: #ffffff08;
+            border-width: 1px;
+            border-color: Theme.panel-divider;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                Text {
+                    text: "Recent";
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-small;
+                    font-weight: 600;
+                }
+                if Media.recent.length == 0: Rectangle {
+                    vertical-stretch: 1;
+                    Text {
+                        text: "Files you play appear here.";
+                        color: Theme.tertiary-text;
+                        font-size: Theme.font-normal;
+                    }
+                }
+                if Media.recent.length > 0: ListView {
+                    vertical-stretch: 1;
+                    for item[index] in Media.recent: Rectangle {
+                        height: 40px;
+                        border-radius: Theme.control-radius;
+                        background: touch.has-hover ? Theme.hover : transparent;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 10px;
+                            Image {
+                                source: @image-url("icons/file-video.svg");
+                                width: 18px;
+                                colorize: #8cb4ff;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: item.title;
+                                    color: Theme.text;
+                                    font-size: Theme.font-normal;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: item.detail;
+                                    color: Theme.tertiary-text;
+                                    font-size: Theme.font-small;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                        touch := TouchArea {
+                            clicked => {
+                                Actions.open-recent(index);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.drop-active: Rectangle {
+        background: #000000a0;
+        Rectangle {
+            x: 16px;
+            y: 44px;
+            width: parent.width - 32px;
+            height: parent.height - 60px;
+            border-radius: 14px;
+            border-width: 2px;
+            border-color: Theme.playing;
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                Image {
+                    source: @image-url("icons/drop.svg");
+                    height: 40px;
+                    colorize: Theme.playing;
+                }
+                Text {
+                    text: "Drop to play";
+                    color: Theme.text;
+                    font-size: 18px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,794 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Playback, Media, Actions, PlaylistItem, TrackItem } from "globals.slint";
+import { IconButton, TextButton, Segmented, Switch, SettingRow, SectionTitle, ValueSlider, ChoiceRow, Slider, Format } from "widgets.slint";
+
+component PanelSection inherits VerticalLayout {
+    in property <string> title;
+    spacing: 6px;
+    if root.title != "": SectionTitle {
+        text: root.title;
+    }
+    @children
+}
+
+component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.panel-divider;
+}
+
+component PlaylistRow inherits Rectangle {
+    in property <PlaylistItem> item;
+    in property <int> index;
+    in property <bool> first;
+    in property <bool> last;
+    height: 44px;
+    border-radius: Theme.control-radius;
+    background: root.item.current ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
+
+    touch := TouchArea {
+        double-clicked => {
+            Actions.play-index(root.index);
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 6px;
+        spacing: 8px;
+
+        Rectangle {
+            width: 18px;
+            if root.item.current: Image {
+                source: Playback.paused ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
+                width: 11px;
+                colorize: Theme.playing;
+            }
+            if !root.item.current: Text {
+                text: root.index + 1;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.title;
+                color: root.item.current ? Theme.playing : Theme.text;
+                font-size: Theme.font-normal;
+                font-weight: root.item.current ? 600 : 400;
+                overflow: elide;
+            }
+            if root.item.detail != "": Text {
+                text: root.item.detail;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+        }
+
+        if !touch.has-hover && !actions.has-hover: Text {
+            text: root.item.duration;
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            vertical-alignment: center;
+        }
+
+        actions := HorizontalLayout {
+            property <bool> has-hover: up.has-hover || down.has-hover || remove.has-hover;
+            visible: touch.has-hover || self.has-hover;
+            width: self.visible ? self.preferred-width : 0;
+            up := IconButton {
+                y: 8px;
+                width: 22px;
+                height: 22px;
+                icon: @image-url("icons/chevron-up.svg");
+                icon-size: 13px;
+                enabled: !root.first;
+                tooltip: "Move up";
+                clicked => {
+                    Actions.move-index(root.index, root.index - 1);
+                }
+            }
+            down := IconButton {
+                y: 8px;
+                width: 22px;
+                height: 22px;
+                icon: @image-url("icons/chevron-down.svg");
+                icon-size: 13px;
+                enabled: !root.last;
+                tooltip: "Move down";
+                clicked => {
+                    // mpv moves an entry in front of the target index.
+                    Actions.move-index(root.index, root.index + 2);
+                }
+            }
+            remove := IconButton {
+                y: 8px;
+                width: 22px;
+                height: 22px;
+                icon: @image-url("icons/close.svg");
+                icon-size: 12px;
+                tooltip: "Remove from playlist";
+                clicked => {
+                    Actions.remove-index(root.index);
+                }
+            }
+        }
+    }
+}
+
+component PlaylistPanel inherits VerticalLayout {
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 4px;
+        Text {
+            text: Media.playlist-summary;
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        IconButton {
+            icon: @image-url("icons/loop-one.svg");
+            icon-size: 16px;
+            active: Playback.loop-file;
+            tooltip: "Loop File";
+            clicked => {
+                Actions.patina("toggle-loop-file");
+            }
+        }
+        IconButton {
+            icon: @image-url("icons/loop.svg");
+            icon-size: 16px;
+            active: Playback.loop-playlist;
+            tooltip: "Loop Playlist";
+            clicked => {
+                Actions.patina("toggle-loop-playlist");
+            }
+        }
+        IconButton {
+            icon: @image-url("icons/shuffle.svg");
+            icon-size: 16px;
+            active: Playback.shuffle;
+            tooltip: "Shuffle";
+            clicked => {
+                Actions.patina("toggle-shuffle");
+            }
+        }
+    }
+
+    if Media.playlist.length == 0: Rectangle {
+        vertical-stretch: 1;
+        Text {
+            text: "The playlist is empty.\nDrop files here or add some below.";
+            color: Theme.tertiary-text;
+            font-size: Theme.font-normal;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    if Media.playlist.length > 0: ListView {
+        vertical-stretch: 1;
+        for item[index] in Media.playlist: PlaylistRow {
+            item: item;
+            index: index;
+            first: index == 0;
+            last: index == Media.playlist.length - 1;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 6px;
+        TextButton {
+            text: "Add Files…";
+            icon: @image-url("icons/plus.svg");
+            clicked => {
+                Actions.patina("add-files");
+            }
+        }
+        TextButton {
+            text: "URL…";
+            icon: @image-url("icons/link.svg");
+            clicked => {
+                Actions.patina("add-url");
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+        TextButton {
+            text: "Clear";
+            icon: @image-url("icons/trash.svg");
+            enabled: Media.playlist.length > 0;
+            clicked => {
+                Actions.patina("clear-playlist");
+            }
+        }
+    }
+}
+
+component ChaptersPanel inherits VerticalLayout {
+    spacing: 8px;
+
+    if Media.chapters.length == 0: Rectangle {
+        vertical-stretch: 1;
+        Text {
+            text: "No chapters";
+            color: Theme.tertiary-text;
+            font-size: Theme.font-normal;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    if Media.chapters.length > 0: ListView {
+        vertical-stretch: 1;
+        for chapter[index] in Media.chapters: Rectangle {
+            height: 34px;
+            border-radius: Theme.control-radius;
+            background: chapter.current ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
+
+            touch := TouchArea {
+                clicked => {
+                    Actions.select-chapter(index);
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 8px;
+                Text {
+                    text: chapter.title;
+                    color: chapter.current ? Theme.playing : Theme.text;
+                    font-size: Theme.font-normal;
+                    font-weight: chapter.current ? 600 : 400;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: chapter.time-text;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// Track rows; Rust adds a "None" row (id 0) where deselecting is possible.
+component TrackList inherits VerticalLayout {
+    in property <[TrackItem]> tracks;
+    callback choose(int);
+    spacing: 0;
+
+    for track in root.tracks: ChoiceRow {
+        title: track.title;
+        detail: track.detail;
+        selected: track.selected;
+        clicked => {
+            root.choose(track.id);
+        }
+    }
+}
+
+// Speed uses a log₂ scale from 0.25× to 16×, like IINA.
+component SpeedControl inherits VerticalLayout {
+    spacing: 2px;
+    HorizontalLayout {
+        Text {
+            text: "Speed";
+            color: Theme.text;
+            font-size: Theme.font-normal;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        Text {
+            text: (round(Playback.speed * 100) / 100) + "×";
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            vertical-alignment: center;
+        }
+        IconButton {
+            width: 20px;
+            height: 20px;
+            icon: @image-url("icons/reset.svg");
+            icon-size: 13px;
+            enabled: Playback.speed != 1;
+            tooltip: "Reset speed";
+            clicked => {
+                Actions.set("speed", "1");
+            }
+        }
+    }
+    Slider {
+        value: log(Playback.speed, 2);
+        minimum: -2;
+        maximum: 4;
+        scroll-step: 0.25;
+        changed(value) => {
+            let speed = pow(2, value);
+            // Snap to 1× near the middle.
+            Actions.set("speed", abs(value) < 0.08 ? "1" : round(speed * 100) / 100);
+        }
+    }
+    HorizontalLayout {
+        for label in ["0.25×", "1×", "4×", "16×"]: Text {
+            text: label;
+            color: Theme.tertiary-text;
+            font-size: 10px;
+            horizontal-alignment: label == "0.25×" ? left : label == "16×" ? right : center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+component VideoPanel inherits ScrollView {
+    VerticalLayout {
+        padding-right: 8px;
+        spacing: 14px;
+
+        if Media.video-tracks.length > 1: PanelSection {
+            title: "VIDEO TRACK";
+            TrackList {
+                tracks: Media.video-tracks;
+                choose(id) => {
+                    Actions.select-track("video", id);
+                }
+            }
+        }
+
+        PanelSection {
+            title: "ASPECT RATIO";
+            Segmented {
+                options: ["Default", "4:3", "16:9", "16:10", "21:9", "5:4"];
+                selected: Playback.aspect-index;
+                activated(index) => {
+                    Actions.patina("aspect " + index);
+                }
+            }
+        }
+
+        PanelSection {
+            title: "CROP";
+            Segmented {
+                options: ["None", "4:3", "16:9", "16:10", "21:9", "5:4"];
+                selected: Playback.crop-index;
+                activated(index) => {
+                    Actions.patina("crop " + index);
+                }
+            }
+        }
+
+        PanelSection {
+            title: "ROTATION";
+            Segmented {
+                options: ["0°", "90°", "180°", "270°"];
+                selected: Playback.rotation / 90;
+                activated(index) => {
+                    Actions.set("video-rotate", index * 90);
+                }
+            }
+            SettingRow {
+                label: "Flip vertically";
+                Switch {
+                    y: 4px;
+                    checked: Playback.flipped;
+                    toggled => {
+                        Actions.patina("toggle-flip");
+                    }
+                }
+            }
+            SettingRow {
+                label: "Mirror horizontally";
+                Switch {
+                    y: 4px;
+                    checked: Playback.mirrored;
+                    toggled => {
+                        Actions.patina("toggle-mirror");
+                    }
+                }
+            }
+        }
+
+        Divider { }
+        SpeedControl { }
+        Divider { }
+
+        PanelSection {
+            SettingRow {
+                label: "Deinterlace";
+                Switch {
+                    y: 4px;
+                    checked: Playback.deinterlace;
+                    toggled(on) => {
+                        Actions.set("deinterlace", on ? "yes" : "no");
+                    }
+                }
+            }
+            SettingRow {
+                label: "Hardware decoding";
+                Switch {
+                    y: 4px;
+                    checked: Playback.hwdec;
+                    toggled(on) => {
+                        Actions.patina(on ? "hwdec on" : "hwdec off");
+                    }
+                }
+            }
+            if Playback.hwdec-current != "": Text {
+                text: "Decoder: " + Playback.hwdec-current;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+            }
+        }
+
+        Divider { }
+
+        PanelSection {
+            title: "COLOR";
+            ValueSlider {
+                label: "Brightness";
+                value: Playback.brightness;
+                changed(value) => {
+                    Actions.set("brightness", round(value));
+                }
+            }
+            ValueSlider {
+                label: "Contrast";
+                value: Playback.contrast;
+                changed(value) => {
+                    Actions.set("contrast", round(value));
+                }
+            }
+            ValueSlider {
+                label: "Saturation";
+                value: Playback.saturation;
+                changed(value) => {
+                    Actions.set("saturation", round(value));
+                }
+            }
+            ValueSlider {
+                label: "Gamma";
+                value: Playback.gamma;
+                changed(value) => {
+                    Actions.set("gamma", round(value));
+                }
+            }
+            ValueSlider {
+                label: "Hue";
+                value: Playback.hue;
+                changed(value) => {
+                    Actions.set("hue", round(value));
+                }
+            }
+        }
+
+        if Playback.video-info != "": Text {
+            text: Playback.video-info;
+            color: Theme.tertiary-text;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+    }
+}
+
+component EqualizerBand inherits VerticalLayout {
+    in property <float> gain;
+    in property <string> label;
+    callback changed(float);
+    spacing: 4px;
+    alignment: center;
+
+    Rectangle {
+        width: 20px;
+        height: 100px;
+        property <float> fraction: clamp((root.gain + 12) / 24, 0, 1);
+
+        Rectangle {
+            width: 3px;
+            border-radius: 1.5px;
+            background: Theme.track;
+        }
+        Rectangle {
+            y: parent.height / 2;
+            width: 9px;
+            height: 1px;
+            background: Theme.tertiary-text;
+        }
+        Rectangle {
+            y: (parent.height - self.height) * (1 - parent.fraction);
+            width: 14px;
+            height: 8px;
+            border-radius: 4px;
+            background: Theme.knob;
+            drop-shadow-blur: 2px;
+            drop-shadow-color: #00000066;
+        }
+
+        TouchArea {
+            function update(y: length) {
+                let f = 1 - clamp((y - 4px) / (self.height - 8px), 0, 1);
+                root.changed(round((f * 24 - 12) * 2) / 2);
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    self.update(self.mouse-y);
+                }
+            }
+            moved => {
+                if self.pressed {
+                    self.update(self.mouse-y);
+                }
+            }
+            double-clicked => {
+                root.changed(0);
+            }
+        }
+    }
+
+    Text {
+        text: root.label;
+        color: Theme.tertiary-text;
+        font-size: 9px;
+        horizontal-alignment: center;
+    }
+}
+
+component AudioPanel inherits ScrollView {
+    VerticalLayout {
+        padding-right: 8px;
+        spacing: 14px;
+
+        PanelSection {
+            title: "AUDIO TRACK";
+            TrackList {
+                tracks: Media.audio-tracks;
+                choose(id) => {
+                    Actions.select-track("audio", id);
+                }
+            }
+            HorizontalLayout {
+                alignment: start;
+                TextButton {
+                    text: "Load External Audio…";
+                    enabled: Playback.has-media;
+                    clicked => {
+                        Actions.patina("load-audio");
+                    }
+                }
+            }
+        }
+
+        Divider { }
+
+        ValueSlider {
+            label: "Audio delay";
+            value: Playback.audio-delay;
+            minimum: -5;
+            maximum: 5;
+            step: 0.05;
+            value-text: Format.signed-seconds(Playback.audio-delay);
+            changed(value) => {
+                Actions.set("audio-delay", round(value * 100) / 100);
+            }
+        }
+
+        Divider { }
+
+        PanelSection {
+            title: "EQUALIZER";
+            HorizontalLayout {
+                spacing: 2px;
+                alignment: space-between;
+                for label[index] in ["32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]: EqualizerBand {
+                    label: label;
+                    gain: Playback.eq-gains[index];
+                    changed(gain) => {
+                        Actions.set-eq(index, gain);
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                TextButton {
+                    text: "Reset";
+                    clicked => {
+                        Actions.set-eq(-1, 0);
+                    }
+                }
+            }
+        }
+
+        if Media.audio-devices.length > 0: PanelSection {
+            title: "OUTPUT DEVICE";
+            for device in Media.audio-devices: ChoiceRow {
+                title: device.description;
+                selected: device.selected;
+                clicked => {
+                    Actions.set("audio-device", device.name);
+                }
+            }
+        }
+
+        if Playback.audio-info != "": Text {
+            text: Playback.audio-info;
+            color: Theme.tertiary-text;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+    }
+}
+
+component SubtitlesPanel inherits ScrollView {
+    property <int> which: 0;
+
+    VerticalLayout {
+        padding-right: 8px;
+        spacing: 14px;
+
+        Segmented {
+            options: ["Primary", "Secondary"];
+            selected: root.which;
+            activated(index) => {
+                root.which = index;
+            }
+        }
+
+        if root.which == 0: TrackList {
+            tracks: Media.sub-tracks;
+            choose(id) => {
+                Actions.select-track("sub", id);
+            }
+        }
+
+        if root.which == 1: TrackList {
+            tracks: Media.secondary-sub-tracks;
+            choose(id) => {
+                Actions.select-secondary-sub(id);
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            TextButton {
+                text: "Load External…";
+                enabled: Playback.has-media;
+                clicked => {
+                    Actions.patina("load-subtitles");
+                }
+            }
+        }
+
+        Divider { }
+
+        SettingRow {
+            label: root.which == 0 ? "Show subtitles" : "Show secondary subtitles";
+            Switch {
+                y: 4px;
+                checked: root.which == 0 ? Playback.sub-visible : Playback.secondary-sub-visible;
+                toggled(on) => {
+                    Actions.set(root.which == 0 ? "sub-visibility" : "secondary-sub-visibility", on ? "yes" : "no");
+                }
+            }
+        }
+
+        ValueSlider {
+            label: "Delay";
+            property <float> delay: root.which == 0 ? Playback.sub-delay : Playback.secondary-sub-delay;
+            value: self.delay;
+            minimum: -10;
+            maximum: 10;
+            step: 0.05;
+            value-text: Format.signed-seconds(self.delay);
+            changed(value) => {
+                Actions.set(root.which == 0 ? "sub-delay" : "secondary-sub-delay", round(value * 100) / 100);
+            }
+        }
+
+        if root.which == 0: ValueSlider {
+            label: "Scale";
+            value: Playback.sub-scale;
+            minimum: 0.25;
+            maximum: 3;
+            step: 0.05;
+            default-value: 1;
+            centered: false;
+            value-text: (round(Playback.sub-scale * 100) / 100) + "×";
+            changed(value) => {
+                Actions.set("sub-scale", round(value * 100) / 100);
+            }
+        }
+
+        if root.which == 0: ValueSlider {
+            label: "Position";
+            value: Playback.sub-pos;
+            minimum: 0;
+            maximum: 150;
+            step: 1;
+            default-value: 100;
+            centered: false;
+            changed(value) => {
+                Actions.set("sub-pos", round(value));
+            }
+        }
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    in-out property <string> tab;
+    callback close;
+
+    property <bool> playlist-group: root.tab == "playlist" || root.tab == "chapters";
+
+    width: Theme.sidebar-width;
+    background: Theme.panel-background;
+    border-width: 0;
+
+    // Keep clicks and scrolling from reaching the video below.
+    TouchArea {
+        scroll-event(event) => {
+            return accept;
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        width: 1px;
+        background: Theme.panel-divider;
+    }
+
+    VerticalLayout {
+        padding: 12px;
+        padding-top: 14px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            Segmented {
+                horizontal-stretch: 1;
+                options: root.playlist-group ? ["Playlist", "Chapters"] : ["Video", "Audio", "Subtitles"];
+                selected: root.tab == "playlist" || root.tab == "video" ? 0 : root.tab == "chapters" || root.tab == "audio" ? 1 : 2;
+                activated(index) => {
+                    root.tab = root.playlist-group ? (index == 0 ? "playlist" : "chapters") : (index == 0 ? "video" : index == 1 ? "audio" : "subtitles");
+                }
+            }
+            IconButton {
+                y: -2px;
+                icon: @image-url("icons/close.svg");
+                icon-size: 13px;
+                hover-background: true;
+                tooltip: "Close";
+                clicked => {
+                    root.close();
+                }
+            }
+        }
+
+        if root.tab == "playlist": PlaylistPanel {
+            vertical-stretch: 1;
+        }
+        if root.tab == "chapters": ChaptersPanel {
+            vertical-stretch: 1;
+        }
+        if root.tab == "video": VideoPanel {
+            vertical-stretch: 1;
+        }
+        if root.tab == "audio": AudioPanel {
+            vertical-stretch: 1;
+        }
+        if root.tab == "subtitles": SubtitlesPanel {
+            vertical-stretch: 1;
+        }
+    }
+}

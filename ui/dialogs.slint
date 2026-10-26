@@ -1,0 +1,205 @@
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Platform } from "globals.slint";
+import { TextButton } from "widgets.slint";
+
+export struct ShortcutItem {
+    keys: string,
+    action: string,
+}
+
+component Modal inherits Rectangle {
+    in property <length> panel-width: 420px;
+    callback cancel;
+    background: #00000080;
+
+    // Clicking outside the panel cancels; clicks inside stay there.
+    TouchArea {
+        clicked => {
+            root.cancel();
+        }
+        scroll-event(event) => {
+            return accept;
+        }
+    }
+
+    panel := Rectangle {
+        width: min(root.panel-width, root.width - 32px);
+        height: min(layout.preferred-height, root.height - 32px);
+        border-radius: 12px;
+        background: Theme.panel-background;
+        border-width: 1px;
+        border-color: Theme.osc-border;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #00000080;
+
+        TouchArea { }
+
+        layout := VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+            @children
+        }
+    }
+}
+
+// A one-line text prompt, used for Open URL and Jump To.
+export component PromptDialog inherits Modal {
+    in property <string> title;
+    in property <string> message;
+    in property <string> placeholder;
+    in property <string> confirm-label: "OK";
+    in-out property <string> text;
+    callback confirm(string);
+
+    init => {
+        edit.focus();
+    }
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            spacing: 12px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-heading;
+                font-weight: 600;
+            }
+            if root.message != "": Text {
+                text: root.message;
+                color: Theme.secondary-text;
+                font-size: Theme.font-normal;
+                wrap: word-wrap;
+            }
+            edit := LineEdit {
+                text <=> root.text;
+                placeholder-text: root.placeholder;
+                accepted(value) => {
+                    root.confirm(value);
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                TextButton {
+                    text: "Cancel";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                TextButton {
+                    text: root.confirm-label;
+                    primary: true;
+                    enabled: root.text != "";
+                    clicked => {
+                        root.confirm(root.text);
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component AboutDialog inherits Modal {
+    panel-width: 360px;
+
+    VerticalLayout {
+        spacing: 8px;
+        alignment: center;
+        Image {
+            source: @image-url("icons/patina.svg");
+            height: 72px;
+        }
+        Text {
+            text: "Patina";
+            color: Theme.text;
+            font-size: 22px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Version " + Platform.version;
+            color: Theme.secondary-text;
+            font-size: Theme.font-normal;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "A media player for Linux, macOS and Windows,\nbuilt with Rust and Slint on top of mpv.";
+            color: Theme.secondary-text;
+            font-size: Theme.font-normal;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Patina is MIT licensed. mpv, FFmpeg and Slint are\nused under their own licenses.";
+            color: Theme.tertiary-text;
+            font-size: Theme.font-small;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: center;
+            padding-top: 6px;
+            TextButton {
+                text: "Close";
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+}
+
+export component ShortcutsDialog inherits Modal {
+    in property <[ShortcutItem]> shortcuts;
+    panel-width: 520px;
+
+    VerticalLayout {
+        spacing: 10px;
+        Text {
+            text: "Keyboard Shortcuts";
+            color: Theme.text;
+            font-size: Theme.font-heading;
+            font-weight: 600;
+        }
+        ListView {
+            height: 380px;
+            for item in root.shortcuts: HorizontalLayout {
+                height: 24px;
+                spacing: 12px;
+                Text {
+                    width: 150px;
+                    text: item.keys;
+                    color: Theme.playing;
+                    font-size: Theme.font-normal;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    text: item.action;
+                    color: Theme.text;
+                    font-size: Theme.font-normal;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            TextButton {
+                text: "Close";
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+}

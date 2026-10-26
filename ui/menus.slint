@@ -1,0 +1,633 @@
+import { Playback, Media, Actions } from "globals.slint";
+
+// The application menu, shown from the title bar's menu button and by
+// right-clicking the video. It mirrors IINA's main menu.
+export component MainMenu inherits ContextMenuArea {
+    in property <bool> fullscreen;
+    in property <bool> always-on-top;
+
+    Menu {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "Open…";
+                activated => {
+                    Actions.patina("open-file");
+                }
+            }
+            MenuItem {
+                title: "Open URL…";
+                activated => {
+                    Actions.patina("open-url");
+                }
+            }
+            MenuItem {
+                title: "Open Folder…";
+                activated => {
+                    Actions.patina("open-folder");
+                }
+            }
+            Menu {
+                title: "Open Recent";
+                for item[index] in Media.recent: MenuItem {
+                    title: item.title;
+                    activated => {
+                        Actions.open-recent(index);
+                    }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    title: "Clear Menu";
+                    enabled: Media.recent.length > 0;
+                    activated => {
+                        Actions.patina("clear-recent");
+                    }
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Add Files to Playlist…";
+                activated => {
+                    Actions.patina("add-files");
+                }
+            }
+            MenuItem {
+                title: "Save Playlist…";
+                enabled: Media.playlist.length > 0;
+                activated => {
+                    Actions.patina("save-playlist");
+                }
+            }
+            MenuItem {
+                title: "Show in File Manager";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.patina("reveal-file");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "New Window";
+                activated => {
+                    Actions.patina("new-window");
+                }
+            }
+            MenuItem {
+                title: "Close Window";
+                activated => {
+                    Actions.patina("close-window");
+                }
+            }
+            MenuItem {
+                title: "Quit Patina";
+                activated => {
+                    Actions.patina("quit");
+                }
+            }
+        }
+
+        Menu {
+            title: "Playback";
+            MenuItem {
+                title: Playback.paused ? "Resume" : "Pause";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.mpv(["cycle", "pause"]);
+                }
+            }
+            MenuItem {
+                title: "Stop";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.mpv(["stop"]);
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Step Forward";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.mpv(["frame-step"]);
+                }
+            }
+            MenuItem {
+                title: "Step Backward";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.mpv(["frame-back-step"]);
+                }
+            }
+            MenuItem {
+                title: "Jump Forward 5 s";
+                enabled: Playback.seekable;
+                activated => {
+                    Actions.mpv(["seek", "5"]);
+                }
+            }
+            MenuItem {
+                title: "Jump Backward 5 s";
+                enabled: Playback.seekable;
+                activated => {
+                    Actions.mpv(["seek", "-5"]);
+                }
+            }
+            MenuItem {
+                title: "Jump to Beginning";
+                enabled: Playback.seekable;
+                activated => {
+                    Actions.mpv(["seek", "0", "absolute"]);
+                }
+            }
+            MenuItem {
+                title: "Jump To…";
+                enabled: Playback.seekable;
+                activated => {
+                    Actions.patina("jump-to");
+                }
+            }
+            MenuSeparator { }
+            Menu {
+                title: "Speed";
+                MenuItem {
+                    title: "Speed Up ×2";
+                    activated => {
+                        Actions.mpv(["multiply", "speed", "2"]);
+                    }
+                }
+                MenuItem {
+                    title: "Speed Up 10%";
+                    activated => {
+                        Actions.mpv(["multiply", "speed", "1.1"]);
+                    }
+                }
+                MenuItem {
+                    title: "Slow Down ×0.5";
+                    activated => {
+                        Actions.mpv(["multiply", "speed", "0.5"]);
+                    }
+                }
+                MenuItem {
+                    title: "Slow Down 10%";
+                    activated => {
+                        Actions.mpv(["multiply", "speed", "0.9091"]);
+                    }
+                }
+                MenuItem {
+                    title: "Normal Speed";
+                    checked: Playback.speed == 1;
+                    activated => {
+                        Actions.set("speed", "1");
+                    }
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: Playback.ab-b >= 0 ? "Clear A-B Loop" : Playback.ab-a >= 0 ? "Set A-B Loop End" : "Set A-B Loop Start";
+                enabled: Playback.seekable;
+                activated => {
+                    Actions.mpv(["ab-loop"]);
+                }
+            }
+            MenuItem {
+                title: "Loop File";
+                checked: Playback.loop-file;
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.patina("toggle-loop-file");
+                }
+            }
+            MenuItem {
+                title: "Loop Playlist";
+                checked: Playback.loop-playlist;
+                activated => {
+                    Actions.patina("toggle-loop-playlist");
+                }
+            }
+            MenuItem {
+                title: "Shuffle";
+                checked: Playback.shuffle;
+                activated => {
+                    Actions.patina("toggle-shuffle");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Previous Item";
+                enabled: Media.playlist-pos > 0;
+                activated => {
+                    Actions.mpv(["playlist-prev"]);
+                }
+            }
+            MenuItem {
+                title: "Next Item";
+                enabled: Media.playlist-pos >= 0 && Media.playlist-pos < Media.playlist.length - 1;
+                activated => {
+                    Actions.mpv(["playlist-next"]);
+                }
+            }
+            MenuItem {
+                title: "Playlist…";
+                activated => {
+                    Actions.patina("toggle-sidebar playlist");
+                }
+            }
+            Menu {
+                title: "Chapters";
+                enabled: Media.chapters.length > 0;
+                MenuItem {
+                    title: "Previous Chapter";
+                    activated => {
+                        Actions.mpv(["add", "chapter", "-1"]);
+                    }
+                }
+                MenuItem {
+                    title: "Next Chapter";
+                    activated => {
+                        Actions.mpv(["add", "chapter", "1"]);
+                    }
+                }
+                MenuSeparator { }
+                for chapter[index] in Media.chapters: MenuItem {
+                    title: chapter.time-text + "  " + chapter.title;
+                    checked: chapter.current;
+                    activated => {
+                        Actions.select-chapter(index);
+                    }
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Take Screenshot";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("screenshot");
+                }
+            }
+            MenuItem {
+                title: "Take Screenshot without Subtitles";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("screenshot video");
+                }
+            }
+            MenuItem {
+                title: "Open Screenshot Folder";
+                activated => {
+                    Actions.patina("open-screenshot-folder");
+                }
+            }
+        }
+
+        Menu {
+            title: "Video";
+            MenuItem {
+                title: root.fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+                activated => {
+                    Actions.patina("toggle-fullscreen");
+                }
+            }
+            MenuItem {
+                title: "Float on Top";
+                checked: root.always-on-top;
+                activated => {
+                    Actions.patina("toggle-ontop");
+                }
+            }
+            MenuItem {
+                title: "Picture in Picture";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("toggle-pip");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Half Size";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("window-scale 0.5");
+                }
+            }
+            MenuItem {
+                title: "Normal Size";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("window-scale 1");
+                }
+            }
+            MenuItem {
+                title: "Double Size";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("window-scale 2");
+                }
+            }
+            MenuItem {
+                title: "Fit to Screen";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("fit-to-screen");
+                }
+            }
+            MenuItem {
+                title: "Bigger Window";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("bigger-window");
+                }
+            }
+            MenuItem {
+                title: "Smaller Window";
+                enabled: Playback.has-video;
+                activated => {
+                    Actions.patina("smaller-window");
+                }
+            }
+            MenuSeparator { }
+            Menu {
+                title: "Video Track";
+                enabled: Media.video-tracks.length > 0;
+                for track in Media.video-tracks: MenuItem {
+                    title: track.title;
+                    checked: track.selected;
+                    activated => {
+                        Actions.select-track("video", track.id);
+                    }
+                }
+            }
+            Menu {
+                title: "Aspect Ratio";
+                for label[index] in ["Default", "4:3", "16:9", "16:10", "21:9", "5:4"]: MenuItem {
+                    title: label;
+                    checked: Playback.aspect-index == index;
+                    activated => {
+                        Actions.patina("aspect " + index);
+                    }
+                }
+            }
+            Menu {
+                title: "Crop";
+                for label[index] in ["None", "4:3", "16:9", "16:10", "21:9", "5:4"]: MenuItem {
+                    title: label;
+                    checked: Playback.crop-index == index;
+                    activated => {
+                        Actions.patina("crop " + index);
+                    }
+                }
+            }
+            Menu {
+                title: "Rotation";
+                for degrees in [0, 90, 180, 270]: MenuItem {
+                    title: degrees + "°";
+                    checked: Playback.rotation == degrees;
+                    activated => {
+                        Actions.set("video-rotate", degrees);
+                    }
+                }
+            }
+            MenuItem {
+                title: "Flip";
+                checked: Playback.flipped;
+                activated => {
+                    Actions.patina("toggle-flip");
+                }
+            }
+            MenuItem {
+                title: "Mirror";
+                checked: Playback.mirrored;
+                activated => {
+                    Actions.patina("toggle-mirror");
+                }
+            }
+            MenuItem {
+                title: "Deinterlace";
+                checked: Playback.deinterlace;
+                activated => {
+                    Actions.mpv(["cycle", "deinterlace"]);
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Video Settings…";
+                activated => {
+                    Actions.patina("toggle-sidebar video");
+                }
+            }
+        }
+
+        Menu {
+            title: "Audio";
+            Menu {
+                title: "Audio Track";
+                enabled: Media.audio-tracks.length > 1;
+                for track in Media.audio-tracks: MenuItem {
+                    title: track.title;
+                    checked: track.selected;
+                    activated => {
+                        Actions.select-track("audio", track.id);
+                    }
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Volume Up";
+                activated => {
+                    Actions.mpv(["add", "volume", "5"]);
+                }
+            }
+            MenuItem {
+                title: "Volume Down";
+                activated => {
+                    Actions.mpv(["add", "volume", "-5"]);
+                }
+            }
+            MenuItem {
+                title: "Mute";
+                checked: Playback.muted;
+                activated => {
+                    Actions.mpv(["cycle", "mute"]);
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Audio Delay +0.5 s";
+                activated => {
+                    Actions.mpv(["add", "audio-delay", "0.5"]);
+                }
+            }
+            MenuItem {
+                title: "Audio Delay −0.5 s";
+                activated => {
+                    Actions.mpv(["add", "audio-delay", "-0.5"]);
+                }
+            }
+            MenuItem {
+                title: "Reset Audio Delay";
+                enabled: Playback.audio-delay != 0;
+                activated => {
+                    Actions.set("audio-delay", "0");
+                }
+            }
+            MenuSeparator { }
+            Menu {
+                title: "Audio Device";
+                for device in Media.audio-devices: MenuItem {
+                    title: device.description;
+                    checked: device.selected;
+                    activated => {
+                        Actions.set("audio-device", device.name);
+                    }
+                }
+            }
+            MenuItem {
+                title: "Load External Audio…";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.patina("load-audio");
+                }
+            }
+            MenuItem {
+                title: "Audio Settings…";
+                activated => {
+                    Actions.patina("toggle-sidebar audio");
+                }
+            }
+        }
+
+        Menu {
+            title: "Subtitles";
+            Menu {
+                title: "Subtitle";
+                enabled: Playback.has-media;
+                for track in Media.sub-tracks: MenuItem {
+                    title: track.title;
+                    checked: track.selected;
+                    activated => {
+                        Actions.select-track("sub", track.id);
+                    }
+                }
+            }
+            Menu {
+                title: "Secondary Subtitle";
+                enabled: Playback.has-media;
+                for track in Media.secondary-sub-tracks: MenuItem {
+                    title: track.title;
+                    checked: track.selected;
+                    activated => {
+                        Actions.select-secondary-sub(track.id);
+                    }
+                }
+            }
+            MenuItem {
+                title: "Load External Subtitle…";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.patina("load-subtitles");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Show Subtitles";
+                checked: Playback.sub-visible;
+                activated => {
+                    Actions.mpv(["cycle", "sub-visibility"]);
+                }
+            }
+            MenuItem {
+                title: "Delay +0.5 s";
+                activated => {
+                    Actions.mpv(["add", "sub-delay", "0.5"]);
+                }
+            }
+            MenuItem {
+                title: "Delay −0.5 s";
+                activated => {
+                    Actions.mpv(["add", "sub-delay", "-0.5"]);
+                }
+            }
+            MenuItem {
+                title: "Reset Delay";
+                enabled: Playback.sub-delay != 0;
+                activated => {
+                    Actions.set("sub-delay", "0");
+                }
+            }
+            MenuItem {
+                title: "Bigger";
+                activated => {
+                    Actions.mpv(["add", "sub-scale", "0.1"]);
+                }
+            }
+            MenuItem {
+                title: "Smaller";
+                activated => {
+                    Actions.mpv(["add", "sub-scale", "-0.1"]);
+                }
+            }
+            MenuItem {
+                title: "Reset Size";
+                enabled: Playback.sub-scale != 1;
+                activated => {
+                    Actions.set("sub-scale", "1");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Subtitle Settings…";
+                activated => {
+                    Actions.patina("toggle-sidebar subtitles");
+                }
+            }
+        }
+
+        Menu {
+            title: "Window";
+            MenuItem {
+                title: "Minimize";
+                activated => {
+                    Actions.patina("minimize");
+                }
+            }
+            MenuItem {
+                title: "Playlist";
+                activated => {
+                    Actions.patina("toggle-sidebar playlist");
+                }
+            }
+            MenuItem {
+                title: "Chapters";
+                activated => {
+                    Actions.patina("toggle-sidebar chapters");
+                }
+            }
+            MenuItem {
+                title: "Quick Settings";
+                activated => {
+                    Actions.patina("toggle-sidebar video");
+                }
+            }
+        }
+
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "Keyboard Shortcuts";
+                activated => {
+                    Actions.patina("show-shortcuts");
+                }
+            }
+            MenuItem {
+                title: "Patina Website";
+                activated => {
+                    Actions.patina("open-website");
+                }
+            }
+            MenuItem {
+                title: "About Patina";
+                activated => {
+                    Actions.patina("about");
+                }
+            }
+        }
+    }
+}
