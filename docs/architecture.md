@@ -152,6 +152,33 @@ frame has been drawn. Thumbnails reach the window as they are made, and are
 cached as JPEGs keyed by path, size and modification time, with the least
 recently used files evicted past a size limit.
 
+## Playlist information
+
+`probe.rs` fills in the playlist's durations as IINA's prefetching does: one
+more headless mpv core, on a thread of its own, opens each local file
+(paused, with nothing shown or heard) just far enough to read its length and
+tags. `App` caches the results and passes them to the windows as they come.
+
+## Subtitle matching
+
+`subtitle_match.rs` follows IINA's matcher. Subtitle files in the video's
+folder and its immediate subfolders are scored against every video in the
+folder: by name, then by episode number with the series names compared by
+edit distance, so each file goes only to the video it fits best. Each
+player core registers mpv's `on_load` hook; when it fires, a short-lived
+thread finds the matches and sets them as that file's `sub-files` before
+continuing the hook, so mpv loads and selects them exactly as it would its
+own auto-loaded files (mpv's `sub-auto` is off in this mode).
+
+## History and inspector windows
+
+`history.rs` and `inspector.rs` each drive a window of their own, created on
+first use and kept by `App`. The history window rebuilds its rows from the
+history whenever it changes, and checks for missing files on another thread.
+The inspector follows the active player; while open, it reads the current
+tab's properties once a second with `mpv_get_property_async`, and the
+player's event pump hands the replies back to it.
+
 ## System media controls
 
 `media_controls/` publishes what the active window plays (the window focused

@@ -6,6 +6,8 @@ export struct PlaylistItem {
     detail: string,
     duration: string,
     current: bool,
+    // How far it was watched, 0..1, or negative when never played.
+    progress: float,
 }
 
 export struct TrackItem {

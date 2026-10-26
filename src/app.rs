@@ -45,6 +45,12 @@ pub struct App {
     /// The window media keys act on: the one focused most recently.
     active: RefCell<Weak<PlayerController>>,
     preferences: RefCell<Option<Rc<crate::preferences::PreferencesController>>>,
+    history_window: RefCell<Option<Rc<crate::history::HistoryController>>>,
+    inspector: RefCell<Option<Rc<crate::inspector::InspectorController>>>,
+    prober: RefCell<Option<crate::probe::Prober>>,
+    /// Durations and tags of local files; None for files that can't be read.
+    probes: RefCell<std::collections::HashMap<String, Option<crate::probe::Probe>>>,
+    probing: RefCell<std::collections::HashSet<String>>,
 }
 
 impl App {
@@ -66,6 +72,11 @@ impl App {
             now_playing: RefCell::new(NowPlaying::default()),
             active: RefCell::new(Weak::new()),
             preferences: RefCell::new(None),
+            history_window: RefCell::new(None),
+            inspector: RefCell::new(None),
+            prober: RefCell::new(None),
+            probes: RefCell::new(std::collections::HashMap::new()),
+            probing: RefCell::new(std::collections::HashSet::new()),
         });
         CURRENT.with(|current| *current.borrow_mut() = Rc::downgrade(&app));
         app
@@ -298,6 +309,53 @@ impl App {
         let _ = slint::quit_event_loop();
     }
 
+    // ---- File information -----------------------------------------------
+
+    /// The probe of a local file, requesting it in the background the first
+    /// time. `None` until it is known.
+    pub fn probe(self: &Rc<Self>, path: &str) -> Option<crate::probe::Probe> {
+        if let Some(known) = self.probes.borrow().get(path) {
+            return known.clone();
+        }
+        if crate::util::is_url(path) || !self.probing.borrow_mut().insert(path.to_owned()) {
+            return None;
+        }
+        if self.prober.borrow().is_none() {
+            let (prober, results) = crate::probe::Prober::start();
+            *self.prober.borrow_mut() = Some(prober);
+            let weak = Rc::downgrade(self);
+            let spawned = slint::spawn_local(async move {
+                while let Ok((path, probe)) = results.recv().await {
+                    let Some(app) = weak.upgrade() else { break };
+                    app.probing.borrow_mut().remove(&path);
+                    app.probes.borrow_mut().insert(path.clone(), probe);
+                    let windows = app.windows.borrow().clone();
+                    for window in windows {
+                        window.probe_ready(&path);
+                    }
+                }
+            });
+            if let Err(error) = spawned {
+                log::warn!("could not receive file information: {error}");
+            }
+        }
+        if let Some(prober) = &*self.prober.borrow() {
+            prober.request(path);
+        }
+        None
+    }
+
+    /// How far `path` was watched, from the history: 0..1.
+    pub fn watched(&self, path: &str) -> Option<f64> {
+        self.history
+            .borrow()
+            .entries
+            .iter()
+            .find(|entry| entry.path == path)
+            .filter(|entry| entry.duration > 0.0 && entry.position > 0.0)
+            .map(|entry| (entry.position / entry.duration).clamp(0.0, 1.0))
+    }
+
     // ---- Preferences ----------------------------------------------------
 
     pub fn open_preferences(self: &Rc<Self>) {
@@ -316,6 +374,75 @@ impl App {
             },
         };
         controller.show();
+    }
+
+    // ---- Playback history window ---------------------------------------
+
+    pub fn open_history(self: &Rc<Self>) {
+        let existing = self.history_window.borrow().clone();
+        let controller = match existing {
+            Some(controller) => controller,
+            None => match crate::history::HistoryController::new(self) {
+                Ok(controller) => {
+                    *self.history_window.borrow_mut() = Some(controller.clone());
+                    controller
+                }
+                Err(error) => {
+                    log::error!("could not open the playback history: {error}");
+                    return;
+                }
+            },
+        };
+        controller.show();
+    }
+
+    // ---- Inspector -------------------------------------------------------
+
+    pub fn open_inspector(self: &Rc<Self>) {
+        let existing = self.inspector.borrow().clone();
+        let inspector = match existing {
+            Some(inspector) => inspector,
+            None => match crate::inspector::InspectorController::new(self) {
+                Ok(inspector) => {
+                    *self.inspector.borrow_mut() = Some(inspector.clone());
+                    inspector
+                }
+                Err(error) => {
+                    log::error!("could not open the inspector: {error}");
+                    return;
+                }
+            },
+        };
+        let active = self.active.borrow().upgrade();
+        if let Some(active) = active {
+            inspector.follow(&active);
+        }
+        inspector.show();
+    }
+
+    pub fn inspector_reply(
+        &self,
+        userdata: u64,
+        result: crate::mpv::Result<(String, crate::mpv::Node)>,
+    ) {
+        let inspector = self.inspector.borrow().clone();
+        if let Some(inspector) = inspector {
+            inspector.reply(userdata, result);
+        }
+    }
+
+    /// Plays a file from the history window: in the active window, or in a
+    /// new one.
+    pub fn play_from_history(self: &Rc<Self>, path: String, new_window: bool) {
+        let active = self.active.borrow().upgrade();
+        let target = match active {
+            Some(active) if !new_window => Some(active),
+            _ => self.new_window(),
+        };
+        if let Some(target) = target {
+            target.open(vec![path], false);
+            target.raise();
+        }
     }
 
     /// Audio devices as (name, description), from the active player.
@@ -364,6 +491,10 @@ impl App {
         if changed {
             *self.active.borrow_mut() = Rc::downgrade(controller);
             controller.publish_now_playing();
+            let inspector = self.inspector.borrow().clone();
+            if let Some(inspector) = inspector {
+                inspector.follow(controller);
+            }
         }
     }
 
@@ -456,11 +587,17 @@ impl App {
             return;
         }
         let mut history = self.history.borrow_mut();
-        let position = history
+        let (position, known_duration) = history
             .entries
             .iter()
             .find(|entry| entry.path == path)
-            .map_or(0.0, |entry| entry.position);
+            .map_or((0.0, 0.0), |entry| (entry.position, entry.duration));
+        // The duration may not be known yet when the file has just loaded.
+        let duration = if duration > 0.0 {
+            duration
+        } else {
+            known_duration
+        };
         history.record(HistoryEntry {
             path: path.to_owned(),
             title: if title.is_empty() {
@@ -484,6 +621,19 @@ impl App {
             .borrow_mut()
             .update_progress(path, position, duration);
         settings::save_json(&self.paths.history_file(), &*self.history.borrow());
+        self.refresh_history_window();
+    }
+
+    pub fn history_entries(&self) -> Vec<HistoryEntry> {
+        self.history.borrow().entries.clone()
+    }
+
+    pub fn remove_from_history(&self, path: &str) {
+        self.history
+            .borrow_mut()
+            .entries
+            .retain(|entry| entry.path != path);
+        self.history_changed();
     }
 
     pub fn clear_history(&self) {
@@ -496,6 +646,14 @@ impl App {
         let windows = self.windows.borrow().clone();
         for window in windows {
             window.refresh_recent();
+        }
+        self.refresh_history_window();
+    }
+
+    fn refresh_history_window(&self) {
+        let history_window = self.history_window.borrow().clone();
+        if let Some(history_window) = history_window {
+            history_window.refresh();
         }
     }
 

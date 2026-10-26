@@ -1,0 +1,155 @@
+// The inspector, after IINA's: what the active player is playing and how,
+// refreshed every second while the window is open.
+
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { IconButton, Segmented, TextButton } from "widgets.slint";
+
+// A section heading (`section`), or a label and its value.
+export struct InspectorRow {
+    section: bool,
+    label: string,
+    value: string,
+    // The value is unavailable or an error.
+    dim: bool,
+    // A watched property, which can be removed.
+    removable: bool,
+}
+
+component Row inherits Rectangle {
+    in property <InspectorRow> entry;
+    callback remove;
+    min-height: layout.preferred-height;
+
+    layout := HorizontalLayout {
+        padding-top: 3px;
+        padding-bottom: 3px;
+        spacing: 12px;
+
+        Text {
+            width: 150px;
+            text: root.entry.label;
+            color: Theme.secondary-text;
+            font-size: Theme.font-normal;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+        // Selectable, so values can be copied.
+        TextInput {
+            horizontal-stretch: 1;
+            text: root.entry.value;
+            read-only: true;
+            wrap: char-wrap;
+            color: root.entry.dim ? Theme.tertiary-text : Theme.text;
+            selection-background-color: Theme.selection;
+            font-size: Theme.font-normal;
+        }
+        if root.entry.removable: IconButton {
+            width: 20px;
+            height: 20px;
+            icon: @image-url("icons/close.svg");
+            icon-size: 10px;
+            hover-background: true;
+            tooltip: "Stop watching";
+            clicked => {
+                root.remove();
+            }
+        }
+    }
+}
+
+export component InspectorWindow inherits Window {
+    title: "Inspector";
+    icon: @image-url("icons/patina.svg");
+    background: #1c1c1e;
+    preferred-width: 460px;
+    preferred-height: 560px;
+    min-width: 360px;
+    min-height: 320px;
+    default-font-size: Theme.font-normal;
+
+    in property <int> tab;
+    in property <[InspectorRow]> rows;
+    // What is being inspected.
+    in property <string> subject;
+    in property <string> watch-error;
+
+    callback select-tab(int);
+    callback add-watch(string);
+    callback remove-watch(int);
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+
+        Segmented {
+            options: ["General", "Tracks", "Status", "Watch"];
+            selected: root.tab;
+            activated(index) => {
+                root.select-tab(index);
+            }
+        }
+
+        Text {
+            text: root.subject;
+            color: Theme.tertiary-text;
+            font-size: Theme.font-small;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-right: 10px;
+                for entry[index] in root.rows: VerticalLayout {
+                    if entry.section: Text {
+                        height: 30px;
+                        text: entry.label;
+                        color: Theme.text;
+                        font-size: Theme.font-small;
+                        font-weight: 700;
+                        vertical-alignment: bottom;
+                    }
+                    if !entry.section: Row {
+                        entry: entry;
+                        remove => {
+                            root.remove-watch(index);
+                        }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+            }
+        }
+
+        if root.tab == 3: VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 8px;
+                field := LineEdit {
+                    horizontal-stretch: 1;
+                    placeholder-text: "mpv property, e.g. demuxer-cache-state";
+                    accepted(text) => {
+                        root.add-watch(text);
+                        self.text = "";
+                    }
+                }
+                TextButton {
+                    text: "Watch";
+                    enabled: field.text != "";
+                    clicked => {
+                        root.add-watch(field.text);
+                        field.text = "";
+                    }
+                }
+            }
+            if root.watch-error != "": Text {
+                text: root.watch-error;
+                color: Theme.danger;
+                font-size: Theme.font-small;
+            }
+        }
+    }
+}

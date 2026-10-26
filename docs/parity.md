@@ -16,7 +16,7 @@ testing has been on Linux (X11 and Wayland).
 | Milestone | Scope | State |
 | --- | --- | --- |
 | M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (macOS menu bar and title bar still to do) |
-| M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | in progress: media keys, preferences, key binding editor and thumbnails are done |
+| M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done on Linux (Windows and macOS compile but are not yet run) |
 | M3 Advanced parity | music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | planned |
 | M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | planned |
 | M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | planned |
@@ -87,12 +87,13 @@ testing has been on Linux (X11 and Wayland).
 
 | Item | IINA | Patina |
 | --- | --- | --- |
-| PLC-01 | Playlist rows | partial: name, folder, current item; durations and progress planned |
+| PLC-01 | Playlist rows | partial: name, folder, current item, duration, watched progress; series-prefix folding and artist/title display planned |
+| PLC-02 | Durations prefetched in the background | done: a headless mpv reads each local file's length and tags; the footer shows the total |
 | PLC-03 | Loop, shuffle, sort, add, remove, clear | partial: sort planned |
 | PLC-04 | Double-click to play | done |
-| PLC-05 | Drag to reorder, drop to insert | partial: move up/down buttons; drag reordering planned |
+| PLC-05 | Drag to reorder, drop to insert | partial: drag reordering with an insertion line; dropped files are added at the end (dropping at a position, cut/copy/paste planned) |
 | PLC-06 | Row context menu | planned |
-| PLC-07 | Add files from the same folder | done (mpv `autocreate-playlist=same`) |
+| PLC-07 | Add files from the same folder | done (mpv `autocreate-playlist=same`; subfolders are left out, while an opened folder is read recursively) |
 | PLC-08 | Auto-play next, repeat on open | partial: auto-play next (preference); repeat on open planned |
 | PLC-10 | Save playlist | partial: writes `.m3u8`; not yet tested |
 | PLC-11 | Delete current file | planned |
@@ -168,7 +169,8 @@ once and applied to running players, as IINA's option observers do
 | SUB-01 | Primary and secondary subtitles | done |
 | SUB-02 | Track naming | done: title, language name, codec, format and flags |
 | SUB-03 | External subtitles | done: dialog, drop |
-| SUB-04..05 | Intelligent auto-matching | planned (mpv's own exact-name matching applies today) |
+| SUB-04 | Intelligent auto-matching | done: names, episode numbers (S01E02, 1x02, "- 02") with series-name similarity, the folder's immediate subfolders, a lone video takes the folder's subtitles, preferred languages first; matches reach mpv through its `on_load` hook so its own track selection applies. The extra search paths and priority strings are planned |
+| SUB-05 | Per-file "Wrong Subtitle" overrides | planned |
 | SUB-06..09 | Online subtitles | planned |
 | SUB-10 | Preferred languages | done (plain text field; ISO 639 autocompletion planned) |
 | SUB-11 | Encodings | partial: default encoding preference; the per-file Encoding menu is planned |
@@ -183,10 +185,13 @@ once and applied to running players, as IINA's option observers do
 | MUS-01..10 | Music mode | planned |
 | PIP-01..04 | Picture in picture | adapted, partial: a small always-on-top window without the title bar |
 | HIS-01 | Resume through watch-later | done |
-| HIS-02..03 | History window | partial: history is recorded with position and duration; the window is planned |
+| HIS-02 | History window | done: grouped by date or folder, search, watched progress, missing files dimmed; Play, Play in New Window, Show in File Manager, Remove; Return, Ctrl+Return, Delete, Ctrl+L, Ctrl+F |
+| HIS-03 | History store | adapted: JSON in the data folder, one entry per file with its position and length |
 | HIS-04..05 | Recent files and resume button | done |
 | HIS-06 | Clearing data | done: Preferences > Utilities clears history, saved positions and thumbnails |
-| INS-01..05 | Inspector | planned (video and audio details show in Quick Settings) |
+| INS-01..03 | Inspector: General, Tracks, Status | done: follows the active window, refreshed every second with asynchronous property reads |
+| INS-04 | Watch tab | done: any mpv property, kept in the preferences |
+| INS-05 | No polling while closed | done |
 | SHOT-01..02 | Screenshots | done: with or without subtitles, folder, format |
 | SHOT-03 | Preview card | planned |
 | SHOT-05 | Seek-bar thumbnails | done: 100 per local video from a background mpv, cached as JPEG with a size limit |

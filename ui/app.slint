@@ -7,8 +7,10 @@ import { WelcomeView } from "welcome.slint";
 import { PromptDialog, AboutDialog, ShortcutsDialog, ShortcutItem } from "dialogs.slint";
 import { Spinner, IconButton } from "widgets.slint";
 import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
+import { HistoryWindow, HistoryRow } from "history.slint";
+import { InspectorWindow, InspectorRow } from "inspector.slint";
 
-export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow }
+export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, InspectorWindow, InspectorRow }
 
 export component PlayerWindow inherits Window {
     title: Playback.has-media ? Playback.title : "Patina";

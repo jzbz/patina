@@ -66,13 +66,15 @@ fn cstring(value: &str) -> Result<CString> {
     CString::new(value).map_err(|_| Error::new(-4, format!("{value:?} contains a NUL byte")))
 }
 
-/// A scalar value for an option or property.
+/// A value for an option or property.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     String(String),
     Flag(bool),
     Int(i64),
     Double(f64),
+    /// A list of strings, as string-list options take.
+    List(Vec<String>),
 }
 
 impl From<&str> for Value {
@@ -127,6 +129,33 @@ fn with_raw_value<R>(
         Value::Double(double) => {
             let mut double = *double;
             f(ffi::MPV_FORMAT_DOUBLE, (&raw mut double).cast())
+        }
+        Value::List(items) => {
+            let items = items
+                .iter()
+                .map(|item| cstring(item))
+                .collect::<Result<Vec<_>>>()?;
+            let mut values: Vec<ffi::mpv_node> = items
+                .iter()
+                .map(|item| ffi::mpv_node {
+                    u: ffi::mpv_node_u {
+                        string: item.as_ptr().cast_mut(),
+                    },
+                    format: ffi::MPV_FORMAT_STRING,
+                })
+                .collect();
+            let mut list = ffi::mpv_node_list {
+                num: c_int::try_from(values.len()).unwrap_or(c_int::MAX),
+                values: values.as_mut_ptr(),
+                keys: std::ptr::null_mut(),
+            };
+            let mut node = ffi::mpv_node {
+                u: ffi::mpv_node_u {
+                    list: &raw mut list,
+                },
+                format: ffi::MPV_FORMAT_NODE_ARRAY,
+            };
+            f(ffi::MPV_FORMAT_NODE, (&raw mut node).cast())
         }
     })
 }
@@ -271,6 +300,17 @@ impl Mpv {
         check(code, || format!("setting {name} to {value:?}"))
     }
 
+    /// Sets a property, waiting for mpv. Never call this on the UI thread.
+    pub fn set_property(&self, name: &str, value: impl Into<Value>) -> Result<()> {
+        let value = value.into();
+        let cname = cstring(name)?;
+        let code = with_raw_value(&value, |format, data| {
+            // SAFETY: valid handle; `data` matches `format` and outlives the call.
+            unsafe { (self.api.mpv_set_property)(self.ptr(), cname.as_ptr(), format, data) }
+        })?;
+        check(code, || format!("setting {name} to {value:?}"))
+    }
+
     /// Reads a property, waiting for mpv. Never call this on the UI thread.
     pub fn get_property(&self, name: &str) -> Result<Node> {
         let cname = cstring(name)?;
@@ -292,6 +332,39 @@ impl Mpv {
             (self.api.mpv_free_node_contents)(&mut raw);
             Ok(node)
         }
+    }
+
+    /// Reads a property without waiting; the value arrives as
+    /// [`Event::GetPropertyReply`] carrying `userdata`.
+    pub fn get_property_async(&self, userdata: u64, name: &str) -> Result<()> {
+        let cname = cstring(name)?;
+        // SAFETY: valid handle and property name.
+        let code = unsafe {
+            (self.api.mpv_get_property_async)(
+                self.ptr(),
+                userdata,
+                cname.as_ptr(),
+                ffi::MPV_FORMAT_NODE,
+            )
+        };
+        check(code, || format!("reading {name}"))
+    }
+
+    /// Asks mpv to pause at hook `name` (such as `on_preloaded`) and send an
+    /// [`Event::Hook`]; mpv waits there until [`Mpv::hook_continue`].
+    pub fn hook_add(&self, userdata: u64, name: &str, priority: i32) -> Result<()> {
+        let cname = cstring(name)?;
+        // SAFETY: valid handle and hook name.
+        let code =
+            unsafe { (self.api.mpv_hook_add)(self.ptr(), userdata, cname.as_ptr(), priority) };
+        check(code, || format!("adding the {name} hook"))
+    }
+
+    /// Lets mpv carry on after the hook event with this `id`.
+    pub fn hook_continue(&self, id: u64) -> Result<()> {
+        // SAFETY: valid handle; mpv ignores ids it doesn't know.
+        let code = unsafe { (self.api.mpv_hook_continue)(self.ptr(), id) };
+        check(code, || "continuing a hook".into())
     }
 
     /// Reports changes of `name` as [`Event::PropertyChange`] with `userdata`.
@@ -354,16 +427,6 @@ impl Mpv {
             (self.api.mpv_free_node_contents)(&mut raw);
             Ok(node)
         }
-    }
-
-    pub fn set_property(&self, name: &str, value: impl Into<Value>) -> Result<()> {
-        let value = value.into();
-        let cname = cstring(name)?;
-        let code = with_raw_value(&value, |format, data| {
-            // SAFETY: valid handle; `data` matches `format` and outlives the call.
-            unsafe { (self.api.mpv_set_property)(self.ptr(), cname.as_ptr(), format, data) }
-        })?;
-        check(code, || format!("setting {name} to {value:?}"))
     }
 
     pub fn get_f64(&self, name: &str) -> Result<f64> {

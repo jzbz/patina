@@ -28,11 +28,15 @@ and its state in Patina.
 - On-screen messages for volume, seeking, speed, delays, tracks, loops,
   chapters and video adjustments
 - The playlist and chapters sidebar, with other files from the same folder
-  added automatically
+  added automatically, each file's length and how much of it you watched,
+  and drag-and-drop reordering
 - Quick settings for video (tracks, aspect ratio, crop, rotation, flip,
   mirror, speed, deinterlacing, hardware decoding, colour), audio (tracks,
   external audio, delay, 10-band equalizer, output device) and subtitles
   (primary and secondary tracks, external files, delay, scale, position)
+- Subtitle files found for you as IINA does: by name, by episode number
+  across a season folder, in subfolders such as `Subs/`, preferred
+  languages first
 - An application menu (right click, or the title bar's menu button) with
   IINA's File, Playback, Video, Audio, Subtitles, Window and Help menus
 - A preferences window with IINA's pages and a search field; changes
@@ -46,8 +50,11 @@ and its state in Patina.
   preferences
 - Several windows at once, each with its own player
 - Keeping the screen awake during playback
-- Resuming where you left off, history, screenshots, URLs and network
-  streams, A-B loops, and a compact always-on-top picture-in-picture window
+- A playback history window, grouped by day or folder and searchable, and
+  an inspector with the file, its tracks, live playback statistics and any
+  mpv property you choose to watch
+- Resuming where you left off, screenshots, URLs and network streams, A-B
+  loops, and a compact always-on-top picture-in-picture window
 
 Written but not yet tested: drag and drop, playing from standard input,
 online video through mpv's yt-dlp support, saving playlists, and pausing
@@ -117,6 +124,7 @@ Help > Keyboard Shortcuts lists all of them.
 | ( / ), _ | Audio delay, reset |
 | Ctrl+J | Jump to a time |
 | Ctrl+, | Preferences |
+| Ctrl+Y, Ctrl+I | Playback history, inspector |
 | Ctrl+W, Ctrl+Q | Close the window, quit |
 
 With the mouse: double click toggles full screen, a click shows or hides the

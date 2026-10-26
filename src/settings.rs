@@ -178,6 +178,10 @@ pub struct Preferences {
     // Advanced.
     pub use_mpv_config: bool,
     pub mpv_options: Vec<(String, String)>,
+
+    // Inspector.
+    /// mpv properties shown in the inspector's Watch tab.
+    pub inspector_watch: Vec<String>,
 }
 
 impl Default for Preferences {
@@ -227,7 +231,7 @@ impl Default for Preferences {
             replaygain_preamp: 0.0,
             replaygain_clip: false,
             gapless_audio: "weak".into(),
-            sub_auto: "fuzzy".into(),
+            sub_auto: "smart".into(),
             sub_language: String::new(),
             sub_codepage: "auto".into(),
             sub_font: "sans-serif".into(),
@@ -274,6 +278,7 @@ impl Default for Preferences {
             key_bindings: String::new(),
             use_mpv_config: true,
             mpv_options: Vec::new(),
+            inspector_watch: Vec::new(),
         }
     }
 }
@@ -335,7 +340,15 @@ impl Preferences {
             ("replaygain-preamp", format!("{}", self.replaygain_preamp)),
             ("replaygain-clip", yes_no(self.replaygain_clip)),
             ("gapless-audio", self.gapless_audio.clone()),
-            ("sub-auto", self.sub_auto.clone()),
+            // Patina's own matching adds subtitle files itself.
+            (
+                "sub-auto",
+                if self.sub_auto == "smart" {
+                    "no".into()
+                } else {
+                    self.sub_auto.clone()
+                },
+            ),
             ("slang", self.sub_language.clone()),
             ("sub-codepage", self.sub_codepage.clone()),
             ("sub-font", self.sub_font.clone()),

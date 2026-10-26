@@ -17,19 +17,59 @@ component Divider inherits Rectangle {
     background: Theme.panel-divider;
 }
 
+// A playlist entry. Drag it to move it; the panel draws where it will land.
 component PlaylistRow inherits Rectangle {
     in property <PlaylistItem> item;
     in property <int> index;
-    in property <bool> first;
-    in property <bool> last;
+    in property <int> count;
+    // Where a dragged entry would be inserted, or -1.
+    in property <int> drop-position: -1;
+    in property <bool> dragged;
+    callback drag-to(int);
+    callback drop(int);
+
+    property <bool> dragging;
+    // The insertion point under the pointer: rows swap halfway across.
+    property <int> target: clamp(root.index + floor(touch.mouse-y / root.height + 0.5), 0, root.count);
+
     height: 44px;
     border-radius: Theme.control-radius;
-    background: root.item.current ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
+    background: root.item.current ? Theme.selection : touch.has-hover && !root.dragging ? Theme.hover : transparent;
+    opacity: root.dragged ? 0.45 : 1;
 
     touch := TouchArea {
+        mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.default;
         double-clicked => {
             Actions.play-index(root.index);
         }
+        moved => {
+            if !root.dragging && abs(self.mouse-y - self.pressed-y) > 5px {
+                root.dragging = true;
+            }
+            if root.dragging {
+                root.drag-to(root.target);
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && root.dragging {
+                root.dragging = false;
+                root.drop(root.target);
+            } else if event.kind == PointerEventKind.cancel && root.dragging {
+                root.dragging = false;
+                root.drop(-1);
+            }
+        }
+    }
+
+    if root.drop-position == root.index: Rectangle {
+        y: 0;
+        height: 2px;
+        background: Theme.accent;
+    }
+    if root.drop-position == root.count && root.index == root.count - 1: Rectangle {
+        y: root.height - 2px;
+        height: 2px;
+        background: Theme.accent;
     }
 
     HorizontalLayout {
@@ -71,58 +111,41 @@ component PlaylistRow inherits Rectangle {
             }
         }
 
-        if !touch.has-hover && !actions.has-hover: Text {
+        if !touch.has-hover && !remove.has-hover: Text {
             text: root.item.duration;
             color: Theme.secondary-text;
             font-size: Theme.font-small;
             vertical-alignment: center;
         }
 
-        actions := HorizontalLayout {
-            property <bool> has-hover: up.has-hover || down.has-hover || remove.has-hover;
-            visible: touch.has-hover || self.has-hover;
-            width: self.visible ? self.preferred-width : 0;
-            up := IconButton {
-                y: 8px;
-                width: 22px;
-                height: 22px;
-                icon: @image-url("icons/chevron-up.svg");
-                icon-size: 13px;
-                enabled: !root.first;
-                tooltip: "Move up";
-                clicked => {
-                    Actions.move-index(root.index, root.index - 1);
-                }
-            }
-            down := IconButton {
-                y: 8px;
-                width: 22px;
-                height: 22px;
-                icon: @image-url("icons/chevron-down.svg");
-                icon-size: 13px;
-                enabled: !root.last;
-                tooltip: "Move down";
-                clicked => {
-                    // mpv moves an entry in front of the target index.
-                    Actions.move-index(root.index, root.index + 2);
-                }
-            }
-            remove := IconButton {
-                y: 8px;
-                width: 22px;
-                height: 22px;
-                icon: @image-url("icons/close.svg");
-                icon-size: 12px;
-                tooltip: "Remove from playlist";
-                clicked => {
-                    Actions.remove-index(root.index);
-                }
+        remove := IconButton {
+            y: 10px;
+            width: (touch.has-hover || self.has-hover) && !root.dragging ? 24px : 0px;
+            height: 24px;
+            visible: self.width > 0;
+            icon: @image-url("icons/close.svg");
+            icon-size: 12px;
+            tooltip: "Remove from playlist";
+            clicked => {
+                Actions.remove-index(root.index);
             }
         }
+    }
+
+    // How far the entry was watched, as in IINA.
+    if root.item.progress > 0: Rectangle {
+        x: 34px;
+        y: root.height - 4px;
+        width: (root.width - 44px) * min(1, root.item.progress);
+        height: 2px;
+        border-radius: 1px;
+        background: Theme.playing.with-alpha(0.7);
     }
 }
 
 component PlaylistPanel inherits VerticalLayout {
+    property <int> drag-from: -1;
+    property <int> drop-position: -1;
     spacing: 8px;
 
     HorizontalLayout {
@@ -179,8 +202,21 @@ component PlaylistPanel inherits VerticalLayout {
         for item[index] in Media.playlist: PlaylistRow {
             item: item;
             index: index;
-            first: index == 0;
-            last: index == Media.playlist.length - 1;
+            count: Media.playlist.length;
+            drop-position: root.drop-position;
+            dragged: root.drag-from == index;
+            drag-to(position) => {
+                root.drag-from = index;
+                root.drop-position = position;
+            }
+            drop(position) => {
+                // mpv inserts the moved entry before `position`.
+                if position >= 0 && position != index && position != index + 1 {
+                    Actions.move-index(index, position);
+                }
+                root.drag-from = -1;
+                root.drop-position = -1;
+            }
         }
     }
 

@@ -6,6 +6,7 @@ use crate::mpv::{EndFileReason, Event, Mpv};
 use crate::player::state::{PlaybackState, Track, TrackKind, file_name};
 use crate::player::{self, Player, Prop};
 use crate::settings::ResizeWindow;
+use crate::subtitle_match;
 use crate::thumbnails;
 use crate::util::{self, format_delay, format_speed, format_time};
 use crate::{
@@ -77,6 +78,8 @@ pub struct PlayerController {
     thumbnails: RefCell<Vec<Option<slint::Image>>>,
     thumbnail_job: RefCell<Option<thumbnails::Job>>,
     thumbnail_path: RefCell<String>,
+    /// The playlist rows, kept so file information can update one row.
+    playlist_model: Rc<VecModel<PlaylistItem>>,
     this: Weak<PlayerController>,
 }
 
@@ -94,6 +97,7 @@ impl PlayerController {
             thumbnails: RefCell::new(Vec::new()),
             thumbnail_job: RefCell::new(None),
             thumbnail_path: RefCell::new(String::new()),
+            playlist_model: Rc::new(VecModel::default()),
             app: Rc::downgrade(app),
             window,
             player: RefCell::new(Some(player)),
@@ -117,6 +121,10 @@ impl PlayerController {
             pip_restore: Cell::new(None),
         });
 
+        controller
+            .window
+            .global::<Media>()
+            .set_playlist(ModelRc::from(controller.playlist_model.clone()));
         // Push the initial state so the interface starts consistent with it.
         controller.sync(&Prop::ALL.iter().copied().collect());
         controller.apply_preferences();
@@ -153,6 +161,27 @@ impl PlayerController {
 
     pub fn is_idle(&self) -> bool {
         self.state.borrow().idle && self.pending_open.borrow().is_empty()
+    }
+
+    /// Reads a property for the inspector; the value arrives as a reply
+    /// event, which goes to the inspector.
+    pub fn request_property(&self, userdata: u64, name: &str) {
+        if let Err(error) = self.mpv.get_property_async(userdata, name) {
+            log::debug!("{error}");
+        }
+    }
+
+    /// What the window plays, for the inspector.
+    pub fn media_name(&self) -> String {
+        let state = self.state.borrow();
+        crate::inspector::media_name(&state.path, &state.title)
+    }
+
+    /// Brings the window to the front.
+    pub fn raise(&self) {
+        let window = self.window.window();
+        window.set_minimized(false);
+        window.with_winit_window(|winit| winit.focus_window());
     }
 
     pub fn window(&self) -> &PlayerWindow {
@@ -314,7 +343,12 @@ impl PlayerController {
             } else {
                 "replace"
             };
-            player.command(&["loadfile", source, mode]);
+            if std::path::Path::new(source).is_dir() {
+                // Every media file inside, as IINA opens folders.
+                player.command(&["loadfile", source, mode, "-1", "directory-mode=recursive"]);
+            } else {
+                player.command(&["loadfile", source, mode]);
+            }
         }
         if !append {
             player.set("pause", self.app().prefs().pause_when_open);
@@ -363,6 +397,12 @@ impl PlayerController {
                     self.app()
                         .record_history(&state.path, &state.title, state.duration);
                 }
+                // mpv replaced the entry, with the folder's files when it
+                // makes a playlist of them; the file itself plays on.
+                Event::EndFile {
+                    reason: EndFileReason::Redirect,
+                    ..
+                } => {}
                 Event::EndFile { reason, error, .. } => {
                     self.loading.set(false);
                     changed.insert(Prop::PausedForCache);
@@ -422,6 +462,16 @@ impl PlayerController {
                     self.close();
                     return;
                 }
+                Event::GetPropertyReply { userdata, result }
+                    if userdata >= crate::inspector::REPLY_BASE =>
+                {
+                    self.app().inspector_reply(userdata, result);
+                }
+                Event::Hook {
+                    userdata: player::HOOK_LOAD,
+                    id,
+                    ..
+                } => self.before_load(id),
                 Event::QueueOverflow => log::warn!("mpv's event queue overflowed"),
                 _ => {}
             }
@@ -602,25 +652,25 @@ impl PlayerController {
             playback.set_secondary_sub_visible(state.secondary_sub_visible);
         }
 
+        if any(&[Prop::Duration])
+            && !any(&[Prop::Playlist, Prop::PlaylistPos])
+            && let Ok(index) = usize::try_from(state.playlist_pos)
+            && let Some(entry) = state.playlist.get(index)
+            && index < self.playlist_model.row_count()
+        {
+            self.playlist_model
+                .set_row_data(index, self.playlist_item(entry));
+            self.update_playlist_summary(&state);
+        }
         if any(&[Prop::Playlist, Prop::PlaylistPos]) {
             let items: Vec<PlaylistItem> = state
                 .playlist
                 .iter()
-                .map(|entry| PlaylistItem {
-                    title: entry.label().into(),
-                    detail: util::parent_directory(&entry.filename).into(),
-                    duration: SharedString::new(),
-                    current: entry.current,
-                })
+                .map(|entry| self.playlist_item(entry))
                 .collect();
-            let count = items.len();
-            media.set_playlist(ModelRc::new(VecModel::from(items)));
+            self.playlist_model.set_vec(items);
             media.set_playlist_pos(state.playlist_pos as i32);
-            media.set_playlist_summary(match count {
-                0 => "Empty".into(),
-                1 => "1 item".into(),
-                n => format!("{n} items").into(),
-            });
+            self.update_playlist_summary(&state);
         }
         if any(&[
             Prop::TrackList,
@@ -1307,6 +1357,8 @@ impl PlayerController {
                 app.new_window();
             }
             "preferences" => app.open_preferences(),
+            "history" => app.open_history(),
+            "inspector" => app.open_inspector(),
             "close-window" => self.close(),
             "quit" => app.quit(),
             "minimize" => self.window.window().set_minimized(true),
@@ -1845,6 +1897,111 @@ impl PlayerController {
                 window.with_winit_window(|winit| winit.focus_window());
             }
             Command::OpenUri(_) | Command::Quit => {}
+        }
+    }
+
+    // ---- Playlist ------------------------------------------------------
+
+    /// A playlist row: the name, its folder, its length once probed, and how
+    /// far it was watched.
+    fn playlist_item(&self, entry: &crate::player::state::PlaylistEntry) -> PlaylistItem {
+        let app = self.app();
+        let probe = app.probe(&entry.filename);
+        let state = self.state.borrow();
+        let duration = if entry.current && state.duration > 0.0 {
+            Some(state.duration)
+        } else {
+            probe
+                .as_ref()
+                .map(|probe| probe.duration)
+                .filter(|d| *d > 0.0)
+        };
+        PlaylistItem {
+            title: entry.label().into(),
+            detail: util::parent_directory(&entry.filename).into(),
+            duration: duration.map(format_time).unwrap_or_default().into(),
+            current: entry.current,
+            progress: app.watched(&entry.filename).map_or(-1.0, |p| p as f32),
+        }
+    }
+
+    fn update_playlist_summary(&self, state: &PlaybackState) {
+        let app = self.app();
+        let count = state.playlist.len();
+        let durations: Vec<Option<f64>> = state
+            .playlist
+            .iter()
+            .map(|entry| {
+                if entry.current && state.duration > 0.0 {
+                    Some(state.duration)
+                } else {
+                    app.probe(&entry.filename).map(|probe| probe.duration)
+                }
+            })
+            .collect();
+        let items = match count {
+            0 => "Empty".to_owned(),
+            1 => "1 item".to_owned(),
+            n => format!("{n} items"),
+        };
+        // IINA shows the total once every length is known.
+        let summary = if count > 0 && durations.iter().all(Option::is_some) {
+            let total: f64 = durations.iter().flatten().sum();
+            format!("{items} · {}", format_time(total))
+        } else {
+            items
+        };
+        self.window
+            .global::<Media>()
+            .set_playlist_summary(summary.into());
+    }
+
+    /// File information for `path` arrived; refresh its rows.
+    pub fn probe_ready(&self, path: &str) {
+        let state = self.state.borrow();
+        let mut found = false;
+        for (index, entry) in state.playlist.iter().enumerate() {
+            if entry.filename == path && index < self.playlist_model.row_count() {
+                let item = self.playlist_item(entry);
+                self.playlist_model.set_row_data(index, item);
+                found = true;
+            }
+        }
+        if found {
+            self.update_playlist_summary(&state);
+        }
+    }
+
+    // ---- Subtitle matching ----------------------------------------------
+
+    /// mpv is about to open a file. With Patina's subtitle matching on
+    /// (mpv's own `sub-auto` is off then), the subtitle files that belong
+    /// to it are found on a thread of their own and handed to mpv first.
+    fn before_load(&self, id: u64) {
+        let prefs = self.app().prefs();
+        let languages: Option<Vec<String>> = (prefs.sub_auto == "smart").then(|| {
+            prefs
+                .sub_language
+                .split(',')
+                .map(str::trim)
+                .filter(|code| !code.is_empty())
+                .map(str::to_owned)
+                .collect()
+        });
+        let mpv = self.mpv.clone();
+        let spawned = std::thread::Builder::new()
+            .name("subtitles".into())
+            .spawn(move || {
+                if let Some(languages) = languages {
+                    subtitle_match::load_for_current_file(&mpv, &languages);
+                }
+                if let Err(error) = mpv.hook_continue(id) {
+                    log::warn!("{error}");
+                }
+            });
+        if let Err(error) = spawned {
+            log::warn!("could not match subtitles: {error}");
+            let _ = self.mpv.hook_continue(id);
         }
     }
 

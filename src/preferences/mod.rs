@@ -63,6 +63,8 @@ const PRESETS: &[(&str, &str, bool)] = &[
     ("Smaller window", "smaller-window", true),
     ("Fit to screen", "fit-to-screen", true),
     ("Preferences", "preferences", true),
+    ("Playback history", "history", true),
+    ("Inspector", "inspector", true),
     ("New window", "new-window", true),
     ("Show in the file manager", "reveal-file", true),
     ("Float on top", "toggle-ontop", true),

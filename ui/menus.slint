@@ -65,6 +65,12 @@ export component MainMenu inherits ContextMenuArea {
                     Actions.patina("reveal-file");
                 }
             }
+            MenuItem {
+                title: "Playback History…";
+                activated => {
+                    Actions.patina("history");
+                }
+            }
             MenuSeparator { }
             MenuItem {
                 title: "Preferences…";
@@ -611,6 +617,19 @@ export component MainMenu inherits ContextMenuArea {
                 title: "Quick Settings";
                 activated => {
                     Actions.patina("toggle-sidebar video");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Inspector";
+                activated => {
+                    Actions.patina("inspector");
+                }
+            }
+            MenuItem {
+                title: "Playback History";
+                activated => {
+                    Actions.patina("history");
                 }
             }
         }

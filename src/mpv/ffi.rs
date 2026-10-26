@@ -230,8 +230,11 @@ mpv_api! {
     mpv_set_property: fn(*mut mpv_handle, *const c_char, mpv_format, *mut c_void) -> c_int;
     mpv_set_property_async: fn(*mut mpv_handle, u64, *const c_char, mpv_format, *mut c_void) -> c_int;
     mpv_get_property: fn(*mut mpv_handle, *const c_char, mpv_format, *mut c_void) -> c_int;
+    mpv_get_property_async: fn(*mut mpv_handle, u64, *const c_char, mpv_format) -> c_int;
     mpv_observe_property: fn(*mut mpv_handle, u64, *const c_char, mpv_format) -> c_int;
     mpv_request_log_messages: fn(*mut mpv_handle, *const c_char) -> c_int;
+    mpv_hook_add: fn(*mut mpv_handle, u64, *const c_char, c_int) -> c_int;
+    mpv_hook_continue: fn(*mut mpv_handle, u64) -> c_int;
     mpv_wait_event: fn(*mut mpv_handle, c_double) -> *mut mpv_event;
     mpv_render_context_create: fn(*mut *mut mpv_render_context, *mut mpv_handle, *mut mpv_render_param) -> c_int;
     mpv_render_context_set_update_callback: fn(*mut mpv_render_context, Option<RenderUpdateFn>, *mut c_void);

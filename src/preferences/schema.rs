@@ -634,6 +634,7 @@ pub const ITEMS: &[Item] = &[
         "Load subtitle files",
         "",
         Choice(&[
+            ("smart", "That match the video, by name or episode"),
             ("fuzzy", "Whose names contain the video's"),
             ("exact", "With exactly the video's name"),
             ("all", "Every subtitle file in the folder"),

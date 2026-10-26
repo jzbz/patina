@@ -492,6 +492,8 @@ const DEFAULT_CONF: &str = r##"# Patina key bindings, in mpv input.conf format.
 #@patina PRIMARY+n new-window
 #@patina PRIMARY+j jump-to
 #@patina PRIMARY+, preferences
+#@patina PRIMARY+y history
+#@patina PRIMARY+i inspector
 #@patina PRIMARY+Shift+v video-panel
 #@patina PRIMARY+Shift+a audio-panel
 #@patina PRIMARY+Shift+s sub-panel

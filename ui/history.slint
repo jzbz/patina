@@ -1,0 +1,314 @@
+// The playback history window, after IINA's: every file played, newest
+// first, grouped by day or by folder, with how far it was watched.
+
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Segmented, TextButton } from "widgets.slint";
+
+// A day or folder heading (`header`), or one file.
+export struct HistoryRow {
+    header: bool,
+    title: string,
+    detail: string,
+    time: string,
+    // 0..1, or -1 when the length isn't known.
+    progress: float,
+    progress-text: string,
+    url: bool,
+    missing: bool,
+}
+
+component Progress inherits Rectangle {
+    in property <float> value;
+    height: 3px;
+    border-radius: 1.5px;
+    background: Theme.track;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.value, 0, 1);
+        border-radius: parent.border-radius;
+        background: Theme.playing;
+    }
+}
+
+component Entry inherits Rectangle {
+    in property <HistoryRow> entry;
+    in property <bool> selected;
+    callback clicked;
+    callback double-clicked;
+    callback right-clicked(length, length);
+    height: 44px;
+    border-radius: Theme.control-radius;
+    background: root.selected ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.right-clicked(self.mouse-x, self.mouse-y);
+            }
+        }
+        clicked => {
+            root.clicked();
+        }
+        double-clicked => {
+            root.double-clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 12px;
+
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            source: root.entry.url ? @image-url("icons/link.svg") : @image-url("icons/file-video.svg");
+            colorize: root.entry.missing ? Theme.disabled-text : Theme.secondary-text;
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.entry.title;
+                color: root.entry.missing ? Theme.disabled-text : Theme.text;
+                font-size: Theme.font-normal;
+                overflow: elide;
+            }
+            Text {
+                text: root.entry.missing ? "Missing: " + root.entry.detail : root.entry.detail;
+                color: root.entry.missing ? Theme.disabled-text : Theme.tertiary-text;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            width: 110px;
+            alignment: center;
+            spacing: 5px;
+            if root.entry.progress >= 0: Progress {
+                value: root.entry.progress;
+            }
+            Text {
+                text: root.entry.progress-text;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                horizontal-alignment: right;
+            }
+        }
+
+        Text {
+            width: 96px;
+            text: root.entry.time;
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component HistoryWindow inherits Window {
+    title: "Playback History";
+    icon: @image-url("icons/patina.svg");
+    background: #1c1c1e;
+    preferred-width: 760px;
+    preferred-height: 560px;
+    min-width: 520px;
+    min-height: 340px;
+    default-font-size: Theme.font-normal;
+
+    in property <[HistoryRow]> rows;
+    in property <int> group;
+    in property <string> summary;
+    in property <string> empty-text;
+    in-out property <int> selected: -1;
+    // Whether the selected entry can be shown in the file manager.
+    in property <bool> can-reveal;
+    in-out property <bool> confirm-clear;
+
+    callback search(string);
+    callback set-group(int);
+    callback select(int);
+    callback move-selection(int);
+    callback play(int, bool);
+    callback reveal(int);
+    callback remove(int);
+    callback clear();
+
+    menu := ContextMenuArea {
+        enabled: false;
+
+        Menu {
+            MenuItem {
+                title: "Play";
+                activated => {
+                    root.play(root.selected, false);
+                }
+            }
+            MenuItem {
+                title: "Play in New Window";
+                activated => {
+                    root.play(root.selected, true);
+                }
+            }
+            MenuItem {
+                title: "Show in File Manager";
+                enabled: root.can-reveal;
+                activated => {
+                    root.reveal(root.selected);
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Remove from History";
+                activated => {
+                    root.remove(root.selected);
+                }
+            }
+        }
+
+        keys := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.UpArrow {
+                    root.move-selection(-1);
+                    return accept;
+                }
+                if event.text == Key.DownArrow {
+                    root.move-selection(1);
+                    return accept;
+                }
+                if event.text == Key.Return && root.selected >= 0 {
+                    root.play(root.selected, event.modifiers.control || event.modifiers.meta);
+                    return accept;
+                }
+                if (event.text == Key.Delete || event.text == Key.Backspace) && root.selected >= 0 {
+                    root.remove(root.selected);
+                    return accept;
+                }
+                if (event.modifiers.control || event.modifiers.meta) && event.text == "l" && root.can-reveal {
+                    root.reveal(root.selected);
+                    return accept;
+                }
+                if (event.modifiers.control || event.modifiers.meta) && event.text == "f" {
+                    search.focus();
+                    return accept;
+                }
+                reject
+            }
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    search := LineEdit {
+                        horizontal-stretch: 1;
+                        placeholder-text: "Search titles and paths";
+                        edited(text) => {
+                            root.search(text);
+                        }
+                    }
+                    Text {
+                        text: "Group by";
+                        color: Theme.secondary-text;
+                        vertical-alignment: center;
+                    }
+                    Segmented {
+                        width: 150px;
+                        options: ["Date", "Folder"];
+                        selected: root.group;
+                        activated(index) => {
+                            root.set-group(index);
+                        }
+                    }
+                }
+
+                if root.rows.length > 0: ListView {
+                    vertical-stretch: 1;
+                    for entry[index] in root.rows: VerticalLayout {
+                        if entry.header: Text {
+                            height: 32px;
+                            text: entry.title;
+                            color: Theme.secondary-text;
+                            font-size: Theme.font-small;
+                            font-weight: 700;
+                            vertical-alignment: bottom;
+                            overflow: elide;
+                        }
+                        if !entry.header: Entry {
+                            entry: entry;
+                            selected: index == root.selected;
+                            clicked => {
+                                keys.focus();
+                                root.select(index);
+                            }
+                            double-clicked => {
+                                root.play(index, false);
+                            }
+                            right-clicked(x, y) => {
+                                keys.focus();
+                                root.select(index);
+                                menu.show({
+                                    x: self.absolute-position.x - root.absolute-position.x + x,
+                                    y: self.absolute-position.y - root.absolute-position.y + y,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                if root.rows.length == 0: Text {
+                    vertical-stretch: 1;
+                    text: root.empty-text;
+                    color: Theme.tertiary-text;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.summary;
+                        color: Theme.tertiary-text;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+                    if root.confirm-clear: Text {
+                        text: "Clear the whole history?";
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+                    if root.confirm-clear: TextButton {
+                        text: "Cancel";
+                        clicked => {
+                            root.confirm-clear = false;
+                        }
+                    }
+                    if root.confirm-clear: TextButton {
+                        text: "Clear";
+                        primary: true;
+                        clicked => {
+                            root.confirm-clear = false;
+                            root.clear();
+                        }
+                    }
+                    if !root.confirm-clear: TextButton {
+                        text: "Clear History…";
+                        enabled: root.summary != "";
+                        clicked => {
+                            root.confirm-clear = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

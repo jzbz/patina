@@ -3,14 +3,18 @@
 
 mod app;
 mod cli;
+mod history;
 mod inhibit;
 mod input;
+mod inspector;
 mod media_controls;
 mod mpv;
 mod platform;
 mod player;
 mod preferences;
+mod probe;
 mod settings;
+mod subtitle_match;
 mod thumbnails;
 mod util;
 mod video;

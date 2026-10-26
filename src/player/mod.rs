@@ -30,6 +30,9 @@ pub struct CoreOptions {
 pub const REPLY_REPORT: u64 = 1;
 /// Userdata for asynchronous commands whose failure is expected and ignored.
 pub const REPLY_QUIET: u64 = 2;
+/// Userdata of the `on_load` hook: mpv is about to open a file and waits
+/// until the hook is continued.
+pub const HOOK_LOAD: u64 = 1;
 
 pub struct Player {
     mpv: Arc<Mpv>,
@@ -62,6 +65,10 @@ impl Player {
         set("idle", "yes".into())?;
         set("keep-open", "yes".into())?;
         set("force-window", false.into())?;
+        // A playlist made from a file's folder holds that folder's files
+        // only; folders the user opens are read recursively instead (see
+        // `PlayerController::load`), so subfolders never become entries.
+        set("directory-mode", "ignore".into())?;
         set("audio-client-name", "Patina".into())?;
         set("title", "Patina".into())?;
         set("video-timing-offset", 0.0f64.into())?;
@@ -92,6 +99,9 @@ impl Player {
             if let Err(error) = mpv.observe_property(*prop as u64, prop.name()) {
                 log::warn!("{error}");
             }
+        }
+        if let Err(error) = mpv.hook_add(HOOK_LOAD, "on_load", 0) {
+            log::warn!("{error}");
         }
 
         let (sender, receiver) = async_channel::unbounded();

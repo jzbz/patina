@@ -46,7 +46,7 @@ pub struct Track {
 }
 
 impl Track {
-    fn from_node(node: &Node) -> Option<Self> {
+    pub fn from_node(node: &Node) -> Option<Self> {
         let kind = TrackKind::parse(node.get("type")?.as_str()?)?;
         let int = |key| node.get(key).and_then(Node::as_i64).unwrap_or(0);
         Some(Self {

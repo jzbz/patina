@@ -6,6 +6,7 @@
 #
 # Each STEP is one of:
 #   "shot LABEL"     save OUTPUT_DIR/NAME-LABEL.png, cropped to the window
+#   "screen LABEL"   the same, uncropped, to include Patina's other windows
 #   "sleep SECONDS"  wait
 #   anything else    passed to xdotool, e.g. "key ctrl+shift+p",
 #                    "mousemove 640 400", "click 1"
@@ -15,7 +16,7 @@
 # discarded, and decoding is done in software because Xvfb has no GPU.
 set -u
 if [ $# -lt 3 ]; then
-  sed -n '2,16p' "$0"
+  sed -n '2,17p' "$0"
   exit 2
 fi
 OUT=$1 NAME=$2 ARGS=$3
@@ -51,6 +52,11 @@ for step in "$@"; do
         eval "$(DISPLAY=$DISPLAY_NUM xdotool getwindowgeometry --shell "$WINDOW")"
         magick "$file" -crop "${WIDTH}x${HEIGHT}+${X}+${Y}" +repage "$file"
       fi
+      echo "$file"
+      ;;
+    screen\ *)
+      file="$OUT/$NAME-${step#screen }.png"
+      import -display "$DISPLAY_NUM" -window root "$file"
       echo "$file"
       ;;
     sleep\ *) sleep "${step#sleep }" ;;
