@@ -54,16 +54,18 @@ function Expand-One([string] $archive, [string] $out, [string] $name) {
     if (-not (Test-Path -LiteralPath (Join-Path $out $name))) { throw "$name is not in $archive" }
 }
 
-$libmpv = Get-Pinned 'WIN_LIBMPV'
-$vulkan = Get-Pinned 'WIN_VULKAN'
-$ffmpeg = Get-Pinned 'WIN_FFMPEG'
+# Named apart from the parameters: PowerShell's variable names ignore case,
+# so $ffmpeg would be $Ffmpeg.
+$libmpvArchive = Get-Pinned 'WIN_LIBMPV'
+$vulkanArchive = Get-Pinned 'WIN_VULKAN'
+$ffmpegArchive = Get-Pinned 'WIN_FFMPEG'
 
 if ($Lib) {
-    Expand-One $libmpv $Lib 'libmpv-2.dll'
-    Expand-One $vulkan $Lib 'vulkan-1.dll'
+    Expand-One $libmpvArchive $Lib 'libmpv-2.dll'
+    Expand-One $vulkanArchive $Lib 'vulkan-1.dll'
 }
 if ($Ffmpeg) {
-    Expand-One $ffmpeg $Ffmpeg 'ffmpeg.exe'
+    Expand-One $ffmpegArchive $Ffmpeg 'ffmpeg.exe'
     # Read in full: cutting the output short could leave a nonzero exit code,
     # which pwsh makes the step's.
     $version = & (Join-Path $Ffmpeg 'ffmpeg.exe') -hide_banner -version

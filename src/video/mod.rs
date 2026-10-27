@@ -49,6 +49,17 @@ impl Renderer {
         redraw: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, String> {
         gl_loader::initialize()?;
+        // Apple's software renderer (a Mac without a GPU, such as a virtual
+        // machine) draws mpv's default half-float intermediate frames as
+        // black; eight bits per channel work.
+        // SAFETY: the context is current, and RENDERER is a valid query.
+        let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
+        if renderer.contains("Apple Software Renderer")
+            && let Err(error) =
+                mpv.set_property_async(crate::player::REPLY_QUIET, "fbo-format", "rgba8")
+        {
+            log::warn!("{error}");
+        }
         // SAFETY: called from Slint's RenderingSetup, where the window's GL
         // context is current; the resolver is process-wide and never unloads.
         let mut context =
