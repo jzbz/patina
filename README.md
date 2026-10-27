@@ -47,8 +47,8 @@ and its state in Patina.
   apply to running players immediately
 - Key bindings in mpv's `input.conf` format with IINA's defaults, edited in
   the preferences with a key recorder; IINA's `#@iina` lines work as-is
-- Media keys and the desktop's player controls (MPRIS on Linux; the
-  Windows and macOS equivalents are written but not yet tested)
+- Media keys and the desktop's player controls: MPRIS on Linux, the
+  media panel on Windows, Now Playing on macOS (not yet tried there)
 - Mouse actions: click, double click, right and middle click, and the
   scroll wheel for volume, seeking or speed, as in IINA's control
   preferences

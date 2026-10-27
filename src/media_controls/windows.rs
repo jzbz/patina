@@ -20,6 +20,11 @@ use windows::core::{HSTRING, Ref, factory};
 pub struct Smtc {
     controls: SystemMediaTransportControls,
     duration: Cell<f64>,
+    /// The latest position, and the status it was last given with: Windows
+    /// reports the position it was last told, plus the time since while
+    /// playing, so a pause or a resume has to come with the position.
+    position: Cell<f64>,
+    status: Cell<Option<Status>>,
     last_timeline: Cell<Option<Instant>>,
 }
 
@@ -127,6 +132,8 @@ impl Smtc {
             Ok(controls) => Some(Self {
                 controls,
                 duration: Cell::new(0.0),
+                position: Cell::new(0.0),
+                status: Cell::new(None),
                 last_timeline: Cell::new(None),
             }),
             Err(error) => {
@@ -174,6 +181,9 @@ impl Smtc {
             self.duration.set(now.duration);
             Ok(())
         })();
+        if self.status.replace(Some(now.status)) != Some(now.status) {
+            self.timeline(self.position.get());
+        }
         if let Err(error) = result {
             log::debug!("could not update the media controls: {error}");
         }
@@ -199,6 +209,7 @@ impl Smtc {
     /// Windows extrapolates the position itself; refreshing it every few
     /// seconds keeps it from drifting.
     pub fn set_position(&self, seconds: f64) {
+        self.position.set(seconds);
         if self
             .last_timeline
             .get()
@@ -209,6 +220,7 @@ impl Smtc {
     }
 
     pub fn seeked(&self, seconds: f64) {
+        self.position.set(seconds);
         self.timeline(seconds);
     }
 }

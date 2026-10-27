@@ -17,7 +17,7 @@ have been run for playback (see M5).
 | Milestone | Scope | State |
 | --- | --- | --- |
 | M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (the macOS menu bar and title bar tried on an Intel macOS VM) |
-| M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done on Linux (Windows and macOS builds play video, but these features are not yet tried there) |
+| M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done; tried on Linux and on a Windows 11 VM (media keys and the media panel, sleep prevention, preferences, thumbnails, history, inspector); on macOS only sleep prevention so far |
 | M3 Advanced parity | music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | planned |
 | M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | not planned (see section 18) |
 | M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | in progress: `bundle.yml` builds a universal Patina.app and a Windows folder, each carrying libmpv. Both play video and subtitles on machines that never had mpv or a build tool: a Windows 11 VM and an Intel macOS 26 VM, neither with a GPU, so both draw in software. Releases, signing, Flatpak, Homebrew and winget planned |
@@ -160,7 +160,7 @@ once and applied to running players, as IINA's option observers do
 | INP-11 | Click actions | done: single, double (with single-click delay), right, middle; all of IINA's actions plus the menu |
 | INP-12 | Scroll actions | done: volume, seek and speed |
 | INP-13..14, 16 | Pinch, Force Touch, haptics | planned where the platform offers them |
-| INP-17 | Media keys | done: MPRIS on Linux (tested); SMTC on Windows and MediaPlayer on macOS (written, not yet run). Media keys go through `PLAYPAUSE`/`NEXT`/... bindings when present, as in IINA |
+| INP-17 | Media keys | done: MPRIS on Linux (tested); SMTC on Windows (tested on a Windows 11 VM: the media keys, and the media panel's title and state); MediaPlayer on macOS (written, not yet tried). Media keys go through `PLAYPAUSE`/`NEXT`/... bindings when present, as in IINA |
 | KB-* | Default bindings | done: all 91 IINA defaults, adapted per platform |
 
 ## 9–10. Subtitles and filters
@@ -228,7 +228,7 @@ than it brings.
 | PLAT-03 | Touch Bar | not planned (discontinued hardware) |
 | PLAT-04 | Updates | planned with packaging |
 | PLAT-05..06 | Logging and log viewer | partial: `--verbose` logs Patina and mpv to stderr |
-| PLAT-07 | Sleep prevention | done while anything plays: D-Bus `org.freedesktop.ScreenSaver` on Linux (tested), `SetThreadExecutionState` on Windows and IOKit assertions on macOS (not yet tested) |
+| PLAT-07 | Sleep prevention | done while anything plays: D-Bus `org.freedesktop.ScreenSaver` on Linux (tested), `SetThreadExecutionState` on Windows and IOKit assertions on macOS (tested on a Windows 11 VM and an Intel macOS VM) |
 | PLAT-09 | Rendering | done: libmpv OpenGL render API into a texture composited by Slint. Where OpenGL fails (no GPU driver, a virtual machine, a remote desktop), Patina draws with Slint's software renderer and mpv's software renderer on a thread of its own. Tested on a Windows 11 VM with only the basic display adapter, an Intel macOS VM whose only OpenGL is Apple's software renderer, and Linux without GLX or EGL |
 | PLAT-10 | HDR | planned |
 | PLAT-11 | Live Text | not planned (no equivalent) |
@@ -243,3 +243,6 @@ than it brings.
   as IINA does, would avoid it.
 - On the X virtual framebuffer used for automated tests (software OpenGL),
   hardware decoding shows black frames; real GPUs are unaffected.
+- On Linux, where Slint draws the menus itself, submenus three levels deep
+  open empty: Video › Video Track, Audio › Audio Device, File › Open
+  Recent and the like. Windows and macOS show native menus, which work.
