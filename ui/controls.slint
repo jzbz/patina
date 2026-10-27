@@ -13,7 +13,6 @@ component ToolbarButton inherits IconButton {
         : root.kind == "music" ? @image-url("icons/music.svg")
         : root.kind == "screenshot" ? @image-url("icons/camera.svg")
         : root.kind == "subtitles" ? @image-url("icons/captions.svg")
-        : root.kind == "plugins" ? @image-url("icons/puzzle.svg")
         : @image-url("icons/ellipsis.svg");
     tooltip: root.kind == "pip" ? "Picture in Picture"
         : root.kind == "playlist" ? "Playlist"
@@ -22,7 +21,6 @@ component ToolbarButton inherits IconButton {
         : root.kind == "music" ? "Music Mode"
         : root.kind == "screenshot" ? "Screenshot"
         : root.kind == "subtitles" ? "Subtitles"
-        : root.kind == "plugins" ? "Plugins"
         : root.kind;
     active: (root.kind == "playlist" && (root.sidebar == "playlist" || root.sidebar == "chapters"))
         || (root.kind == "settings" && (root.sidebar == "video" || root.sidebar == "audio"))

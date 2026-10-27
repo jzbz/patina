@@ -19,7 +19,7 @@ have been run for playback (see M5).
 | M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (the macOS menu bar and title bar tried on an Intel macOS VM) |
 | M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done on Linux (Windows and macOS builds play video, but these features are not yet tried there) |
 | M3 Advanced parity | music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | planned |
-| M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | planned |
+| M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | not planned (see section 18) |
 | M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | in progress: `bundle.yml` builds a universal Patina.app and a Windows folder, each carrying libmpv. Both play video and subtitles on machines that never had mpv or a build tool: a Windows 11 VM and an Intel macOS 26 VM, neither with a GPU, so both draw in software. Releases, signing, Flatpak, Homebrew and winget planned |
 
 ## 1. Window and chrome
@@ -93,7 +93,7 @@ have been run for playback (see M5).
 | PLC-03 | Loop, shuffle, sort, add, remove, clear | partial: sort planned |
 | PLC-04 | Double-click to play | done |
 | PLC-05 | Drag to reorder, drop to insert | done: dragging rows (the whole selection with them) to an insertion line; cut, copy and paste of rows as paths and URLs, from the menu or Ctrl/Command+X/C/V. Adapted: files dropped while the playlist is open go after the selected rows rather than under the pointer, because winit 0.30, which Slint uses, reports no position for a drop (and no file drops at all on Wayland) |
-| PLC-06 | Row context menu | done: Play Next, Play in New Window, Remove, Cut/Copy/Paste, Add Subtitle… and Wrong Subtitle, Open in Browser for streams, Show in File Manager and Move to Trash for files, Add Files/URL, Clear Playlist; Return plays and Delete removes the selection. Plugin items wait for plugins (M4) |
+| PLC-06 | Row context menu | done: Play Next, Play in New Window, Remove, Cut/Copy/Paste, Add Subtitle… and Wrong Subtitle, Open in Browser for streams, Show in File Manager and Move to Trash for files, Add Files/URL, Clear Playlist; Return plays and Delete removes the selection. IINA's plugin items are not planned |
 | PLC-07 | Add files from the same folder | done (mpv `autocreate-playlist=same`; subfolders are left out, while an opened folder is read recursively) |
 | PLC-08 | Auto-play next, repeat on open | partial: auto-play next (preference); repeat on open planned |
 | PLC-10 | Save playlist | partial: writes `.m3u8`; not yet tested |
@@ -213,9 +213,12 @@ once and applied to running players, as IINA's option observers do
 
 ## 18. Plugins
 
-PLG-* and PLG-API-* are planned for M4: an embedded JavaScript engine that
-implements IINA's `iina.*` modules, so existing IINA plugins can run with
-few or no changes, and web views for overlays, sidebar tabs and windows.
+PLG-* and PLG-API-* are not planned. mpv's own scripts, in Lua or
+JavaScript, load from the `scripts` folder of Patina's `mpv` configuration
+and cover much of what IINA's plugins are used for; the rest of IINA's
+plugin system (a JavaScript runtime with the `iina.*` API, web views for
+overlays, sidebar tabs and windows, and a plugin manager) would cost more
+than it brings.
 
 ## 19–20. Platform, accessibility, localization
 
