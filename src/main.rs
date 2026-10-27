@@ -23,7 +23,9 @@ mod util;
 mod video;
 mod window;
 
+use slint::winit_030::WinitWindowAccessor;
 use std::process::ExitCode;
+use std::rc::Rc;
 
 slint::include_modules!();
 
@@ -105,14 +107,35 @@ fn main() -> ExitCode {
             } else {
                 app.open_sources(sources, enqueue)
             };
+            // Slint makes a shown window's native window when the event loop
+            // is next idle. When it can't (OpenGL failed), it keeps the error
+            // for when the loop ends but doesn't end it, so the window never
+            // appears and nothing says why. End the loop for it.
+            if let Some(window) = &window {
+                let window = Rc::downgrade(window);
+                slint::Timer::single_shot(std::time::Duration::from_secs(3), move || {
+                    let missing = window.upgrade().is_some_and(|window| {
+                        let window = window.window().window();
+                        window.is_visible() && window.with_winit_window(|_| ()).is_none()
+                    });
+                    if missing {
+                        video::software::restart("the window never appeared".into());
+                    }
+                });
+            }
             if fullscreen && let Some(window) = window {
                 window.run_action("toggle-fullscreen");
             }
         });
     }
 
-    let result = slint::run_event_loop_until_quit();
+    let mut result = slint::run_event_loop_until_quit();
     app.quit();
+    if result.is_ok()
+        && let Some(reason) = video::software::restart_reason()
+    {
+        result = Err(slint::PlatformError::Other(reason.into()));
+    }
     match result {
         Ok(()) => ExitCode::SUCCESS,
         // The window could not be drawn with OpenGL: a machine without a GPU
@@ -167,8 +190,9 @@ mod tests {
     /// by tools/menubar.py; this fails until it is rerun after a change.
     #[test]
     fn menu_bar_matches_the_menu() {
-        let menus = include_str!("../ui/menus.slint");
-        let app = include_str!("../ui/app.slint");
+        // A Windows checkout has CRLF line endings.
+        let menus = include_str!("../ui/menus.slint").replace("\r\n", "\n");
+        let app = include_str!("../ui/app.slint").replace("\r\n", "\n");
         let start = menus.find("export component MainMenu").unwrap();
         let start = start + menus[start..].find("    Menu {\n").unwrap() + "    Menu {\n".len();
         let end = start + menus[start..].find("\n    }\n}").unwrap();

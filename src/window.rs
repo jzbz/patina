@@ -313,10 +313,35 @@ impl PlayerController {
     }
 
     fn attach_video(self: &Rc<Self>) -> Result<(), String> {
+        if !crate::video::software::enabled() {
+            match crate::video::attach(&self.window, self.mpv.clone(), self.video_hooks()) {
+                Ok(()) => return Ok(()),
+                // Slint found no OpenGL when it made the window and draws it
+                // with its software renderer instead, which has no notifier.
+                Err(slint::SetRenderingNotifierError::Unsupported) => {
+                    log::warn!("the window is drawn without OpenGL; drawing video in software");
+                }
+                Err(error) => {
+                    return Err(format!("could not attach the video renderer: {error:?}"));
+                }
+            }
+        }
+        let size = self.window.window().size();
+        let video = crate::video::software::SoftwareVideo::start(
+            self.mpv.clone(),
+            size.width,
+            size.height,
+            self.video_hooks(),
+        )?;
+        *self.software_video.borrow_mut() = Some(video);
+        Ok(())
+    }
+
+    fn video_hooks(self: &Rc<Self>) -> crate::video::Hooks {
         let ready = Rc::downgrade(self);
         let frame = self.window.as_weak();
         let error = self.window.as_weak();
-        let hooks = crate::video::Hooks {
+        crate::video::Hooks {
             set_frame: Box::new(move |image| {
                 if let Some(window) = frame.upgrade() {
                     window.global::<Playback>().set_video_frame(image);
@@ -332,20 +357,7 @@ impl PlayerController {
                     window.set_error(message.into());
                 }
             }),
-        };
-        if crate::video::software::enabled() {
-            let size = self.window.window().size();
-            let video = crate::video::software::SoftwareVideo::start(
-                self.mpv.clone(),
-                size.width,
-                size.height,
-                hooks,
-            )?;
-            *self.software_video.borrow_mut() = Some(video);
-            return Ok(());
         }
-        crate::video::attach(&self.window, self.mpv.clone(), hooks)
-            .map_err(|error| format!("could not attach the video renderer: {error:?}"))
     }
 
     fn on_renderer_ready(&self) {

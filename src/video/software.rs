@@ -10,13 +10,31 @@ use super::Hooks;
 use crate::mpv::Mpv;
 use crate::mpv::render::RenderContext;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
-/// Whether this process draws without OpenGL: set by `PATINA_RENDERER`,
-/// which Patina also sets itself when it relaunches after OpenGL failed.
+/// Whether Patina was asked to draw without OpenGL: by `PATINA_RENDERER`,
+/// which it also sets itself when it relaunches after OpenGL failed. A window
+/// can be drawn without OpenGL even so, when Slint found none to use.
 pub fn enabled() -> bool {
     std::env::var_os("PATINA_RENDERER").is_some_and(|renderer| renderer == "software")
+}
+
+/// Why Patina ended its event loop to start again without OpenGL.
+static RESTART: OnceLock<String> = OnceLock::new();
+
+/// Ends the event loop, for Patina to start again without OpenGL: OpenGL
+/// turned out unusable once the loop was running, and Slint chooses its
+/// renderer once per process.
+pub fn restart(reason: String) {
+    if RESTART.set(reason).is_ok() {
+        let _ = slint::quit_event_loop();
+    }
+}
+
+/// Why [`restart`] ended the event loop, if it did.
+pub fn restart_reason() -> Option<&'static str> {
+    RESTART.get().map(String::as_str)
 }
 
 #[derive(Default)]
@@ -127,6 +145,7 @@ fn run(mpv: &Arc<Mpv>, shared: &Arc<Shared>, sender: &async_channel::Sender<Mess
     if sender.send_blocking(Message::Ready).is_err() {
         return;
     }
+    let mut dump = super::FrameDump::from_env();
     loop {
         let (width, height, resized) = {
             let mut state = shared
@@ -162,6 +181,11 @@ fn run(mpv: &Arc<Mpv>, shared: &Arc<Shared>, sender: &async_channel::Sender<Mess
         // mpv writes "rgb0": the fourth byte is padding, not opacity.
         for pixel in buffer.make_mut_slice() {
             pixel.a = 255;
+        }
+        if let Some(dump) = &mut dump
+            && dump.due()
+        {
+            dump.write(width, height, buffer.as_bytes());
         }
         if sender.send_blocking(Message::Frame(buffer)).is_err() {
             break;

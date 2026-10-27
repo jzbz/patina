@@ -36,9 +36,43 @@ struct Renderer {
     gl: glow::Context,
     context: RenderContext,
     target: Option<Target>,
-    /// `PATINA_FRAME_DUMP`: a PPM file that receives a rendered frame about
-    /// once a second, for diagnosing video output problems.
-    dump: Option<(std::path::PathBuf, std::time::Instant)>,
+    dump: Option<FrameDump>,
+}
+
+/// `PATINA_FRAME_DUMP`: a PPM file that receives a rendered frame about once
+/// a second, for diagnosing video output problems.
+struct FrameDump {
+    path: std::path::PathBuf,
+    last: std::time::Instant,
+}
+
+impl FrameDump {
+    fn from_env() -> Option<Self> {
+        std::env::var_os("PATINA_FRAME_DUMP").map(|path| Self {
+            path: path.into(),
+            last: std::time::Instant::now(),
+        })
+    }
+
+    /// Whether a frame is due: a second has passed since the last one.
+    fn due(&mut self) -> bool {
+        let due = self.last.elapsed() >= std::time::Duration::from_secs(1);
+        if due {
+            self.last = std::time::Instant::now();
+        }
+        due
+    }
+
+    /// Writes `width` × `height` RGBA pixels, top row first.
+    fn write(&self, width: u32, height: u32, rgba: &[u8]) {
+        let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+        for pixel in rgba.as_chunks::<4>().0 {
+            ppm.extend_from_slice(&pixel[..3]);
+        }
+        if let Err(error) = std::fs::write(&self.path, ppm) {
+            log::warn!("could not write {}: {error}", self.path.display());
+        }
+    }
 }
 
 impl Renderer {
@@ -49,30 +83,17 @@ impl Renderer {
         redraw: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, String> {
         gl_loader::initialize()?;
-        // Apple's software renderer (a Mac without a GPU, such as a virtual
-        // machine) draws mpv's default half-float intermediate frames as
-        // black; eight bits per channel work.
-        // SAFETY: the context is current, and RENDERER is a valid query.
-        let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
-        if renderer.contains("Apple Software Renderer")
-            && let Err(error) =
-                mpv.set_property_async(crate::player::REPLY_QUIET, "fbo-format", "rgba8")
-        {
-            log::warn!("{error}");
-        }
         // SAFETY: called from Slint's RenderingSetup, where the window's GL
         // context is current; the resolver is process-wide and never unloads.
         let mut context =
             unsafe { RenderContext::new_opengl(mpv, gl_loader::get_proc_address, display) }
                 .map_err(|error| error.to_string())?;
         context.set_update_callback(redraw);
-        let dump = std::env::var_os("PATINA_FRAME_DUMP")
-            .map(|path| (path.into(), std::time::Instant::now()));
         Ok(Self {
             gl,
             context,
             target: None,
-            dump,
+            dump: FrameDump::from_env(),
         })
     }
 
@@ -126,17 +147,16 @@ impl Renderer {
                     false,
                 )
             };
-            if let Some((path, last)) = &mut self.dump
-                && last.elapsed() >= std::time::Duration::from_secs(1)
+            if let Some(dump) = &mut self.dump
+                && dump.due()
             {
-                *last = std::time::Instant::now();
                 // mpv leaves its own framebuffers bound; read ours.
                 // SAFETY: binds a framebuffer of the current context.
                 unsafe {
                     self.gl
                         .bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer))
                 };
-                dump_frame(&self.gl, path, width, height);
+                dump_frame(&self.gl, dump, width, height);
             }
             saved.restore(&self.gl);
             result.map_err(|error| error.to_string())?;
@@ -224,7 +244,7 @@ impl Drop for Renderer {
 }
 
 /// Writes the bound framebuffer to a binary PPM file.
-fn dump_frame(gl: &glow::Context, path: &std::path::Path, width: u32, height: u32) {
+fn dump_frame(gl: &glow::Context, dump: &FrameDump, width: u32, height: u32) {
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
     // SAFETY: reads the bound, complete framebuffer into a buffer of
     // exactly width × height RGBA pixels (RGBA rows need no row padding).
@@ -239,14 +259,8 @@ fn dump_frame(gl: &glow::Context, path: &std::path::Path, width: u32, height: u3
             glow::PixelPackData::Slice(Some(&mut pixels)),
         );
     }
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
     // Rows are stored top-down in the texture (TopLeft origin).
-    for pixel in pixels.as_chunks::<4>().0 {
-        ppm.extend_from_slice(&pixel[..3]);
-    }
-    if let Err(error) = std::fs::write(path, ppm) {
-        log::warn!("could not write {}: {error}", path.display());
-    }
+    dump.write(width, height, &pixels);
 }
 
 /// The GL state mpv's renderer may change and Slint's renderer relies on.
@@ -364,6 +378,16 @@ pub fn attach<C: ComponentHandle + 'static>(
                 let gl = unsafe {
                     glow::Context::from_loader_function_cstr(|name| get_proc_address(name))
                 };
+                // Apple's software renderer, on a Mac without a GPU (a virtual
+                // machine), draws mpv's video in the wrong colors and streaked,
+                // whatever its framebuffer format; mpv's software renderer
+                // draws it right.
+                // SAFETY: the context is current, and RENDERER is a valid query.
+                let name = unsafe { gl.get_parameter_string(glow::RENDERER) };
+                if name.contains("Apple Software Renderer") {
+                    software::restart(format!("{name} can't draw video"));
+                    return;
+                }
                 let Some(component) = weak.upgrade() else {
                     return;
                 };

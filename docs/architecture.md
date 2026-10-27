@@ -89,12 +89,27 @@ core is told to quit and its event thread joins. `RenderContext` holds an
 exists.
 
 Where the window can't be drawn with OpenGL at all (no GPU driver, a
-virtual machine, a remote desktop), Slint's event loop ends with an error.
-Slint chooses its renderer once per process, so Patina starts itself again
-with `PATINA_RENDERER=software`: Slint's software renderer draws the
+virtual machine, a remote desktop), Slint's software renderer draws the
 interface, and `video/software.rs` runs mpv's software renderer on a thread
 of its own, drawing each frame into a buffer the size of the window that
-reaches it as an ordinary image.
+reaches it as an ordinary image. Patina gets there in one of these ways:
+
+- Slint can't create its OpenGL renderer for the window, and uses the
+  software one without saying so. The rendering notifier, which only an
+  OpenGL renderer has, then reports itself unsupported, and the window
+  starts the software video instead. (Windows without a GPU driver.)
+- The renderer exists but OpenGL fails as Slint makes the native window.
+  Slint keeps the error for when its event loop ends, and doesn't end it:
+  the window never appears. Three seconds after showing its first window,
+  Patina ends the loop itself if the window still has no native window.
+- OpenGL works, but it is Apple's software renderer (a Mac without a GPU),
+  which draws mpv's video in the wrong colors and streaked. The video
+  renderer ends the loop when it sees it.
+- Any other error ends the event loop.
+
+In the last three, Patina starts itself again with
+`PATINA_RENDERER=software`, since Slint chooses its renderer once per
+process (`video::software::restart`).
 
 ## macOS
 

@@ -225,7 +225,7 @@ few or no changes, and web views for overlays, sidebar tabs and windows.
 | PLAT-04 | Updates | planned with packaging |
 | PLAT-05..06 | Logging and log viewer | partial: `--verbose` logs Patina and mpv to stderr |
 | PLAT-07 | Sleep prevention | done while anything plays: D-Bus `org.freedesktop.ScreenSaver` on Linux (tested), `SetThreadExecutionState` on Windows and IOKit assertions on macOS (not yet tested) |
-| PLAT-09 | Rendering | done: libmpv OpenGL render API into a texture composited by Slint. Where OpenGL fails (no GPU driver, a virtual machine, a remote desktop), Patina starts again with Slint's software renderer and mpv's software renderer on a thread of its own |
+| PLAT-09 | Rendering | done: libmpv OpenGL render API into a texture composited by Slint. Where OpenGL fails (no GPU driver, a virtual machine, a remote desktop), Patina draws with Slint's software renderer and mpv's software renderer on a thread of its own |
 | PLAT-10 | HDR | planned |
 | PLAT-11 | Live Text | not planned (no equivalent) |
 | PLAT-12 | Credential storage | planned with online subtitles |
