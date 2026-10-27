@@ -866,6 +866,47 @@ pub const ITEMS: &[Item] = &[
         item(
             Network,
             "Online video",
+            "ytdl-quality",
+            "Video quality",
+            "Each video's own choices are in Video › Video Quality.",
+            Choice(&[
+                ("best", "Best available"),
+                ("2160", "Up to 2160p (4K)"),
+                ("1440", "Up to 1440p"),
+                ("1080", "Up to 1080p"),
+                ("720", "Up to 720p"),
+                ("480", "Up to 480p"),
+                ("360", "Up to 360p"),
+            ]),
+        ),
+        "ytdl",
+    ),
+    needs(
+        item(
+            Network,
+            "Online video",
+            "ytdl-format",
+            "yt-dlp format",
+            "In yt-dlp's -f syntax; takes the place of the quality when set.",
+            Text,
+        ),
+        "ytdl",
+    ),
+    needs(
+        item(
+            Network,
+            "Online video",
+            "download-dir",
+            "Save downloads to",
+            "Empty for your Downloads folder.",
+            Path(true),
+        ),
+        "ytdl",
+    ),
+    needs(
+        item(
+            Network,
+            "Online video",
             "ytdl-raw-options",
             "yt-dlp options",
             "key=value pairs, comma-separated.",

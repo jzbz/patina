@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem } from "globals.slint";
+import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, QualityItem } from "globals.slint";
 import { ControlBar, TitleBar, OsdView, SeekPreview } from "controls.slint";
 import { Sidebar } from "sidebar.slint";
 import { MainMenu } from "menus.slint";
@@ -8,9 +8,10 @@ import { PromptDialog, AboutDialog, ShortcutsDialog, ShortcutItem } from "dialog
 import { Spinner, IconButton } from "widgets.slint";
 import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
 import { HistoryWindow, HistoryRow } from "history.slint";
+import { DownloadsWindow, DownloadRow } from "downloads.slint";
 import { InspectorWindow, InspectorRow } from "inspector.slint";
 
-export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, InspectorWindow, InspectorRow }
+export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem }
 
 export component PlayerWindow inherits Window {
     title: Playback.has-media ? Playback.title : "Patina";
@@ -207,6 +208,20 @@ export component PlayerWindow inherits Window {
                 title: "Playback History…";
                 activated => {
                     Actions.patina("history");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Download Video";
+                enabled: Media.online;
+                activated => {
+                    Actions.patina("download-video");
+                }
+            }
+            MenuItem {
+                title: "Downloads…";
+                activated => {
+                    Actions.patina("downloads");
                 }
             }
             MenuSeparator { }
@@ -507,6 +522,17 @@ export component PlayerWindow inherits Window {
                 }
             }
             Menu {
+                title: "Video Quality";
+                enabled: Media.video-qualities.length > 1;
+                for item in Media.video-qualities: MenuItem {
+                    title: item.title;
+                    checked: item.selected;
+                    activated => {
+                        Actions.patina("video-quality " + item.key);
+                    }
+                }
+            }
+            Menu {
                 title: "Aspect Ratio";
                 for label[index] in ["Default", "4:3", "16:9", "16:10", "21:9", "5:4"]: MenuItem {
                     title: label;
@@ -576,6 +602,17 @@ export component PlayerWindow inherits Window {
                     checked: track.selected;
                     activated => {
                         Actions.select-track("audio", track.id);
+                    }
+                }
+            }
+            Menu {
+                title: "Audio Quality";
+                enabled: Media.audio-qualities.length > 1;
+                for item in Media.audio-qualities: MenuItem {
+                    title: item.title;
+                    checked: item.selected;
+                    activated => {
+                        Actions.patina("audio-quality " + item.key);
                     }
                 }
             }

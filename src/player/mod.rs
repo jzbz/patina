@@ -33,6 +33,11 @@ pub const REPLY_QUIET: u64 = 2;
 /// Userdata of the `on_load` hook: mpv is about to open a file and waits
 /// until the hook is continued.
 pub const HOOK_LOAD: u64 = 1;
+/// Its priority: lower runs first, and it has to run before mpv's yt-dlp
+/// hook, which reads the `ytdl-format` Patina may set for the file. Lua
+/// scripts' priorities are 50 more than they say: the yt-dlp hook's 10 is
+/// -40, and this is a script's 0.
+const HOOK_LOAD_PRIORITY: i32 = -50;
 
 pub struct Player {
     mpv: Arc<Mpv>,
@@ -113,7 +118,7 @@ impl Player {
                 log::warn!("{error}");
             }
         }
-        if let Err(error) = mpv.hook_add(HOOK_LOAD, "on_load", 0) {
+        if let Err(error) = mpv.hook_add(HOOK_LOAD, "on_load", HOOK_LOAD_PRIORITY) {
             log::warn!("{error}");
         }
 

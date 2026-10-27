@@ -65,6 +65,8 @@ const PRESETS: &[(&str, &str, bool)] = &[
     ("Preferences", "preferences", true),
     ("Playback history", "history", true),
     ("Inspector", "inspector", true),
+    ("Download the video", "download-video", true),
+    ("Downloads", "downloads", true),
     ("New window", "new-window", true),
     ("Show in the file manager", "reveal-file", true),
     ("Move the file to the trash", "delete-current-file", true),

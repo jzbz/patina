@@ -80,6 +80,20 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuSeparator { }
             MenuItem {
+                title: "Download Video";
+                enabled: Media.online;
+                activated => {
+                    Actions.patina("download-video");
+                }
+            }
+            MenuItem {
+                title: "Downloads…";
+                activated => {
+                    Actions.patina("downloads");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
                 title: "Preferences…";
                 activated => {
                     Actions.patina("preferences");
@@ -376,6 +390,17 @@ export component MainMenu inherits ContextMenuArea {
                 }
             }
             Menu {
+                title: "Video Quality";
+                enabled: Media.video-qualities.length > 1;
+                for item in Media.video-qualities: MenuItem {
+                    title: item.title;
+                    checked: item.selected;
+                    activated => {
+                        Actions.patina("video-quality " + item.key);
+                    }
+                }
+            }
+            Menu {
                 title: "Aspect Ratio";
                 for label[index] in ["Default", "4:3", "16:9", "16:10", "21:9", "5:4"]: MenuItem {
                     title: label;
@@ -445,6 +470,17 @@ export component MainMenu inherits ContextMenuArea {
                     checked: track.selected;
                     activated => {
                         Actions.select-track("audio", track.id);
+                    }
+                }
+            }
+            Menu {
+                title: "Audio Quality";
+                enabled: Media.audio-qualities.length > 1;
+                for item in Media.audio-qualities: MenuItem {
+                    title: item.title;
+                    checked: item.selected;
+                    activated => {
+                        Actions.patina("audio-quality " + item.key);
                     }
                 }
             }

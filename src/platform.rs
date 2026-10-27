@@ -1,12 +1,43 @@
-//! Hand-offs to the desktop: file managers and browsers.
+//! Hand-offs to the desktop: file managers and browsers, and other
+//! programs Patina runs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn spawn(command: &mut Command) {
-    if let Err(error) = command.spawn() {
+    if let Err(error) = no_console(command).spawn() {
         log::warn!("could not run {:?}: {error}", command.get_program());
     }
+}
+
+/// Keeps a console program Patina runs (`cmd`, yt-dlp) from opening a
+/// console window on Windows, where Patina itself has none.
+pub fn no_console(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// Finds a program as a shell would: a path as it is, a bare name on the
+/// `PATH`. On Windows `.exe` is added to a name without it.
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    let name = if cfg!(windows) && !name.to_ascii_lowercase().ends_with(".exe") {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    let path = Path::new(&name);
+    if path.components().count() > 1 {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(path))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Moves files to the trash (the Recycle Bin on Windows) on a thread of its

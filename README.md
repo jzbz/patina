@@ -59,10 +59,13 @@ and its state in Patina.
   mpv property you choose to watch
 - Resuming where you left off, screenshots, URLs and network streams, A-B
   loops, and a compact always-on-top picture-in-picture window
+- Online video through yt-dlp, with what IINA's Online Media plugin adds:
+  a quality preference, Video Quality and Audio Quality menus for each
+  video that switch where it is playing, and downloads, with a Downloads
+  window that shows their progress
 
 Written but not yet tested: drag and drop, playing from standard input,
-online video through mpv's yt-dlp support, saving playlists, and pausing
-when minimized.
+saving playlists, and pausing when minimized.
 
 ## Requirements
 
@@ -73,6 +76,9 @@ when minimized.
 - OpenGL 3 or OpenGL ES 3 (mpv's minimum is OpenGL 2.1 or ES 2.0). Without
   it Patina falls back on software rendering, which works anywhere but
   costs CPU; `PATINA_RENDERER=software` asks for it
+- For online video, yt-dlp (and for YouTube, a JavaScript runtime such as
+  Deno, which yt-dlp finds by itself); downloads that join separate video
+  and audio need ffmpeg
 
 Patina loads libmpv when it starts rather than linking to it, so building
 needs no mpv development files. It looks for the library beside the

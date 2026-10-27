@@ -169,6 +169,11 @@ pub struct Preferences {
     pub ytdl: bool,
     pub ytdl_path: String,
     pub ytdl_raw_options: String,
+    /// "best", or the tallest video to choose: "2160", "1080", "720"...
+    pub ytdl_quality: String,
+    /// A yt-dlp format (`-f`) that takes the place of `ytdl_quality`.
+    pub ytdl_format: String,
+    pub download_dir: String,
 
     // Control.
     pub single_click: String,
@@ -271,6 +276,9 @@ impl Default for Preferences {
             ytdl: true,
             ytdl_path: String::new(),
             ytdl_raw_options: String::new(),
+            ytdl_quality: "best".into(),
+            ytdl_format: String::new(),
+            download_dir: String::new(),
             single_click: "toggle-osc".into(),
             double_click: "fullscreen".into(),
             // IINA pauses on right click; without a global menu bar, Linux
@@ -336,6 +344,39 @@ impl Preferences {
         volume.clamp(0.0, self.max_volume.max(100.0))
     }
 
+    /// Where downloaded videos go.
+    pub fn download_dir(&self) -> PathBuf {
+        if !self.download_dir.is_empty() {
+            return PathBuf::from(&self.download_dir);
+        }
+        directories::UserDirs::new()
+            .and_then(|dirs| dirs.download_dir().map(Path::to_path_buf))
+            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    /// The yt-dlp format filter for the video quality preference, such as
+    /// "[height<=1080]" (empty for the best).
+    pub fn ytdl_video_filter(&self) -> String {
+        match self.ytdl_quality.parse::<u32>() {
+            Ok(height) => format!("[height<={height}]"),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// mpv's `ytdl-format`: empty leaves the choice to yt-dlp, whose own
+    /// default is the best video with the best audio.
+    pub fn ytdl_format(&self) -> String {
+        if !self.ytdl_format.trim().is_empty() {
+            return self.ytdl_format.trim().to_owned();
+        }
+        let filter = self.ytdl_video_filter();
+        if filter.is_empty() {
+            return String::new();
+        }
+        format!("bestvideo{filter}+bestaudio/best{filter}/best")
+    }
+
     /// The mpv options these preferences set, in the order they apply. They
     /// are set before a core starts and again on running cores when the
     /// preferences change, so each must also work as a runtime property.
@@ -396,6 +437,7 @@ impl Preferences {
             ("rtsp-transport", self.rtsp_transport.clone()),
             ("ytdl", yes_no(self.ytdl)),
             ("ytdl-raw-options", self.ytdl_raw_options.clone()),
+            ("ytdl-format", self.ytdl_format()),
             (
                 "keep-open",
                 if !self.auto_play_next {

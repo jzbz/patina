@@ -46,6 +46,7 @@ pub struct App {
     active: RefCell<Weak<PlayerController>>,
     preferences: RefCell<Option<Rc<crate::preferences::PreferencesController>>>,
     history_window: RefCell<Option<Rc<crate::history::HistoryController>>>,
+    downloads: RefCell<Option<Rc<crate::downloads::Downloads>>>,
     inspector: RefCell<Option<Rc<crate::inspector::InspectorController>>>,
     /// Subtitle choices made from the playlist menu, by file.
     subtitle_choices: crate::subtitle_match::Choices,
@@ -76,6 +77,7 @@ impl App {
             active: RefCell::new(Weak::new()),
             preferences: RefCell::new(None),
             history_window: RefCell::new(None),
+            downloads: RefCell::new(None),
             inspector: RefCell::new(None),
             subtitle_choices: Default::default(),
             clipboard: RefCell::new(None),
@@ -303,6 +305,9 @@ impl App {
     }
 
     pub fn quit(&self) {
+        if let Some(downloads) = self.existing_downloads() {
+            downloads.stop_all();
+        }
         let windows = self.windows.borrow().clone();
         for window in windows {
             window.close();
@@ -395,6 +400,59 @@ impl App {
             },
         };
         controller.show();
+    }
+
+    // ---- Downloads ------------------------------------------------------
+
+    /// The downloads, made the first time they are needed.
+    fn downloads(self: &Rc<Self>) -> Option<Rc<crate::downloads::Downloads>> {
+        if let Some(downloads) = self.existing_downloads() {
+            return Some(downloads);
+        }
+        match crate::downloads::Downloads::new(self) {
+            Ok(downloads) => {
+                *self.downloads.borrow_mut() = Some(downloads.clone());
+                Some(downloads)
+            }
+            Err(error) => {
+                log::error!("could not open the downloads: {error}");
+                None
+            }
+        }
+    }
+
+    pub fn existing_downloads(&self) -> Option<Rc<crate::downloads::Downloads>> {
+        self.downloads.borrow().clone()
+    }
+
+    pub fn open_downloads(self: &Rc<Self>) {
+        if let Some(downloads) = self.downloads() {
+            downloads.show();
+        }
+    }
+
+    /// Starts downloading and shows the downloads, as IINA's Online Media
+    /// plugin does; false when yt-dlp could not be run.
+    pub fn download(self: &Rc<Self>, request: crate::downloads::Request) -> bool {
+        let Some(downloads) = self.downloads() else {
+            return false;
+        };
+        let started = downloads.start(request);
+        downloads.show();
+        started
+    }
+
+    /// mpv's own configuration directory, where yt-dlp may be.
+    pub fn mpv_config_dir(&self) -> std::path::PathBuf {
+        self.paths.mpv_config_dir()
+    }
+
+    /// A message on the window used most recently.
+    pub fn notify(&self, text: &str, detail: &str) {
+        let active = self.active.borrow().upgrade();
+        if let Some(window) = active {
+            window.show_osd(text, detail, None);
+        }
     }
 
     // ---- Subtitle choices -------------------------------------------------

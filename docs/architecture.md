@@ -220,6 +220,25 @@ from the playlist menu (subtitles added for one file, or its matches turned
 down as wrong) live in `App`, shared with those threads, and apply in either
 mode.
 
+## Online video
+
+mpv's own yt-dlp hook plays online video; Patina adds IINA's Online Media
+features around it. The hook leaves what yt-dlp said about the video in
+`user-data/mpv/ytdl/json-subprocess-result`, which a window reads when
+the file has loaded: `ytdl.rs` turns its formats into the Video Quality
+menu's resolutions and frame rates and the Audio Quality menu's formats.
+Choosing one restarts the playlist entry. Patina's own `on_load` hook runs
+first (its priority is below the yt-dlp hook's, which mpv's Lua scripts
+shift down by 50) and sets the yt-dlp format for that file, and its start
+at the position it was playing, before yt-dlp is asked. Choices are kept
+per address for as long as the window is open.
+
+Downloading runs yt-dlp on threads of its own (`downloads.rs`), with
+progress, post-processing and the final file printed in templates of
+Patina's, so nothing depends on the wording of yt-dlp's own output. It is
+looked for as the hook looks for it. Running downloads are stopped when
+Patina quits; yt-dlp picks up their partial files the next time.
+
 ## History and inspector windows
 
 `history.rs` and `inspector.rs` each drive a window of their own, created on

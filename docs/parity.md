@@ -18,7 +18,7 @@ have been run for playback (see M5).
 | --- | --- | --- |
 | M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (the macOS menu bar and title bar tried on an Intel macOS VM) |
 | M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done; tried on Linux and on a Windows 11 VM (media keys and the media panel, sleep prevention, preferences, thumbnails, history, inspector); on macOS only sleep prevention so far |
-| M3 Advanced parity | music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | planned |
+| M3 Advanced parity | yt-dlp quality switching and downloads (as IINA's Online Media plugin), music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | in progress: yt-dlp quality switching and downloads done |
 | M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | not planned (see section 18) |
 | M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | in progress: `bundle.yml` builds a universal Patina.app and a Windows folder, each carrying libmpv. Both play video and subtitles on machines that never had mpv or a build tool: a Windows 11 VM and an Intel macOS 26 VM, neither with a GPU, so both draw in software. Releases, signing, Flatpak, Homebrew and winget planned |
 
@@ -204,7 +204,7 @@ once and applied to running players, as IINA's option observers do
 | NET-01 | Open URL | done: tested with an HTTP stream (HTTP authentication planned) |
 | NET-03 | Buffering display | partial |
 | NET-04 | Cache and network preferences | done |
-| NET-05 | yt-dlp | partial: mpv's `ytdl_hook` with a path preference; not yet tested |
+| NET-05 | yt-dlp | done: mpv's `ytdl_hook`, with what IINA's Online Media plugin adds. A quality preference (the best, or up to a height, or a yt-dlp format); Video Quality and Audio Quality menus for each video, offering its resolutions and frame rates rather than yt-dlp's raw list, which load it again where it was; Download Video (Ctrl/Command+D) in the quality playing, with a Downloads window that shows progress, speed and time left and can cancel, retry and show the file. Tested with an HLS stream with separate audio. Adapted: Patina uses the yt-dlp that is installed, where the plugin downloads and updates its own copy and Deno |
 | NET-07 | Browser extensions | planned with the URL scheme |
 | CLI-01..02 | Command line with `--mpv-*` options | done |
 | CLI-03..06 | Separate windows, stdin, keep running, music mode / PiP flags | partial: `-` is passed to mpv for standard input (not yet tested) |

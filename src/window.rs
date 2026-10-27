@@ -9,14 +9,15 @@ use crate::settings::ResizeWindow;
 use crate::subtitle_match;
 use crate::thumbnails;
 use crate::util::{self, format_delay, format_speed, format_time};
+use crate::ytdl;
 use crate::{
     Actions, ChapterItem, DeviceItem, Media, Osd, Platform, Playback, PlayerWindow, PlaylistItem,
-    Prefs, RecentItem, ShortcutItem, TrackItem,
+    Prefs, QualityItem, RecentItem, ShortcutItem, TrackItem,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,6 +25,18 @@ use std::time::{Duration, Instant};
 /// Reply userdata for `show-text`, whose expanded text becomes an OSD message.
 const REPLY_SHOW_TEXT: u64 = 10;
 const REPLY_SCREENSHOT: u64 = 11;
+/// Reply userdata for what yt-dlp said about the file, from mpv's yt-dlp hook.
+const REPLY_YTDL: u64 = 12;
+
+/// Qualities chosen from the Video Quality and Audio Quality menus for one
+/// online video: None leaves that part to the preferences.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct QualityChoice {
+    video: Option<String>,
+    audio: Option<String>,
+    /// The yt-dlp format the two make.
+    format: Option<String>,
+}
 
 const ASPECTS: [&str; 6] = ["no", "4:3", "16:9", "16:10", "21:9", "5:4"];
 const CROPS: [(f64, f64); 6] = [
@@ -83,6 +96,15 @@ pub struct PlayerController {
     /// The video renderer when the window has no OpenGL (None otherwise:
     /// the OpenGL one lives in the window's rendering notifier).
     software_video: RefCell<Option<crate::video::software::SoftwareVideo>>,
+    /// The current file as yt-dlp sees it, when it came through yt-dlp.
+    online: RefCell<Option<Rc<ytdl::Media>>>,
+    /// Qualities chosen from the menus, by the address they were chosen
+    /// for; they last as long as the window.
+    qualities: RefCell<HashMap<String, QualityChoice>>,
+    /// Where the file reloading for a new quality picks up again, and the
+    /// message for when it has: (address, seconds), (address, title, label).
+    resume_at: RefCell<Option<(String, f64)>>,
+    quality_message: RefCell<Option<(String, &'static str, String)>>,
     /// macOS: the transparent title bar has been applied (it can only be
     /// once winit has made the window).
     #[cfg(target_os = "macos")]
@@ -111,6 +133,10 @@ impl PlayerController {
             thumbnail_path: RefCell::new(String::new()),
             playlist_model: Rc::new(VecModel::default()),
             software_video: RefCell::new(None),
+            online: RefCell::new(None),
+            qualities: RefCell::new(HashMap::new()),
+            resume_at: RefCell::new(None),
+            quality_message: RefCell::new(None),
             #[cfg(target_os = "macos")]
             titlebar_styled: Cell::new(false),
             playlist_selection: RefCell::new(Default::default()),
@@ -441,6 +467,7 @@ impl PlayerController {
                 Event::StartFile { .. } => {
                     self.track.set(self.track.get() + 1);
                     self.reset_thumbnails();
+                    self.set_online(None);
                     self.loading.set(true);
                     self.crop_index.set(0);
                     self.window.set_error(SharedString::new());
@@ -458,6 +485,20 @@ impl PlayerController {
                     let state = self.state.borrow();
                     self.app()
                         .record_history(&state.path, &state.title, state.duration);
+                    if util::is_url(&state.path) {
+                        self.request_property(
+                            REPLY_YTDL,
+                            "user-data/mpv/ytdl/json-subprocess-result/stdout",
+                        );
+                    }
+                    let message = self
+                        .quality_message
+                        .take()
+                        .filter(|(path, ..)| *path == state.path);
+                    drop(state);
+                    if let Some((_, title, label)) = message {
+                        self.show_osd(title, &label, None);
+                    }
                 }
                 // mpv replaced the entry, with the folder's files when it
                 // makes a playlist of them; the file itself plays on.
@@ -523,6 +564,16 @@ impl PlayerController {
                     // mpv quit by itself (the `quit` command, or a script).
                     self.close();
                     return;
+                }
+                Event::GetPropertyReply {
+                    userdata: REPLY_YTDL,
+                    result,
+                } => {
+                    let media = result
+                        .ok()
+                        .and_then(|(_, json)| json.as_str().and_then(ytdl::Media::parse))
+                        .map(Rc::new);
+                    self.set_online(media);
                 }
                 Event::GetPropertyReply { userdata, result }
                     if userdata >= crate::inspector::REPLY_BASE =>
@@ -1435,6 +1486,10 @@ impl PlayerController {
             }
             "preferences" => app.open_preferences(),
             "history" => app.open_history(),
+            "video-quality" => self.choose_quality(Some(argument), None),
+            "audio-quality" => self.choose_quality(None, Some(argument)),
+            "download-video" => self.download_video(),
+            "downloads" => app.open_downloads(),
             "inspector" => app.open_inspector(),
             "close-window" => self.close(),
             "quit" => app.quit(),
@@ -2420,10 +2475,13 @@ impl PlayerController {
         let prefs = self.app().prefs();
         let languages = (prefs.sub_auto == "smart").then(|| sub_languages(&prefs));
         let choices = self.app().subtitle_choices();
+        let qualities = self.qualities.borrow().clone();
+        let resume_at = self.resume_at.borrow_mut().take();
         let mpv = self.mpv.clone();
         let spawned = std::thread::Builder::new()
             .name("subtitles".into())
             .spawn(move || {
+                apply_quality(&mpv, &qualities, resume_at);
                 subtitle_match::load_for_current_file(&mpv, languages.as_deref(), &choices);
                 if let Err(error) = mpv.hook_continue(id) {
                     log::warn!("{error}");
@@ -2432,6 +2490,157 @@ impl PlayerController {
         if let Err(error) = spawned {
             log::warn!("could not match subtitles: {error}");
             let _ = self.mpv.hook_continue(id);
+        }
+    }
+
+    // ---- Online video ---------------------------------------------------
+
+    /// Fills the Video Quality and Audio Quality menus for what yt-dlp said
+    /// about the file (or empties them).
+    fn set_online(&self, media: Option<Rc<ytdl::Media>>) {
+        let globals = self.window.global::<Media>();
+        let path = self.state.borrow().path.clone();
+        let choice = self
+            .qualities
+            .borrow()
+            .get(&path)
+            .cloned()
+            .unwrap_or_default();
+        let item = |key: &str, title: String, selected: bool| QualityItem {
+            key: key.into(),
+            title: title.into(),
+            selected,
+        };
+        let automatic = |playing: Option<&str>| match playing {
+            Some(playing) => format!("Automatic ({playing})"),
+            None => "Automatic".to_owned(),
+        };
+        let (video, audio) = match &media {
+            Some(media) => {
+                let mut video = Vec::new();
+                if !media.video.is_empty() {
+                    let playing = choice
+                        .video
+                        .is_none()
+                        .then(|| media.playing_video.as_deref())
+                        .flatten()
+                        .and_then(|key| media.video_label(key));
+                    video.push(item("auto", automatic(playing), choice.video.is_none()));
+                    video.extend(media.video.iter().map(|quality| {
+                        item(
+                            &quality.key,
+                            quality.label.clone(),
+                            choice.video.as_deref() == Some(quality.key.as_str()),
+                        )
+                    }));
+                }
+                let mut audio = Vec::new();
+                if !media.audio.is_empty() {
+                    let playing = choice
+                        .audio
+                        .is_none()
+                        .then(|| media.playing_audio.as_deref())
+                        .flatten()
+                        .and_then(|id| media.audio_label(id));
+                    audio.push(item("auto", automatic(playing), choice.audio.is_none()));
+                    audio.extend(media.audio.iter().map(|format| {
+                        item(
+                            &format.id,
+                            format.label.clone(),
+                            choice.audio.as_deref() == Some(format.id.as_str()),
+                        )
+                    }));
+                }
+                (video, audio)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        globals.set_video_qualities(ModelRc::new(VecModel::from(video)));
+        globals.set_audio_qualities(ModelRc::new(VecModel::from(audio)));
+        globals.set_online(media.is_some());
+        *self.online.borrow_mut() = media;
+    }
+
+    /// A choice from the Video Quality or Audio Quality menu ("auto" to
+    /// leave it to the preferences): the file loads again with it, where it
+    /// was.
+    fn choose_quality(&self, video: Option<&str>, audio: Option<&str>) {
+        let Some(media) = self.online.borrow().clone() else {
+            return;
+        };
+        let (path, position) = {
+            let state = self.state.borrow();
+            (state.path.clone(), state.position)
+        };
+        let pick = |key: &str| (key != "auto").then(|| key.to_owned());
+        let mut choices = self.qualities.borrow_mut();
+        let old = choices.get(&path).cloned().unwrap_or_default();
+        let mut choice = old.clone();
+        if let Some(key) = video {
+            choice.video = pick(key);
+        }
+        if let Some(id) = audio {
+            choice.audio = pick(id);
+        }
+        choice.format = (choice.video.is_some() || choice.audio.is_some()).then(|| {
+            media.format(
+                choice.video.as_deref(),
+                choice.audio.as_deref(),
+                &self.app().prefs().ytdl_video_filter(),
+            )
+        });
+        if choice == old {
+            return;
+        }
+        let (title, label) = match (video, audio) {
+            (Some(_), _) => (
+                "Video Quality",
+                choice
+                    .video
+                    .as_deref()
+                    .and_then(|key| media.video_label(key))
+                    .unwrap_or("Automatic"),
+            ),
+            _ => (
+                "Audio Quality",
+                choice
+                    .audio
+                    .as_deref()
+                    .and_then(|id| media.audio_label(id))
+                    .unwrap_or("Automatic"),
+            ),
+        };
+        let label = label.to_owned();
+        if choice == QualityChoice::default() {
+            choices.remove(&path);
+        } else {
+            choices.insert(path.clone(), choice);
+        }
+        drop(choices);
+        *self.resume_at.borrow_mut() = Some((path.clone(), position));
+        *self.quality_message.borrow_mut() = Some((path, title, label.clone()));
+        self.player().command(&["playlist-play-index", "current"]);
+        // The reload changes tracks, which isn't news.
+        self.last_user_action.set(None);
+        self.show_osd(title, &format!("{label}…"), None);
+    }
+
+    /// Downloads what is playing, in the quality it plays in.
+    fn download_video(&self) {
+        let Some(media) = self.online.borrow().clone() else {
+            return;
+        };
+        let request = crate::downloads::Request {
+            url: if media.url.is_empty() {
+                self.state.borrow().path.clone()
+            } else {
+                media.url.clone()
+            },
+            title: media.title.clone(),
+            format: crate::downloads::download_format(media.format_id.as_deref()),
+        };
+        if self.app().download(request) {
+            self.show_osd("Downloading", &media.title, None);
         }
     }
 
@@ -2584,6 +2793,37 @@ impl PlayerController {
 /// Entry ids in playlist order, which the selection is kept by.
 fn playlist_order(state: &PlaybackState) -> Vec<i64> {
     state.playlist.iter().map(|entry| entry.id).collect()
+}
+
+/// From the load hook, before mpv's yt-dlp hook: the yt-dlp format chosen
+/// for the file from the quality menus, and where to start it when it is
+/// reloading for one.
+fn apply_quality(
+    mpv: &Mpv,
+    qualities: &HashMap<String, QualityChoice>,
+    resume_at: Option<(String, f64)>,
+) {
+    let Ok(path) = mpv.get_property("path") else {
+        return;
+    };
+    let Some(path) = path.as_str() else {
+        return;
+    };
+    if let Some(format) = qualities
+        .get(path)
+        .and_then(|choice| choice.format.as_deref())
+        && let Err(error) = mpv.set_property("file-local-options/ytdl-format", format)
+    {
+        log::warn!("{error}");
+    }
+    if let Some((resume_path, at)) = resume_at
+        && resume_path == path
+        && at > 0.5
+        && let Err(error) =
+            mpv.set_property("file-local-options/start", format!("{at:.3}").as_str())
+    {
+        log::warn!("{error}");
+    }
 }
 
 /// The preferred subtitle languages, most preferred first.

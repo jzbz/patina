@@ -64,6 +64,9 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
 - `src/preferences/`: the preferences window; `schema.rs` lists every
   setting.
 - `src/thumbnails.rs`: seek-bar thumbnails from a headless mpv core.
+- `src/ytdl.rs`: what yt-dlp says about an online video, as qualities for
+  the menus and the yt-dlp format for a choice.
+- `src/downloads.rs`: downloads with yt-dlp, and the Downloads window.
 - `src/probe.rs`: playlist durations and tags from a headless mpv core.
 - `src/playlist.rs`: playlist selection, multi-row moves, series-prefix
   folding and pasted sources, without mpv.

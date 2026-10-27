@@ -3,6 +3,7 @@
 
 mod app;
 mod cli;
+mod downloads;
 mod history;
 mod inhibit;
 mod input;
@@ -22,6 +23,7 @@ mod thumbnails;
 mod util;
 mod video;
 mod window;
+mod ytdl;
 
 use slint::winit_030::WinitWindowAccessor;
 use std::process::ExitCode;

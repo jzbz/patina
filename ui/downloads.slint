@@ -1,0 +1,199 @@
+// Videos downloaded with yt-dlp, as in IINA's Online Media plugin: each one
+// with its progress, and what can be done with it.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { TextButton } from "widgets.slint";
+
+export struct DownloadRow {
+    title: string,
+    detail: string,
+    // 0..1, or -1 while the size isn't known.
+    progress: float,
+    // "running", "done", "failed" or "cancelled".
+    state: string,
+}
+
+component Progress inherits Rectangle {
+    in property <float> value;
+    height: 3px;
+    border-radius: 1.5px;
+    background: Theme.track;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.value, 0, 1);
+        border-radius: parent.border-radius;
+        background: Theme.playing;
+    }
+}
+
+component Entry inherits Rectangle {
+    in property <DownloadRow> entry;
+    callback cancel;
+    callback reveal;
+    callback retry;
+    callback remove;
+    min-height: 58px;
+    border-radius: Theme.control-radius;
+    background: touch.has-hover ? Theme.hover : transparent;
+
+    touch := TouchArea { }
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 12px;
+
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            source: root.entry.state == "failed" ? @image-url("icons/circle-alert.svg")
+                : root.entry.state == "done" ? @image-url("icons/file-play.svg")
+                : @image-url("icons/file-down.svg");
+            colorize: root.entry.state == "failed" ? Theme.danger : Theme.secondary-text;
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 5px;
+            Text {
+                text: root.entry.title;
+                color: Theme.text;
+                font-size: Theme.font-normal;
+                overflow: elide;
+            }
+            if root.entry.state == "running": Progress {
+                value: root.entry.progress;
+            }
+            Text {
+                text: root.entry.detail;
+                color: root.entry.state == "failed" ? Theme.danger : Theme.tertiary-text;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 6px;
+            if root.entry.state == "running": TextButton {
+                y: (parent.height - self.height) / 2;
+                text: "Cancel";
+                clicked => {
+                    root.cancel();
+                }
+            }
+            if root.entry.state == "done": TextButton {
+                y: (parent.height - self.height) / 2;
+                text: "Show";
+                clicked => {
+                    root.reveal();
+                }
+            }
+            if root.entry.state == "failed" || root.entry.state == "cancelled": TextButton {
+                y: (parent.height - self.height) / 2;
+                text: "Retry";
+                clicked => {
+                    root.retry();
+                }
+            }
+            if root.entry.state != "running": TextButton {
+                y: (parent.height - self.height) / 2;
+                text: "Remove";
+                clicked => {
+                    root.remove();
+                }
+            }
+        }
+    }
+}
+
+export component DownloadsWindow inherits Window {
+    title: "Downloads";
+    icon: @image-url("icons/patina.svg");
+    background: #1c1c1e;
+    preferred-width: 560px;
+    preferred-height: 420px;
+    min-width: 420px;
+    min-height: 260px;
+    default-font-size: Theme.font-normal;
+
+    in property <[DownloadRow]> rows;
+    // Where downloads go, and which yt-dlp does them.
+    in property <string> folder;
+    in property <string> program;
+    in property <bool> has-finished;
+
+    callback cancel(int);
+    callback reveal(int);
+    callback retry(int);
+    callback remove(int);
+    callback open-folder();
+    callback clear-finished();
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+
+        Text {
+            text: root.program;
+            color: Theme.tertiary-text;
+            font-size: Theme.font-small;
+            overflow: elide;
+        }
+
+        if root.rows.length > 0: ListView {
+            vertical-stretch: 1;
+            for entry[index] in root.rows: Entry {
+                entry: entry;
+                cancel => {
+                    root.cancel(index);
+                }
+                reveal => {
+                    root.reveal(index);
+                }
+                retry => {
+                    root.retry(index);
+                }
+                remove => {
+                    root.remove(index);
+                }
+            }
+        }
+
+        if root.rows.length == 0: Text {
+            vertical-stretch: 1;
+            text: "Videos you download appear here.\nFile › Download Video downloads the one playing.";
+            color: Theme.tertiary-text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                horizontal-stretch: 1;
+                text: root.folder;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            TextButton {
+                text: "Open Folder";
+                clicked => {
+                    root.open-folder();
+                }
+            }
+            TextButton {
+                text: "Clear Finished";
+                enabled: root.has-finished;
+                clicked => {
+                    root.clear-finished();
+                }
+            }
+        }
+    }
+}

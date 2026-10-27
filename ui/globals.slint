@@ -21,6 +21,14 @@ export struct TrackItem {
     selected: bool,
 }
 
+// A quality an online video comes in, for the Video Quality and Audio
+// Quality menus; `key` is "auto" for leaving it to the preferences.
+export struct QualityItem {
+    key: string,
+    title: string,
+    selected: bool,
+}
+
 export struct ChapterItem {
     title: string,
     time: float,
@@ -131,6 +139,11 @@ export global Media {
     in property <[TrackItem]> audio-tracks;
     in property <[TrackItem]> sub-tracks;
     in property <[TrackItem]> secondary-sub-tracks;
+    // The current file came through yt-dlp: what it comes in, and that it
+    // can be downloaded.
+    in property <[QualityItem]> video-qualities;
+    in property <[QualityItem]> audio-qualities;
+    in property <bool> online;
     in property <[ChapterItem]> chapters;
     in property <int> chapter: -1;
     in property <[RecentItem]> recent;
