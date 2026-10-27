@@ -6,6 +6,7 @@
 //! redraws (hovering a button while paused) never touch the video.
 
 pub mod gl_loader;
+pub mod software;
 
 use crate::mpv::Mpv;
 use crate::mpv::render::{NativeDisplay, RenderContext};

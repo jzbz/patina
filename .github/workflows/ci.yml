@@ -46,29 +46,6 @@ env:
   # tested no playback code at all. Set to 1, they fail instead.
   PATINA_TEST_REQUIRE_MPV: "1"
   PATINA_TEST_REQUIRE_FFMPEG: "1"
-  # Windows has no package of libmpv, so the job downloads these, each pinned
-  # by digest; GitHub release assets are not immutable.
-  #
-  # libmpv: zhongfly/mpv-winbuild's LGPL build, the library a Windows package
-  # of Patina would bundle. It is a snapshot of mpv's master branch, and
-  # zhongfly deletes releases after about 30 days, so this URL stops working
-  # around late November. The download cache below keeps the job going for as
-  # long as master runs at least once a week; once it has gone cold, bump the
-  # pin to a release at least a day old (zhongfly replaces a same-day rebuild
-  # under the same tag):
-  #   gh api repos/zhongfly/mpv-winbuild/releases --jq '.[] | .assets[] | select(.name | test("^mpv-dev-lgpl-x86_64-[0-9]")) | "\(.browser_download_url) \(.digest | ltrimstr("sha256:"))"'
-  WIN_LIBMPV_URL: https://github.com/zhongfly/mpv-winbuild/releases/download/2026-10-25-baa3e11d42/mpv-dev-lgpl-x86_64-20261025-git-baa3e11d42.7z
-  WIN_LIBMPV_SHA256: 6429ebba4b6bfc5dd18ac5ac084f00776db0db4e767ef1bfb815fc78ec5bda2a
-  # vulkan-1.dll: libmpv-2.dll imports it directly (no delay load), and a
-  # runner without a GPU driver has none, so the DLL would fail to load. This
-  # is mpv's own 0.41.0 release for Windows, which ships the loader beside
-  # mpv.exe; its copy needs only system DLLs.
-  WIN_VULKAN_URL: https://github.com/mpv-player/mpv/releases/download/v0.41.0/mpv-v0.41.0-x86_64-pc-windows-msvc.zip
-  WIN_VULKAN_SHA256: 4e197f729f5071c6772f35fffd96e0f36e3e8a044bd9479b136bb09b7c6a80ff
-  # ffmpeg: Gyan's "essentials" release build, which includes libx264 (the
-  # thumbnail test encodes with it). Gyan keeps release tags.
-  WIN_FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.7z
-  WIN_FFMPEG_SHA256: 4705843ccaaf54257c16ad90f3e952ece33c17df964ecf7bfdbb0f49c7171077
 
 jobs:
   check:
@@ -183,44 +160,29 @@ jobs:
           ls -l "$(brew --prefix)/lib/libmpv.2.dylib"
           command -v ffmpeg
 
-      # The downloads are cached by digest, so a pin bump downloads afresh and
+      # Windows has no package of libmpv, so the job downloads it, pinned by
+      # digest in packaging/windows-deps.env, which the steps below also read.
+      # The downloads are cached by the pins, so a bump downloads afresh and
       # an unchanged pin survives its asset being deleted upstream.
+      - name: Windows dependency pins
+        if: runner.os == 'Windows'
+        shell: bash
+        # The checkout has CRLF line endings on Windows.
+        run: grep -E '^[A-Z0-9_]+=' packaging/windows-deps.env | tr -d '\r' >> "$GITHUB_ENV"
+
       - name: Restore the Windows downloads
         if: runner.os == 'Windows'
         id: downloads
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/downloads
-          key: windows-downloads-${{ env.WIN_LIBMPV_SHA256 }}-${{ env.WIN_VULKAN_SHA256 }}-${{ env.WIN_FFMPEG_SHA256 }}
+          key: windows-downloads-${{ hashFiles('packaging/windows-deps.env') }}
 
       - name: Download libmpv, vulkan-1.dll and ffmpeg (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 10
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $dir = Join-Path $env:RUNNER_TEMP 'downloads'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $pins = @(
-            @{ Url = $env:WIN_LIBMPV_URL; Sha256 = $env:WIN_LIBMPV_SHA256 },
-            @{ Url = $env:WIN_VULKAN_URL; Sha256 = $env:WIN_VULKAN_SHA256 },
-            @{ Url = $env:WIN_FFMPEG_URL; Sha256 = $env:WIN_FFMPEG_SHA256 }
-          )
-          foreach ($pin in $pins) {
-            $url = $pin.Url
-            $sha256 = $pin.Sha256
-            $file = Join-Path $dir ([IO.Path]::GetFileName($url))
-            if (-not (Test-Path -LiteralPath $file)) {
-              curl.exe -fsSL --retry 3 -o $file $url
-              if ($LASTEXITCODE -ne 0) {
-                throw "could not download $url; if it was deleted upstream, bump its pin in ci.yml"
-              }
-            }
-            $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
-            if ($got -ne $sha256) {
-              throw "SHA256 mismatch for $url`n expected $sha256`n got      $got"
-            }
-          }
+        run: ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads')
 
       # The digest proves these are the bytes that were pinned; this proves
       # they came from zhongfly's own workflow on a GitHub-hosted runner. It
@@ -256,27 +218,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $dir = Join-Path $env:RUNNER_TEMP 'downloads'
           $lib = Join-Path $env:RUNNER_TEMP 'libmpv'
           $bin = Join-Path $env:RUNNER_TEMP 'ffmpeg'
-          function Extract($url, $out, $name) {
-            $archive = Join-Path $dir ([IO.Path]::GetFileName($url))
-            7z e -y -r -bso0 -bsp0 "-o$out" $archive $name
-            if ($LASTEXITCODE -ne 0) { throw "7z could not extract $name from $archive" }
-            if (-not (Test-Path -LiteralPath (Join-Path $out $name))) { throw "$name is not in $archive" }
-          }
-          Extract $env:WIN_LIBMPV_URL $lib 'libmpv-2.dll'
-          Extract $env:WIN_VULKAN_URL $lib 'vulkan-1.dll'
-          Extract $env:WIN_FFMPEG_URL $bin 'ffmpeg.exe'
+          ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads') -Lib $lib -Ffmpeg $bin
           Add-Content -Path $env:GITHUB_ENV -Value "PATINA_LIBMPV=$(Join-Path $lib 'libmpv-2.dll')"
           Add-Content -Path $env:GITHUB_PATH -Value $lib
           Add-Content -Path $env:GITHUB_PATH -Value $bin
-          # Read in full: cutting the output short could leave a nonzero
-          # exit code, which pwsh makes the step's.
-          $version = & (Join-Path $bin 'ffmpeg.exe') -hide_banner -version
-          if ($LASTEXITCODE -ne 0) { throw "ffmpeg.exe does not run" }
-          $version[0]
 
       # Restored under its exact key or not at all. Falling back on an older
       # entry and saving the two together grows target/ by every dependency
@@ -313,6 +260,14 @@ jobs:
       - name: Build
         id: build
         run: cargo build --locked
+
+      # .cargo/config.toml links the C runtime in; this checks the exe that
+      # was built, on the debug build here as bundle.yml does on the one it
+      # packs.
+      - name: No Visual C++ runtime imports
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/windows-imports.ps1 target/debug/patina.exe
 
       - name: Test
         run: cargo test --locked

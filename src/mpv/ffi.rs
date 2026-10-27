@@ -245,6 +245,12 @@ mpv_api! {
 }
 
 static API: OnceLock<Result<Api, String>> = OnceLock::new();
+/// Where the library was loaded from, once it has been.
+static LOADED_FROM: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn loaded_from() -> Option<&'static std::path::Path> {
+    LOADED_FROM.get().map(PathBuf::as_path)
+}
 
 /// The process-wide libmpv function table, loading the library on first use.
 pub fn api() -> Result<&'static Api, String> {
@@ -281,6 +287,7 @@ fn load() -> Result<Api, String> {
                     major,
                     version & 0xffff
                 );
+                let _ = LOADED_FROM.set(candidate);
                 return Ok(api);
             }
             // A library named explicitly is the one wanted: falling back on

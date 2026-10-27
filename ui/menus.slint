@@ -2,10 +2,10 @@ import { Playback, Media, Actions } from "globals.slint";
 
 // The application menu, shown from the title bar's menu button and by
 // right-clicking the video. It mirrors IINA's main menu.
+//
+// tools/menubar.py copies the menus into app.slint's macOS menu bar (a
+// MenuBar can't be built from a component), so they refer only to globals.
 export component MainMenu inherits ContextMenuArea {
-    in property <bool> fullscreen;
-    in property <bool> always-on-top;
-
     Menu {
         Menu {
             title: "File";
@@ -301,14 +301,14 @@ export component MainMenu inherits ContextMenuArea {
         Menu {
             title: "Video";
             MenuItem {
-                title: root.fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+                title: Playback.fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
                 activated => {
                     Actions.patina("toggle-fullscreen");
                 }
             }
             MenuItem {
                 title: "Float on Top";
-                checked: root.always-on-top;
+                checked: Playback.on-top;
                 activated => {
                     Actions.patina("toggle-ontop");
                 }

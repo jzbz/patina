@@ -80,6 +80,13 @@ pub struct PlayerController {
     thumbnail_path: RefCell<String>,
     /// The playlist rows, kept so file information can update one row.
     playlist_model: Rc<VecModel<PlaylistItem>>,
+    /// The video renderer when the window has no OpenGL (None otherwise:
+    /// the OpenGL one lives in the window's rendering notifier).
+    software_video: RefCell<Option<crate::video::software::SoftwareVideo>>,
+    /// macOS: the transparent title bar has been applied (it can only be
+    /// once winit has made the window).
+    #[cfg(target_os = "macos")]
+    titlebar_styled: Cell<bool>,
     /// Selected playlist rows, by mpv's entry ids.
     playlist_selection: RefCell<crate::playlist::Selection>,
     /// How much of each row's name is a series prefix shared with its
@@ -103,6 +110,9 @@ impl PlayerController {
             thumbnail_job: RefCell::new(None),
             thumbnail_path: RefCell::new(String::new()),
             playlist_model: Rc::new(VecModel::default()),
+            software_video: RefCell::new(None),
+            #[cfg(target_os = "macos")]
+            titlebar_styled: Cell::new(false),
             playlist_selection: RefCell::new(Default::default()),
             series_prefixes: RefCell::new(Vec::new()),
             app: Rc::downgrade(app),
@@ -189,6 +199,30 @@ impl PlayerController {
         crate::inspector::media_name(&state.path, &state.title)
     }
 
+    /// macOS: IINA's transparent title bar, applied as soon as the window
+    /// exists, which is by its first event.
+    fn style_titlebar(&self) {
+        #[cfg(target_os = "macos")]
+        if !self.titlebar_styled.get()
+            && self.app().prefs().transparent_titlebar()
+            && crate::macos::use_transparent_titlebar(self.window.window())
+        {
+            self.titlebar_styled.set(true);
+        }
+    }
+
+    /// The title bar and controller faded in or out. On macOS the window
+    /// buttons fade with them, as in IINA (not in fullscreen, where macOS
+    /// shows them itself).
+    fn chrome_visible(&self, visible: bool) {
+        #[cfg(target_os = "macos")]
+        if self.app().prefs().transparent_titlebar() && !self.window.window().is_fullscreen() {
+            crate::macos::set_window_buttons_visible(self.window.window(), visible);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = visible;
+    }
+
     /// Brings the window to the front.
     pub fn raise(&self) {
         let window = self.window.window();
@@ -246,6 +280,7 @@ impl PlayerController {
         platform.set_macos(cfg!(target_os = "macos"));
         platform.set_windows(cfg!(target_os = "windows"));
         platform.set_custom_titlebar(prefs.custom_titlebar());
+        platform.set_overlay_titlebar(prefs.custom_titlebar() || prefs.transparent_titlebar());
         platform.set_version(env!("CARGO_PKG_VERSION").into());
 
         let ui = self.window.global::<Prefs>();
@@ -281,28 +316,36 @@ impl PlayerController {
         let ready = Rc::downgrade(self);
         let frame = self.window.as_weak();
         let error = self.window.as_weak();
-        crate::video::attach(
-            &self.window,
-            self.mpv.clone(),
-            crate::video::Hooks {
-                set_frame: Box::new(move |image| {
-                    if let Some(window) = frame.upgrade() {
-                        window.global::<Playback>().set_video_frame(image);
-                    }
-                }),
-                ready: Box::new(move || {
-                    if let Some(controller) = ready.upgrade() {
-                        controller.on_renderer_ready();
-                    }
-                }),
-                error: Box::new(move |message| {
-                    if let Some(window) = error.upgrade() {
-                        window.set_error(message.into());
-                    }
-                }),
-            },
-        )
-        .map_err(|error| format!("could not attach the video renderer: {error:?}"))
+        let hooks = crate::video::Hooks {
+            set_frame: Box::new(move |image| {
+                if let Some(window) = frame.upgrade() {
+                    window.global::<Playback>().set_video_frame(image);
+                }
+            }),
+            ready: Box::new(move || {
+                if let Some(controller) = ready.upgrade() {
+                    controller.on_renderer_ready();
+                }
+            }),
+            error: Box::new(move |message| {
+                if let Some(window) = error.upgrade() {
+                    window.set_error(message.into());
+                }
+            }),
+        };
+        if crate::video::software::enabled() {
+            let size = self.window.window().size();
+            let video = crate::video::software::SoftwareVideo::start(
+                self.mpv.clone(),
+                size.width,
+                size.height,
+                hooks,
+            )?;
+            *self.software_video.borrow_mut() = Some(video);
+            return Ok(());
+        }
+        crate::video::attach(&self.window, self.mpv.clone(), hooks)
+            .map_err(|error| format!("could not attach the video renderer: {error:?}"))
     }
 
     fn on_renderer_ready(&self) {
@@ -1094,6 +1137,8 @@ impl PlayerController {
         });
         handler!(on_playlist_menu, |this, index| this
             .playlist_menu(index as usize));
+        handler!(on_chrome_visible, |this, visible| this
+            .chrome_visible(visible));
         handler!(on_select_chapter, |this, index| {
             this.mark_user_action();
             this.player().set("chapter", index as i64);
@@ -1130,6 +1175,7 @@ impl PlayerController {
             let Some(this) = weak.upgrade() else {
                 return EventResult::Propagate;
             };
+            this.style_titlebar();
             match event {
                 winit::event::WindowEvent::HoveredFile(_) => this.window.set_drop_active(true),
                 winit::event::WindowEvent::HoveredFileCancelled => {
@@ -1141,6 +1187,9 @@ impl PlayerController {
                 }
                 winit::event::WindowEvent::Resized(size) => {
                     this.check_size(*size);
+                    if let Some(video) = &*this.software_video.borrow() {
+                        video.resize(size.width, size.height);
+                    }
                     // Keep mpv's fullscreen property in step when the window
                     // manager changes the state itself.
                     let fullscreen = this.window.window().is_fullscreen();
@@ -2508,8 +2557,10 @@ impl PlayerController {
         }
         self.reset_thumbnails();
         // Hiding the window tears down its renderer, which frees mpv's render
-        // context while the GL context is still current.
+        // context while the GL context is still current; without OpenGL the
+        // render thread frees its own.
         let _ = self.window.hide();
+        self.software_video.borrow_mut().take();
         if let Some(mut player) = self.player.borrow_mut().take() {
             player.shutdown();
         }

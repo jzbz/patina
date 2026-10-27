@@ -88,6 +88,30 @@ core is told to quit and its event thread joins. `RenderContext` holds an
 `Arc<Mpv>`, so the core can never be destroyed while a render context
 exists.
 
+Where the window can't be drawn with OpenGL at all (no GPU driver, a
+virtual machine, a remote desktop), Slint's event loop ends with an error.
+Slint chooses its renderer once per process, so Patina starts itself again
+with `PATINA_RENDERER=software`: Slint's software renderer draws the
+interface, and `video/software.rs` runs mpv's software renderer on a thread
+of its own, drawing each frame into a buffer the size of the window that
+reaches it as an ordinary image.
+
+## macOS
+
+The menus exist twice, because Slint builds a `MenuBar` from the `Menu`
+elements written inside it before it inlines components: `MainMenu` in
+`ui/menus.slint`, and a copy in `ui/app.slint`'s `MenuBar`, which Slint shows
+as the native menu bar on macOS (after an app menu of its own) and nowhere
+else. `tools/menubar.py` makes the copy and a test fails when it is stale.
+Slint's app menu quits through AppKit, from inside the event loop, so a
+winit application handler closes the windows (saving where each file was)
+however the loop ends.
+
+The title bar is IINA's: `macos.rs` makes the player window's title bar
+transparent with the content running under it once winit has made the
+window, Patina draws the title over the video, and macOS's own window
+buttons fade with the controls.
+
 ## Interface
 
 The Slint files mirror IINA's window:

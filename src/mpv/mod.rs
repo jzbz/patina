@@ -46,6 +46,38 @@ impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The text mpv gives an error code.
+/// Which libmpv this is, for `patina --version`: where it was loaded from,
+/// its mpv version, and whether it can run Patina (Lua is what provides the
+/// `osc` option Patina switches off). Starts and stops a headless core, so
+/// it also proves the library and everything it links load.
+pub fn describe() -> std::result::Result<String, String> {
+    let builder = Mpv::builder()?;
+    for (name, value) in [
+        ("vo", "null"),
+        ("ao", "null"),
+        ("config", "no"),
+        ("terminal", "no"),
+    ] {
+        builder
+            .set_option(name, value)
+            .map_err(|error| error.to_string())?;
+    }
+    let lua = builder.set_option("osc", false).is_ok();
+    let mpv = builder.initialize().map_err(|error| error.to_string())?;
+    let version = mpv
+        .get_property("mpv-version")
+        .ok()
+        .and_then(|node| node.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "mpv".into());
+    let path = ffi::loaded_from()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    Ok(format!(
+        "{version}{} ({path})",
+        if lua { "" } else { ", without Lua" }
+    ))
+}
+
 pub fn error_string(code: i32) -> String {
     match ffi::api() {
         // SAFETY: mpv_error_string accepts any value and returns a static string.

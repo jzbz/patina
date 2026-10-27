@@ -15,17 +15,17 @@ testing has been on Linux (X11 and Wayland).
 
 | Milestone | Scope | State |
 | --- | --- | --- |
-| M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (macOS menu bar and title bar still to do) |
+| M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (the macOS menu bar and title bar are written but not yet run on a Mac) |
 | M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done on Linux (Windows and macOS compile but are not yet run) |
 | M3 Advanced parity | music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | planned |
 | M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | planned |
-| M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | planned |
+| M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | in progress: `bundle.yml` builds a universal Patina.app and a Windows folder, each carrying libmpv; not yet run on the test machines. Releases, signing, Flatpak, Homebrew and winget planned |
 
 ## 1. Window and chrome
 
 | Item | IINA | Patina |
 | --- | --- | --- |
-| WIN-01 | Full-size-content window, transparent title bar | done on Linux/Windows: frameless window with Patina's own overlay title bar and window buttons. macOS: native title bar for now; transparent full-size content view planned |
+| WIN-01 | Full-size-content window, transparent title bar | done on Linux/Windows: frameless window with Patina's own overlay title bar and window buttons. macOS: a transparent title bar with the video under it, Patina's title over the video and macOS's own window buttons fading with the controls (written, not yet run on a Mac) |
 | WIN-02 | Multiple player windows, idle cores reused | done: each window has its own mpv core; idle windows are reused; "open in new window" preference |
 | WIN-03 | One window per file or grouped | partial: multi-file opens go into one playlist |
 | WIN-04 | Welcome window with resume, open, open URL, recents | partial: shown inside the idle player window; no keyboard navigation of the list yet |
@@ -123,7 +123,7 @@ testing has been on Linux (X11 and Wayland).
 
 | Item | IINA | Patina |
 | --- | --- | --- |
-| Menu tree | Global menu bar | adapted: the same File / Playback / Video / Audio / Subtitles / Window / Help tree as a context menu, opened by right click or the title-bar menu button. Native macOS menu bar planned |
+| Menu tree | Global menu bar | adapted: the same File / Playback / Video / Audio / Subtitles / Window / Help tree as a context menu, opened by right click or the title-bar menu button; on macOS also the native menu bar, after Slint's own app menu (written, not yet run on a Mac) |
 | MENU-02 | Shortcuts follow the key bindings | planned |
 | MENU-08 | Saved filter menus | planned |
 
@@ -225,7 +225,7 @@ few or no changes, and web views for overlays, sidebar tabs and windows.
 | PLAT-04 | Updates | planned with packaging |
 | PLAT-05..06 | Logging and log viewer | partial: `--verbose` logs Patina and mpv to stderr |
 | PLAT-07 | Sleep prevention | done while anything plays: D-Bus `org.freedesktop.ScreenSaver` on Linux (tested), `SetThreadExecutionState` on Windows and IOKit assertions on macOS (not yet tested) |
-| PLAT-09 | Rendering | done: libmpv OpenGL render API into a texture composited by Slint |
+| PLAT-09 | Rendering | done: libmpv OpenGL render API into a texture composited by Slint. Where OpenGL fails (no GPU driver, a virtual machine, a remote desktop), Patina starts again with Slint's software renderer and mpv's software renderer on a thread of its own |
 | PLAT-10 | HDR | planned |
 | PLAT-11 | Live Text | not planned (no equivalent) |
 | PLAT-12 | Credential storage | planned with online subtitles |

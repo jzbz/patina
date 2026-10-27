@@ -45,10 +45,16 @@ export global Platform {
     in property <bool> windows;
     // Draw our own title bar and window buttons (Linux and Windows).
     in property <bool> custom-titlebar: true;
+    // Patina's title bar is drawn over the video: its own (custom-titlebar),
+    // or beside macOS's buttons in a transparent title bar.
+    in property <bool> overlay-titlebar: true;
     in property <string> version;
 }
 
 export global Playback {
+    // The window's state, for the menus, which the window keeps up to date.
+    in-out property <bool> fullscreen;
+    in-out property <bool> on-top;
     in property <bool> ready;
     in property <bool> has-media;
     in property <bool> has-video;
@@ -180,6 +186,8 @@ export global Actions {
     callback select-playlist(int, bool, bool);
     // A right click on a playlist row, before its menu opens.
     callback playlist-menu(int);
+    // The title bar and controller faded in or out.
+    callback chrome-visible(bool);
     callback select-chapter(int);
     callback open-recent(int);
     callback set-eq(int, float);

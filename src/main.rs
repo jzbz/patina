@@ -7,6 +7,8 @@ mod history;
 mod inhibit;
 mod input;
 mod inspector;
+#[cfg(target_os = "macos")]
+mod macos;
 mod media_controls;
 mod mpv;
 mod platform;
@@ -41,7 +43,18 @@ fn main() -> ExitCode {
         }
         Ok(cli::Command::Version) => {
             println!("patina {}", env!("CARGO_PKG_VERSION"));
-            return ExitCode::SUCCESS;
+            // Which libmpv a build would play with, which is what a check of
+            // a packaged build wants to know.
+            return match mpv::describe() {
+                Ok(libmpv) => {
+                    println!("{libmpv}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    println!("libmpv: {error}");
+                    ExitCode::FAILURE
+                }
+            };
         }
         Err(error) => {
             eprintln!("patina: {error}\n\n{}", cli::HELP);
@@ -53,10 +66,13 @@ fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level))
         .init();
 
-    // mpv draws through OpenGL, so Slint must render with OpenGL too.
+    // mpv draws through OpenGL, so Slint renders with OpenGL too, unless
+    // this is the software fallback (see the end of this function).
+    let software = video::software::enabled();
     if let Err(error) = slint::BackendSelector::new()
         .backend_name("winit".into())
-        .renderer_name("femtovg".into())
+        .renderer_name(if software { "software" } else { "femtovg" }.into())
+        .with_winit_custom_application_handler(CloseOnExit)
         .select()
     {
         eprintln!("patina: could not start the user interface: {error}");
@@ -99,9 +115,71 @@ fn main() -> ExitCode {
     app.quit();
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        // The window could not be drawn with OpenGL: a machine without a GPU
+        // driver, a virtual machine or a remote desktop. Slint picks its
+        // renderer once per process, so start again with the software one.
+        Err(error) if !software => {
+            log::warn!("OpenGL failed ({error}); starting again without it");
+            relaunch_without_opengl(&error.to_string())
+        }
         Err(error) => {
             eprintln!("patina: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Closes the windows, which saves where each file was, however the event
+/// loop ends. On macOS the app menu's Quit, which Slint adds, ends the
+/// process from inside the event loop, so nothing after it would run.
+struct CloseOnExit;
+
+impl slint::winit_030::CustomApplicationHandler for CloseOnExit {
+    fn exiting(
+        &mut self,
+        _event_loop: &slint::winit_030::winit::event_loop::ActiveEventLoop,
+    ) -> slint::winit_030::EventResult {
+        app::App::with_current(|app| app.quit());
+        slint::winit_030::EventResult::Propagate
+    }
+}
+
+/// Runs Patina again, with the same arguments, in software rendering.
+fn relaunch_without_opengl(error: &str) -> ExitCode {
+    let spawned = std::env::current_exe().and_then(|exe| {
+        std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .env("PATINA_RENDERER", "software")
+            .spawn()
+    });
+    match spawned {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(spawn_error) => {
+            eprintln!("patina: {error}; could not start again without OpenGL: {spawn_error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The macOS menu bar in app.slint is a copy of MainMenu's menus, made
+    /// by tools/menubar.py; this fails until it is rerun after a change.
+    #[test]
+    fn menu_bar_matches_the_menu() {
+        let menus = include_str!("../ui/menus.slint");
+        let app = include_str!("../ui/app.slint");
+        let start = menus.find("export component MainMenu").unwrap();
+        let start = start + menus[start..].find("    Menu {\n").unwrap() + "    Menu {\n".len();
+        let end = start + menus[start..].find("\n    }\n}").unwrap();
+        let expected = format!("{}\n", &menus[start..end]);
+
+        let begin = "        // BEGIN tools/menubar.py\n";
+        let begin = app.find(begin).unwrap() + begin.len();
+        let end = app.find("        // END tools/menubar.py\n").unwrap();
+        assert!(
+            app[begin..end] == expected,
+            "ui/app.slint's menu bar differs from ui/menus.slint; run tools/menubar.py"
+        );
     }
 }

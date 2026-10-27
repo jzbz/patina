@@ -16,6 +16,13 @@ explains the design.
   Tests that need libmpv or ffmpeg skip without them; set
   `PATINA_TEST_REQUIRE_MPV=1` and `PATINA_TEST_REQUIRE_FFMPEG=1` to make
   them fail instead, as CI does.
+- `bundle.yml`, run by hand with a pushed commit's SHA, builds a universal
+  Patina.app (with IINA's libmpv, pinned in `packaging/macos-libmpv.txt`)
+  and a Windows folder (patina.exe, libmpv-2.dll and vulkan-1.dll, pinned in
+  `packaging/windows-deps.env`) as artifacts, for running on machines with
+  nothing else installed. `packaging/icons.sh` renders the icons they use.
+- After editing `ui/menus.slint`, run `tools/menubar.py` to copy the menus
+  into the macOS menu bar.
 - CI (`.github/workflows/ci.yml`) runs formatting, clippy, a build and the
   tests on Ubuntu 26.04, macOS and Windows. Its header comments explain each
   choice, including how to bump the Windows libmpv pin.
@@ -49,7 +56,8 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
 - `src/mpv/`: the libmpv binding: runtime-loaded FFI, handle, events,
   nodes, render context.
 - `src/video/`: mpv-to-texture rendering inside Slint's rendering notifier,
-  and the GL function resolver.
+  the GL function resolver, and the software fallback (`software.rs`).
+- `src/macos.rs`: the transparent title bar and its window buttons.
 - `src/input.rs`: input.conf parsing and writing, key normalization,
   default bindings.
 - `src/settings.rs`: preferences, their mpv options, history, directories.
@@ -88,8 +96,9 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
 - New user-facing actions are Patina actions in `run_action`, named after
   IINA's command when it has one, so the interface, the menu and key
   bindings share them.
-- `unsafe` stays in `src/mpv/` and `src/video/`, each block with a `SAFETY`
-  comment.
+- `unsafe` stays in `src/mpv/`, `src/video/` and the operating-system
+  bindings (`src/macos.rs`, `src/media_controls/`, `src/inhibit.rs`), each
+  block with a `SAFETY` comment.
 - Follow IINA's behaviour and defaults unless the platform makes that
   wrong; record the difference as "adapted" in parity.md.
 - Patina contains no IINA code, artwork or text (IINA is GPL-3.0). Describe

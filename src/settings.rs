@@ -301,6 +301,12 @@ fn yes_no(value: bool) -> String {
 }
 
 impl Preferences {
+    /// Patina's title bar over the video beside macOS's own window buttons,
+    /// in a transparent title bar: the default on macOS, as in IINA.
+    pub fn transparent_titlebar(&self) -> bool {
+        cfg!(target_os = "macos") && self.titlebar == "auto"
+    }
+
     pub fn custom_titlebar(&self) -> bool {
         match self.titlebar.as_str() {
             "custom" => true,

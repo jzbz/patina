@@ -28,7 +28,7 @@ Options:
       --mpv-NAME=VALUE   Set an mpv option (e.g. --mpv-hwdec=no)
   -v, --verbose          Log mpv and Patina diagnostics to stderr
   -h, --help             Print this help
-  -V, --version          Print the version
+  -V, --version          Print the version, and which libmpv loads
 
 Use -- before inputs that start with '-'. A lone '-' reads from standard input.
 ";
