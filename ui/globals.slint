@@ -151,6 +151,55 @@ export global Media {
     in property <[DeviceItem]> audio-devices;
 }
 
+// What the application menu shows, copied from Playback and Media when the
+// menu opens and left alone while it is open. Slint 1.18 renumbers a menu's
+// entries whenever anything the menu reads changes, and a submenu asked for
+// by its old number comes up empty: a player's state changes all the time,
+// a menu reading this doesn't. tools/menubar.py maps these back to Playback
+// and Media for the macOS menu bar, which is native and reads them live.
+export global MenuPlayback {
+    in-out property <bool> has-media;
+    in-out property <bool> has-video;
+    in-out property <bool> seekable;
+    in-out property <bool> paused: true;
+    in-out property <bool> muted;
+    in-out property <float> speed: 1;
+    in-out property <bool> fullscreen;
+    in-out property <bool> on-top;
+    in-out property <bool> loop-file;
+    in-out property <bool> loop-playlist;
+    in-out property <bool> shuffle;
+    in-out property <float> ab-a: -1;
+    in-out property <float> ab-b: -1;
+    in-out property <int> aspect-index;
+    in-out property <int> crop-index;
+    in-out property <int> rotation;
+    in-out property <bool> flipped;
+    in-out property <bool> mirrored;
+    in-out property <bool> deinterlace;
+    in-out property <float> audio-delay;
+    in-out property <float> sub-delay;
+    in-out property <float> sub-scale: 1;
+    in-out property <bool> sub-visible: true;
+}
+
+export global MenuMedia {
+    // Media.playlist's length: the list changes row by row as files are
+    // probed, and the menus need no more than how long it is.
+    in-out property <int> playlist-count;
+    in-out property <int> playlist-pos: -1;
+    in-out property <[RecentItem]> recent;
+    in-out property <[ChapterItem]> chapters;
+    in-out property <[TrackItem]> video-tracks;
+    in-out property <[TrackItem]> audio-tracks;
+    in-out property <[TrackItem]> sub-tracks;
+    in-out property <[TrackItem]> secondary-sub-tracks;
+    in-out property <[DeviceItem]> audio-devices;
+    in-out property <[QualityItem]> video-qualities;
+    in-out property <[QualityItem]> audio-qualities;
+    in-out property <bool> online;
+}
+
 export global Osd {
     in property <string> text;
     in property <string> detail;

@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, QualityItem } from "globals.slint";
+import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, QualityItem, MenuPlayback, MenuMedia } from "globals.slint";
 import { ControlBar, TitleBar, OsdView, SeekPreview } from "controls.slint";
 import { Sidebar } from "sidebar.slint";
 import { MainMenu } from "menus.slint";
@@ -70,6 +70,46 @@ export component PlayerWindow inherits Window {
     }
 
     public function show-menu-at(x: length, y: length) {
+        root.open-menu(x, y);
+    }
+
+    // Opens the application menu on what is true now (see MenuPlayback).
+    function open-menu(x: length, y: length) {
+        MenuPlayback.has-media = Playback.has-media;
+        MenuPlayback.has-video = Playback.has-video;
+        MenuPlayback.seekable = Playback.seekable;
+        MenuPlayback.paused = Playback.paused;
+        MenuPlayback.muted = Playback.muted;
+        MenuPlayback.speed = Playback.speed;
+        MenuPlayback.fullscreen = Playback.fullscreen;
+        MenuPlayback.on-top = Playback.on-top;
+        MenuPlayback.loop-file = Playback.loop-file;
+        MenuPlayback.loop-playlist = Playback.loop-playlist;
+        MenuPlayback.shuffle = Playback.shuffle;
+        MenuPlayback.ab-a = Playback.ab-a;
+        MenuPlayback.ab-b = Playback.ab-b;
+        MenuPlayback.aspect-index = Playback.aspect-index;
+        MenuPlayback.crop-index = Playback.crop-index;
+        MenuPlayback.rotation = Playback.rotation;
+        MenuPlayback.flipped = Playback.flipped;
+        MenuPlayback.mirrored = Playback.mirrored;
+        MenuPlayback.deinterlace = Playback.deinterlace;
+        MenuPlayback.audio-delay = Playback.audio-delay;
+        MenuPlayback.sub-delay = Playback.sub-delay;
+        MenuPlayback.sub-scale = Playback.sub-scale;
+        MenuPlayback.sub-visible = Playback.sub-visible;
+        MenuMedia.playlist-count = Media.playlist.length;
+        MenuMedia.playlist-pos = Media.playlist-pos;
+        MenuMedia.recent = Media.recent;
+        MenuMedia.chapters = Media.chapters;
+        MenuMedia.video-tracks = Media.video-tracks;
+        MenuMedia.audio-tracks = Media.audio-tracks;
+        MenuMedia.sub-tracks = Media.sub-tracks;
+        MenuMedia.secondary-sub-tracks = Media.secondary-sub-tracks;
+        MenuMedia.audio-devices = Media.audio-devices;
+        MenuMedia.video-qualities = Media.video-qualities;
+        MenuMedia.audio-qualities = Media.audio-qualities;
+        MenuMedia.online = Media.online;
         menu.show({ x: x, y: y });
     }
 
@@ -86,7 +126,7 @@ export component PlayerWindow inherits Window {
                 root.show-controls();
             }
         } else if action == "context-menu" {
-            menu.show({ x: video-touch.mouse-x, y: video-touch.mouse-y });
+            root.open-menu(video-touch.mouse-x, video-touch.mouse-y);
         } else if action == "pip" {
             Actions.patina("toggle-pip");
         } else if action == "ab-loop" {
@@ -975,7 +1015,7 @@ export component PlayerWindow inherits Window {
                     always-on-top: root.always-on-top;
                     maximized: root.maximized;
                     show-menu(x, y) => {
-                        menu.show({ x: x, y: y });
+                        root.open-menu(x, y);
                     }
                     toggle-maximized => {
                         root.maximized = !root.maximized;

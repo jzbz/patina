@@ -22,7 +22,10 @@ explains the design.
   `packaging/windows-deps.env`) as artifacts, for running on machines with
   nothing else installed. `packaging/icons.sh` renders the icons they use.
 - After editing `ui/menus.slint`, run `tools/menubar.py` to copy the menus
-  into the macOS menu bar.
+  into the macOS menu bar. The menus read `MenuPlayback` and `MenuMedia`
+  in `ui/globals.slint`, which `open-menu` in `ui/app.slint` fills in from
+  `Playback` and `Media` when the menu opens: state a menu item needs goes
+  in all three.
 - CI (`.github/workflows/ci.yml`) runs formatting, clippy, a build and the
   tests on Ubuntu 26.04, macOS and Windows. Its header comments explain each
   choice, including how to bump the Windows libmpv pin.

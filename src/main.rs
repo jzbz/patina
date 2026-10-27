@@ -198,7 +198,9 @@ fn relaunch_without_opengl(error: &str) -> ExitCode {
 #[cfg(test)]
 mod tests {
     /// The macOS menu bar in app.slint is a copy of MainMenu's menus, made
-    /// by tools/menubar.py; this fails until it is rerun after a change.
+    /// by tools/menubar.py (reading Playback and Media where the menus read
+    /// MenuPlayback and MenuMedia); this fails until it is rerun after a
+    /// change.
     #[test]
     fn menu_bar_matches_the_menu() {
         // A Windows checkout has CRLF line endings.
@@ -207,7 +209,13 @@ mod tests {
         let start = menus.find("export component MainMenu").unwrap();
         let start = start + menus[start..].find("    Menu {\n").unwrap() + "    Menu {\n".len();
         let end = start + menus[start..].find("\n    }\n}").unwrap();
-        let expected = format!("{}\n", &menus[start..end]);
+        let expected = format!(
+            "{}\n",
+            menus[start..end]
+                .replace("MenuMedia.playlist-count", "Media.playlist.length")
+                .replace("MenuPlayback.", "Playback.")
+                .replace("MenuMedia.", "Media.")
+        );
 
         let begin = "        // BEGIN tools/menubar.py\n";
         let begin = app.find(begin).unwrap() + begin.len();

@@ -117,7 +117,9 @@ The menus exist twice, because Slint builds a `MenuBar` from the `Menu`
 elements written inside it before it inlines components: `MainMenu` in
 `ui/menus.slint`, and a copy in `ui/app.slint`'s `MenuBar`, which Slint shows
 as the native menu bar on macOS (after an app menu of its own) and nowhere
-else. `tools/menubar.py` makes the copy and a test fails when it is stale.
+else. `tools/menubar.py` makes the copy, reading `Playback` and `Media`
+where `MainMenu` reads its copies of them (see Interface), and a test fails
+when it is stale.
 Slint's app menu quits through AppKit, from inside the event loop, so a
 winit application handler closes the windows (saving where each file was)
 however the loop ends.
@@ -150,6 +152,14 @@ IINA's command names where IINA has one, and are the same strings key
 bindings use (`#@patina KEY action`), so every action is reachable from the
 interface, the menu and the keyboard alike. They're implemented in
 `PlayerController::run_action`.
+
+The application menu reads `MenuPlayback` and `MenuMedia` rather than
+`Playback` and `Media`: copies of what it shows, made when it opens. Slint
+(1.18) numbers a menu's entries afresh whenever anything the menu reads
+changes, and an open submenu asking for its entries by an old number gets
+none; a player's state changes all the time (tracks and chapters as a file
+plays), which left submenus empty where Slint draws the menus itself, as on
+Linux. The copies don't change while the menu is open.
 
 ## Input
 

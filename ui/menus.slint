@@ -1,10 +1,12 @@
-import { Playback, Media, Actions } from "globals.slint";
+import { MenuPlayback, MenuMedia, Actions } from "globals.slint";
 
 // The application menu, shown from the title bar's menu button and by
 // right-clicking the video. It mirrors IINA's main menu.
 //
 // tools/menubar.py copies the menus into app.slint's macOS menu bar (a
-// MenuBar can't be built from a component), so they refer only to globals.
+// MenuBar can't be built from a component), so they refer only to globals:
+// MenuPlayback and MenuMedia, the state they show, which the copy reads
+// from Playback and Media instead (see globals.slint).
 export component MainMenu inherits ContextMenuArea {
     Menu {
         Menu {
@@ -29,7 +31,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             Menu {
                 title: "Open Recent";
-                for item[index] in Media.recent: MenuItem {
+                for item[index] in MenuMedia.recent: MenuItem {
                     title: item.title;
                     activated => {
                         Actions.open-recent(index);
@@ -38,7 +40,7 @@ export component MainMenu inherits ContextMenuArea {
                 MenuSeparator { }
                 MenuItem {
                     title: "Clear Menu";
-                    enabled: Media.recent.length > 0;
+                    enabled: MenuMedia.recent.length > 0;
                     activated => {
                         Actions.patina("clear-recent");
                     }
@@ -53,21 +55,21 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Save Playlist…";
-                enabled: Media.playlist.length > 0;
+                enabled: MenuMedia.playlist-count > 0;
                 activated => {
                     Actions.patina("save-playlist");
                 }
             }
             MenuItem {
                 title: "Show in File Manager";
-                enabled: Playback.has-media;
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.patina("reveal-file");
                 }
             }
             MenuItem {
                 title: "Move to Trash";
-                enabled: Playback.has-media;
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.patina("delete-current-file");
                 }
@@ -81,7 +83,7 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             MenuItem {
                 title: "Download Video";
-                enabled: Media.online;
+                enabled: MenuMedia.online;
                 activated => {
                     Actions.patina("download-video");
                 }
@@ -123,15 +125,15 @@ export component MainMenu inherits ContextMenuArea {
         Menu {
             title: "Playback";
             MenuItem {
-                title: Playback.paused ? "Resume" : "Pause";
-                enabled: Playback.has-media;
+                title: MenuPlayback.paused ? "Resume" : "Pause";
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.mpv(["cycle", "pause"]);
                 }
             }
             MenuItem {
                 title: "Stop";
-                enabled: Playback.has-media;
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.mpv(["stop"]);
                 }
@@ -139,42 +141,42 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             MenuItem {
                 title: "Step Forward";
-                enabled: Playback.has-media;
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.mpv(["frame-step"]);
                 }
             }
             MenuItem {
                 title: "Step Backward";
-                enabled: Playback.has-media;
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.mpv(["frame-back-step"]);
                 }
             }
             MenuItem {
                 title: "Jump Forward 5 s";
-                enabled: Playback.seekable;
+                enabled: MenuPlayback.seekable;
                 activated => {
                     Actions.mpv(["seek", "5"]);
                 }
             }
             MenuItem {
                 title: "Jump Backward 5 s";
-                enabled: Playback.seekable;
+                enabled: MenuPlayback.seekable;
                 activated => {
                     Actions.mpv(["seek", "-5"]);
                 }
             }
             MenuItem {
                 title: "Jump to Beginning";
-                enabled: Playback.seekable;
+                enabled: MenuPlayback.seekable;
                 activated => {
                     Actions.mpv(["seek", "0", "absolute"]);
                 }
             }
             MenuItem {
                 title: "Jump To…";
-                enabled: Playback.seekable;
+                enabled: MenuPlayback.seekable;
                 activated => {
                     Actions.patina("jump-to");
                 }
@@ -208,7 +210,7 @@ export component MainMenu inherits ContextMenuArea {
                 }
                 MenuItem {
                     title: "Normal Speed";
-                    checked: Playback.speed == 1;
+                    checked: MenuPlayback.speed == 1;
                     activated => {
                         Actions.set("speed", "1");
                     }
@@ -216,30 +218,30 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuSeparator { }
             MenuItem {
-                title: Playback.ab-b >= 0 ? "Clear A-B Loop" : Playback.ab-a >= 0 ? "Set A-B Loop End" : "Set A-B Loop Start";
-                enabled: Playback.seekable;
+                title: MenuPlayback.ab-b >= 0 ? "Clear A-B Loop" : MenuPlayback.ab-a >= 0 ? "Set A-B Loop End" : "Set A-B Loop Start";
+                enabled: MenuPlayback.seekable;
                 activated => {
                     Actions.mpv(["ab-loop"]);
                 }
             }
             MenuItem {
                 title: "Loop File";
-                checked: Playback.loop-file;
-                enabled: Playback.has-media;
+                checked: MenuPlayback.loop-file;
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.patina("toggle-loop-file");
                 }
             }
             MenuItem {
                 title: "Loop Playlist";
-                checked: Playback.loop-playlist;
+                checked: MenuPlayback.loop-playlist;
                 activated => {
                     Actions.patina("toggle-loop-playlist");
                 }
             }
             MenuItem {
                 title: "Shuffle";
-                checked: Playback.shuffle;
+                checked: MenuPlayback.shuffle;
                 activated => {
                     Actions.patina("toggle-shuffle");
                 }
@@ -247,14 +249,14 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             MenuItem {
                 title: "Previous Item";
-                enabled: Media.playlist-pos > 0;
+                enabled: MenuMedia.playlist-pos > 0;
                 activated => {
                     Actions.mpv(["playlist-prev"]);
                 }
             }
             MenuItem {
                 title: "Next Item";
-                enabled: Media.playlist-pos >= 0 && Media.playlist-pos < Media.playlist.length - 1;
+                enabled: MenuMedia.playlist-pos >= 0 && MenuMedia.playlist-pos < MenuMedia.playlist-count - 1;
                 activated => {
                     Actions.mpv(["playlist-next"]);
                 }
@@ -267,7 +269,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             Menu {
                 title: "Chapters";
-                enabled: Media.chapters.length > 0;
+                enabled: MenuMedia.chapters.length > 0;
                 MenuItem {
                     title: "Previous Chapter";
                     activated => {
@@ -281,7 +283,7 @@ export component MainMenu inherits ContextMenuArea {
                     }
                 }
                 MenuSeparator { }
-                for chapter[index] in Media.chapters: MenuItem {
+                for chapter[index] in MenuMedia.chapters: MenuItem {
                     title: chapter.time-text + "  " + chapter.title;
                     checked: chapter.current;
                     activated => {
@@ -292,14 +294,14 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             MenuItem {
                 title: "Take Screenshot";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("screenshot");
                 }
             }
             MenuItem {
                 title: "Take Screenshot without Subtitles";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("screenshot video");
                 }
@@ -315,21 +317,21 @@ export component MainMenu inherits ContextMenuArea {
         Menu {
             title: "Video";
             MenuItem {
-                title: Playback.fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+                title: MenuPlayback.fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
                 activated => {
                     Actions.patina("toggle-fullscreen");
                 }
             }
             MenuItem {
                 title: "Float on Top";
-                checked: Playback.on-top;
+                checked: MenuPlayback.on-top;
                 activated => {
                     Actions.patina("toggle-ontop");
                 }
             }
             MenuItem {
                 title: "Picture in Picture";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("toggle-pip");
                 }
@@ -337,42 +339,42 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             MenuItem {
                 title: "Half Size";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("window-scale 0.5");
                 }
             }
             MenuItem {
                 title: "Normal Size";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("window-scale 1");
                 }
             }
             MenuItem {
                 title: "Double Size";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("window-scale 2");
                 }
             }
             MenuItem {
                 title: "Fit to Screen";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("fit-to-screen");
                 }
             }
             MenuItem {
                 title: "Bigger Window";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("bigger-window");
                 }
             }
             MenuItem {
                 title: "Smaller Window";
-                enabled: Playback.has-video;
+                enabled: MenuPlayback.has-video;
                 activated => {
                     Actions.patina("smaller-window");
                 }
@@ -380,8 +382,8 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             Menu {
                 title: "Video Track";
-                enabled: Media.video-tracks.length > 0;
-                for track in Media.video-tracks: MenuItem {
+                enabled: MenuMedia.video-tracks.length > 0;
+                for track in MenuMedia.video-tracks: MenuItem {
                     title: track.title;
                     checked: track.selected;
                     activated => {
@@ -391,8 +393,8 @@ export component MainMenu inherits ContextMenuArea {
             }
             Menu {
                 title: "Video Quality";
-                enabled: Media.video-qualities.length > 1;
-                for item in Media.video-qualities: MenuItem {
+                enabled: MenuMedia.video-qualities.length > 1;
+                for item in MenuMedia.video-qualities: MenuItem {
                     title: item.title;
                     checked: item.selected;
                     activated => {
@@ -404,7 +406,7 @@ export component MainMenu inherits ContextMenuArea {
                 title: "Aspect Ratio";
                 for label[index] in ["Default", "4:3", "16:9", "16:10", "21:9", "5:4"]: MenuItem {
                     title: label;
-                    checked: Playback.aspect-index == index;
+                    checked: MenuPlayback.aspect-index == index;
                     activated => {
                         Actions.patina("aspect " + index);
                     }
@@ -414,7 +416,7 @@ export component MainMenu inherits ContextMenuArea {
                 title: "Crop";
                 for label[index] in ["None", "4:3", "16:9", "16:10", "21:9", "5:4"]: MenuItem {
                     title: label;
-                    checked: Playback.crop-index == index;
+                    checked: MenuPlayback.crop-index == index;
                     activated => {
                         Actions.patina("crop " + index);
                     }
@@ -424,7 +426,7 @@ export component MainMenu inherits ContextMenuArea {
                 title: "Rotation";
                 for degrees in [0, 90, 180, 270]: MenuItem {
                     title: degrees + "°";
-                    checked: Playback.rotation == degrees;
+                    checked: MenuPlayback.rotation == degrees;
                     activated => {
                         Actions.set("video-rotate", degrees);
                     }
@@ -432,21 +434,21 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Flip";
-                checked: Playback.flipped;
+                checked: MenuPlayback.flipped;
                 activated => {
                     Actions.patina("toggle-flip");
                 }
             }
             MenuItem {
                 title: "Mirror";
-                checked: Playback.mirrored;
+                checked: MenuPlayback.mirrored;
                 activated => {
                     Actions.patina("toggle-mirror");
                 }
             }
             MenuItem {
                 title: "Deinterlace";
-                checked: Playback.deinterlace;
+                checked: MenuPlayback.deinterlace;
                 activated => {
                     Actions.mpv(["cycle", "deinterlace"]);
                 }
@@ -464,8 +466,8 @@ export component MainMenu inherits ContextMenuArea {
             title: "Audio";
             Menu {
                 title: "Audio Track";
-                enabled: Media.audio-tracks.length > 1;
-                for track in Media.audio-tracks: MenuItem {
+                enabled: MenuMedia.audio-tracks.length > 1;
+                for track in MenuMedia.audio-tracks: MenuItem {
                     title: track.title;
                     checked: track.selected;
                     activated => {
@@ -475,8 +477,8 @@ export component MainMenu inherits ContextMenuArea {
             }
             Menu {
                 title: "Audio Quality";
-                enabled: Media.audio-qualities.length > 1;
-                for item in Media.audio-qualities: MenuItem {
+                enabled: MenuMedia.audio-qualities.length > 1;
+                for item in MenuMedia.audio-qualities: MenuItem {
                     title: item.title;
                     checked: item.selected;
                     activated => {
@@ -499,7 +501,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Mute";
-                checked: Playback.muted;
+                checked: MenuPlayback.muted;
                 activated => {
                     Actions.mpv(["cycle", "mute"]);
                 }
@@ -519,7 +521,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Reset Audio Delay";
-                enabled: Playback.audio-delay != 0;
+                enabled: MenuPlayback.audio-delay != 0;
                 activated => {
                     Actions.set("audio-delay", "0");
                 }
@@ -527,7 +529,7 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             Menu {
                 title: "Audio Device";
-                for device in Media.audio-devices: MenuItem {
+                for device in MenuMedia.audio-devices: MenuItem {
                     title: device.description;
                     checked: device.selected;
                     activated => {
@@ -537,7 +539,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Load External Audio…";
-                enabled: Playback.has-media;
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.patina("load-audio");
                 }
@@ -554,8 +556,8 @@ export component MainMenu inherits ContextMenuArea {
             title: "Subtitles";
             Menu {
                 title: "Subtitle";
-                enabled: Playback.has-media;
-                for track in Media.sub-tracks: MenuItem {
+                enabled: MenuPlayback.has-media;
+                for track in MenuMedia.sub-tracks: MenuItem {
                     title: track.title;
                     checked: track.selected;
                     activated => {
@@ -565,8 +567,8 @@ export component MainMenu inherits ContextMenuArea {
             }
             Menu {
                 title: "Secondary Subtitle";
-                enabled: Playback.has-media;
-                for track in Media.secondary-sub-tracks: MenuItem {
+                enabled: MenuPlayback.has-media;
+                for track in MenuMedia.secondary-sub-tracks: MenuItem {
                     title: track.title;
                     checked: track.selected;
                     activated => {
@@ -576,7 +578,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Load External Subtitle…";
-                enabled: Playback.has-media;
+                enabled: MenuPlayback.has-media;
                 activated => {
                     Actions.patina("load-subtitles");
                 }
@@ -584,7 +586,7 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             MenuItem {
                 title: "Show Subtitles";
-                checked: Playback.sub-visible;
+                checked: MenuPlayback.sub-visible;
                 activated => {
                     Actions.mpv(["cycle", "sub-visibility"]);
                 }
@@ -603,7 +605,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Reset Delay";
-                enabled: Playback.sub-delay != 0;
+                enabled: MenuPlayback.sub-delay != 0;
                 activated => {
                     Actions.set("sub-delay", "0");
                 }
@@ -622,7 +624,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Reset Size";
-                enabled: Playback.sub-scale != 1;
+                enabled: MenuPlayback.sub-scale != 1;
                 activated => {
                     Actions.set("sub-scale", "1");
                 }

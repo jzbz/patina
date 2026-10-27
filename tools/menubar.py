@@ -16,11 +16,19 @@ END = "        // END tools/menubar.py\n"
 
 
 def menus(source: str) -> str:
-    """The Menu elements inside MainMenu's root Menu, as written."""
+    """The Menu elements inside MainMenu's root Menu, reading Playback and
+    Media live: the menu bar is native and follows them, where the
+    application menu reads the copy in MenuPlayback and MenuMedia."""
     start = source.index("export component MainMenu")
     start = source.index("    Menu {\n", start) + len("    Menu {\n")
     end = source.index("\n    }\n}", start)
-    return source[start:end] + "\n"
+    return (
+        source[start:end]
+        .replace("MenuMedia.playlist-count", "Media.playlist.length")
+        .replace("MenuPlayback.", "Playback.")
+        .replace("MenuMedia.", "Media.")
+        + "\n"
+    )
 
 
 def main() -> int:

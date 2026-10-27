@@ -243,6 +243,3 @@ than it brings.
   as IINA does, would avoid it.
 - On the X virtual framebuffer used for automated tests (software OpenGL),
   hardware decoding shows black frames; real GPUs are unaffected.
-- On Linux, where Slint draws the menus itself, submenus three levels deep
-  open empty: Video › Video Track, Audio › Audio Device, File › Open
-  Recent and the like. Windows and macOS show native menus, which work.
