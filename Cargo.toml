@@ -12,6 +12,7 @@ build = "build.rs"
 [dependencies]
 arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 async-channel = "2.5.0"
+ctrlc = { version = "3.5.2", features = ["termination"] }
 directories = "6.0.0"
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 glow = "0.18.0"

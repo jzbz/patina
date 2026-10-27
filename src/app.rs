@@ -131,10 +131,6 @@ impl App {
                 if let Some(first) = windows.first() {
                     self.start_media_controls(first);
                 }
-                *self.now_playing.borrow_mut() = NowPlaying::default();
-                if let Some(active) = self.active.borrow().upgrade() {
-                    active.publish_now_playing();
-                }
             } else {
                 self.media.borrow_mut().take();
             }
@@ -565,8 +561,12 @@ impl App {
 
     // ---- System media controls ------------------------------------------
 
-    fn start_media_controls(&self, first: &PlayerController) {
-        if self.media_started.replace(true) || !self.prefs().media_keys {
+    /// Starts the system's media controls, once, and shows what is playing
+    /// in them. Windows attaches them to a window, and Slint makes a shown
+    /// window's native window only when the event loop is next idle; until
+    /// then this does nothing, and the window's events call it again.
+    pub fn start_media_controls(&self, first: &PlayerController) {
+        if self.media_started.get() || !self.prefs().media_keys {
             return;
         }
         use raw_window_handle::HasWindowHandle;
@@ -576,12 +576,21 @@ impl App {
             .window()
             .with_winit_window(|winit| winit.window_handle().ok().map(|handle| handle.as_raw()))
             .flatten();
+        if cfg!(windows) && window.is_none() {
+            return;
+        }
+        self.media_started.set(true);
         let handler: media_controls::Handler = std::sync::Arc::new(|command| {
             let _ = slint::invoke_from_event_loop(move || {
                 App::with_current(|app| app.media_command(command));
             });
         });
         *self.media.borrow_mut() = MediaControls::start(handler, window);
+        // Whatever was published before they started.
+        *self.now_playing.borrow_mut() = NowPlaying::default();
+        if let Some(active) = self.active.borrow().upgrade() {
+            active.publish_now_playing();
+        }
     }
 
     pub fn set_active(&self, controller: &Rc<PlayerController>) {

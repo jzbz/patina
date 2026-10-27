@@ -68,6 +68,15 @@ fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level))
         .init();
 
+    // Ended by a signal (Ctrl+C, the terminal closing, the session ending),
+    // Patina still closes its windows, which saves where each file was: the
+    // event loop ends, and the shutdown after it runs.
+    if let Err(error) = ctrlc::set_handler(|| {
+        let _ = slint::quit_event_loop();
+    }) {
+        log::warn!("could not handle termination signals: {error}");
+    }
+
     // mpv draws through OpenGL, so Slint renders with OpenGL too, unless
     // this is the software fallback (see the end of this function).
     let software = video::software::enabled();

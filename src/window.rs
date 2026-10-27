@@ -1188,6 +1188,7 @@ impl PlayerController {
                 return EventResult::Propagate;
             };
             this.style_titlebar();
+            this.app().start_media_controls(&this);
             match event {
                 winit::event::WindowEvent::HoveredFile(_) => this.window.set_drop_active(true),
                 winit::event::WindowEvent::HoveredFileCancelled => {
