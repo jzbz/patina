@@ -89,9 +89,11 @@ Wayland and X11 both work.
 
 ### macOS and Windows
 
-CI builds Patina and runs its tests on both, but the player itself has not
-been run there yet. On macOS, Homebrew's `mpv` provides libmpv. On Windows,
-put `libmpv-2.dll` beside `patina.exe`, for example from an `mpv-dev`
+CI builds Patina and runs its tests on both. The self-contained packages
+below play video on a Windows 11 VM and an Intel macOS VM, but most
+features have so far only been tried on Linux. On macOS, Homebrew's `mpv`
+provides libmpv. On Windows, put `libmpv-2.dll` beside `patina.exe`, for
+example from an `mpv-dev`
 archive of [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild/releases)
 or [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake/releases).
 Those builds also need `vulkan-1.dll`, which mpv's own Windows release ships
