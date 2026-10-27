@@ -65,6 +65,8 @@ pub enum Control {
     Lines,
     /// A button that runs an action.
     Button,
+    /// A password, kept in the system's store rather than the settings.
+    Password,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,7 +164,7 @@ const ENCODINGS: &[(&str, &str)] = &[
     ("tis-620", "Thai (TIS-620)"),
 ];
 
-use Control::{Button, Choice, Lines, Path, Switch, Text};
+use Control::{Button, Choice, Lines, Password, Path, Switch, Text};
 use Page::{Advanced, Audio, General, Interface, Network, Subtitles, Utilities, Video};
 
 pub const ITEMS: &[Item] = &[
@@ -667,6 +669,38 @@ pub const ITEMS: &[Item] = &[
     ),
     item(
         Subtitles,
+        "Online subtitles",
+        "opensubtitles-api-key",
+        "OpenSubtitles API key",
+        "Make one free in your opensubtitles.com profile.",
+        Text,
+    ),
+    item(
+        Subtitles,
+        "Online subtitles",
+        "opensubtitles-username",
+        "OpenSubtitles account",
+        "Optional; signed in, you can download more a day.",
+        Text,
+    ),
+    item(
+        Subtitles,
+        "Online subtitles",
+        "opensubtitles-password",
+        "Password",
+        "Saved on Enter, in the system's password store.",
+        Password,
+    ),
+    item(
+        Subtitles,
+        "Online subtitles",
+        "online-sub-auto",
+        "Search online when a video has no subtitles",
+        "For videos of 20 minutes or more; loads one made for the file.",
+        Switch,
+    ),
+    item(
+        Subtitles,
         "Text style",
         "sub-font",
         "Font",
@@ -1085,7 +1119,7 @@ mod tests {
     fn every_setting_names_a_real_preference() {
         let json = serde_json::to_value(Preferences::default()).unwrap();
         for item in ITEMS {
-            if matches!(item.control, Button) || item.key.starts_with("toolbar.") {
+            if matches!(item.control, Button | Password) || item.key.starts_with("toolbar.") {
                 continue;
             }
             assert!(

@@ -3,6 +3,7 @@
 
 mod app;
 mod cli;
+mod credentials;
 mod downloads;
 mod history;
 mod inhibit;
@@ -12,6 +13,7 @@ mod inspector;
 mod macos;
 mod media_controls;
 mod mpv;
+mod opensubtitles;
 mod platform;
 mod player;
 mod playlist;

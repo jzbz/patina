@@ -1,6 +1,6 @@
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Platform, Actions } from "globals.slint";
+import { Platform, Actions, OnlineSubs } from "globals.slint";
 import { TextButton } from "widgets.slint";
 
 export struct ShortcutItem {
@@ -159,6 +159,136 @@ export component AboutDialog inherits Modal {
                 text: "Close";
                 clicked => {
                     root.cancel();
+                }
+            }
+        }
+    }
+}
+
+// Subtitles from OpenSubtitles.com for what is playing, as IINA's chooser
+// lists them: the ones made for this very file first.
+export component OnlineSubtitlesDialog inherits Modal {
+    panel-width: 640px;
+
+    init => {
+        edit.focus();
+    }
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            spacing: 12px;
+            HorizontalLayout {
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Online Subtitles";
+                    color: Theme.text;
+                    font-size: Theme.font-heading;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "OpenSubtitles.com";
+                    color: Theme.tertiary-text;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                edit := LineEdit {
+                    horizontal-stretch: 1;
+                    text <=> OnlineSubs.query;
+                    placeholder-text: "A title or file name";
+                    accepted(text) => {
+                        OnlineSubs.search(text);
+                    }
+                }
+                TextButton {
+                    text: "Search";
+                    enabled: !OnlineSubs.busy && OnlineSubs.query != "";
+                    clicked => {
+                        OnlineSubs.search(OnlineSubs.query);
+                    }
+                }
+            }
+            Text {
+                text: OnlineSubs.status;
+                color: OnlineSubs.failed ? Theme.danger : Theme.secondary-text;
+                font-size: Theme.font-normal;
+                wrap: word-wrap;
+            }
+            if OnlineSubs.results.length > 0: ListView {
+                height: 300px;
+                for item[index] in OnlineSubs.results: Rectangle {
+                    height: 46px;
+                    border-radius: Theme.control-radius;
+                    background: index == OnlineSubs.selected ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
+
+                    touch := TouchArea {
+                        clicked => {
+                            OnlineSubs.selected = index;
+                        }
+                        double-clicked => {
+                            OnlineSubs.selected = index;
+                            if !OnlineSubs.busy {
+                                OnlineSubs.download(index);
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 2px;
+                            Text {
+                                text: item.title;
+                                color: Theme.text;
+                                font-size: Theme.font-normal;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: item.detail;
+                                color: Theme.tertiary-text;
+                                font-size: Theme.font-small;
+                                overflow: elide;
+                            }
+                        }
+                        if item.exact: Text {
+                            text: "Made for this file";
+                            color: Theme.playing;
+                            font-size: Theme.font-small;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                TextButton {
+                    text: "Cancel";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                TextButton {
+                    text: "Download";
+                    primary: true;
+                    enabled: !OnlineSubs.busy && OnlineSubs.selected >= 0 && OnlineSubs.selected < OnlineSubs.results.length;
+                    clicked => {
+                        OnlineSubs.download(OnlineSubs.selected);
+                    }
                 }
             }
         }

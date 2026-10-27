@@ -45,7 +45,11 @@ writes what mpv rendered.
 
 Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
 `--mpv-ao=null` to keep test runs silent, and `--verbose` or
-`RUST_LOG=patina=trace` for diagnostics.
+`RUST_LOG=patina=trace` for diagnostics. `PATINA_OPENSUBTITLES_API` points
+online subtitles at a stand-in for the OpenSubtitles API (the URL that
+`/subtitles` and the rest hang off). Run inside `dbus-run-session`, Patina
+uses whatever Secret Service that session has, so a stand-in keeps a test's
+password out of your own keyring.
 
 ## Source map
 
@@ -70,6 +74,9 @@ Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
 - `src/ytdl.rs`: what yt-dlp says about an online video, as qualities for
   the menus and the yt-dlp format for a choice.
 - `src/downloads.rs`: downloads with yt-dlp, and the Downloads window.
+- `src/opensubtitles.rs`: the OpenSubtitles.com client: hash, search,
+  download, sign-in.
+- `src/credentials.rs`: passwords in the system's password store.
 - `src/probe.rs`: playlist durations and tags from a headless mpv core.
 - `src/playlist.rs`: playlist selection, multi-row moves, series-prefix
   folding and pasted sources, without mpv.

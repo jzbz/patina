@@ -67,6 +67,12 @@ const PRESETS: &[(&str, &str, bool)] = &[
     ("Inspector", "inspector", true),
     ("Download the video", "download-video", true),
     ("Downloads", "downloads", true),
+    ("Find online subtitles", "find-online-subtitles", true),
+    (
+        "Save the downloaded subtitle",
+        "save-downloaded-subtitle",
+        true,
+    ),
     ("New window", "new-window", true),
     ("Show in the file manager", "reveal-file", true),
     ("Move the file to the trash", "delete-current-file", true),
@@ -105,6 +111,8 @@ pub struct PreferencesController {
     /// The binding being edited (None when adding one).
     editing: RefCell<Option<KeyCombo>>,
     editor_combo: RefCell<Option<KeyCombo>>,
+    /// What became of the last password saved, shown under its field.
+    password_note: RefCell<Option<String>>,
 }
 
 impl PreferencesController {
@@ -129,6 +137,7 @@ impl PreferencesController {
             binding_keys: RefCell::new(Vec::new()),
             editing: RefCell::new(None),
             editor_combo: RefCell::new(None),
+            password_note: RefCell::new(None),
         });
         controller.wire();
         controller.show_page(Page::General);
@@ -370,6 +379,12 @@ impl PreferencesController {
                 .into();
                 row.text = value.as_str().unwrap_or_default().into();
             }
+            Control::Password => {
+                row.kind = "password".into();
+                if let Some(note) = &*self.password_note.borrow() {
+                    row.detail = note.clone().into();
+                }
+            }
             Control::Button => {
                 row.kind = "button".into();
                 if item.key == "clear-thumbnails" {
@@ -439,7 +454,11 @@ impl PreferencesController {
         }
     }
 
-    fn set_text(&self, key: &str, text: &str) {
+    fn set_text(self: &Rc<Self>, key: &str, text: &str) {
+        if key == "opensubtitles-password" {
+            self.save_password(text);
+            return;
+        }
         let current = value_of(
             &serde_json::to_value(&*self.app().prefs()).unwrap_or(Value::Null),
             &self.app().prefs(),
@@ -447,6 +466,56 @@ impl PreferencesController {
         );
         if current.as_str() != Some(text) {
             self.set(key, Value::from(text));
+        }
+    }
+
+    /// Saves the OpenSubtitles password in the system's store (or removes
+    /// it, when empty), on a thread of its own: the store can block, or
+    /// ask to be unlocked.
+    fn save_password(self: &Rc<Self>, password: &str) {
+        let username = self.app().prefs().opensubtitles_username.trim().to_owned();
+        if username.is_empty() {
+            *self.password_note.borrow_mut() =
+                Some("Enter the account first, then its password.".into());
+            self.refresh();
+            return;
+        }
+        let password = password.to_owned();
+        let (sender, receiver) = async_channel::bounded(1);
+        let spawned = std::thread::Builder::new()
+            .name("password".into())
+            .spawn(move || {
+                let service = crate::opensubtitles::PASSWORD_SERVICE;
+                let result = if password.is_empty() {
+                    crate::credentials::delete(service, &username).map(|()| false)
+                } else {
+                    crate::credentials::set(service, &username, &password).map(|()| true)
+                };
+                crate::opensubtitles::forget_shared();
+                let _ = sender.send_blocking(result);
+            });
+        if let Err(error) = spawned {
+            log::warn!("could not save the password: {error}");
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let spawned = slint::spawn_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let store = crate::credentials::STORE_NAME;
+            *this.password_note.borrow_mut() = Some(match result {
+                Ok(true) => format!("Saved in {store}."),
+                Ok(false) => format!("Removed from {store}."),
+                Err(error) => format!("Could not save it in {store}: {error}"),
+            });
+            this.refresh();
+        });
+        if let Err(error) = spawned {
+            log::warn!("{error}");
         }
     }
 

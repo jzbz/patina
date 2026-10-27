@@ -219,6 +219,18 @@ component PrefRowView inherits Rectangle {
                 }
             }
 
+            // Saved on Enter alone, and cleared once saved: it goes to the
+            // system's password store, never into the settings.
+            if root.entry.kind == "password": LineEdit {
+                width: 300px;
+                input-type: password;
+                enabled: root.entry.enabled;
+                accepted(text) => {
+                    root.set-text(root.entry.key, text);
+                    self.text = "";
+                }
+            }
+
             if root.entry.kind == "path": HorizontalLayout {
                 spacing: 6px;
                 width: 300px;

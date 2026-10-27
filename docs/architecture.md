@@ -249,6 +249,24 @@ Patina's, so nothing depends on the wording of yt-dlp's own output. It is
 looked for as the hook looks for it. Running downloads are stopped when
 Patina quits; yt-dlp picks up their partial files the next time.
 
+## Online subtitles
+
+`opensubtitles.rs` is a blocking client for the OpenSubtitles.com REST
+API, shared by the windows so a sign-in is made once. Each user supplies
+their own API key; an account is optional and allows more downloads a day,
+and its password lives in the system's password store (`credentials.rs`,
+over the keyring crates), never in the settings. A search sends the file's
+OpenSubtitles hash (its size plus its first and last 64 KiB as 64-bit
+words) and its name, in the preferred languages turned into OpenSubtitles'
+codes; results that matched the hash come first. Downloading is two steps:
+the API hands out a link with the day's remaining quota, and the file comes
+from the link. Requests follow OpenSubtitles' best practices: the rate
+limit headers are honoured, a sign-in that has run out is renewed once,
+and Patina signs out when it quits. The window runs each search and
+download on a thread of its own; a newer one makes an older one's answer
+moot. Downloads go to the data folder's `online-subtitles` and are added
+with `sub-add`.
+
 ## History and inspector windows
 
 `history.rs` and `inspector.rs` each drive a window of their own, created on

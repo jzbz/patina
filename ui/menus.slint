@@ -583,6 +583,20 @@ export component MainMenu inherits ContextMenuArea {
                     Actions.patina("load-subtitles");
                 }
             }
+            MenuItem {
+                title: "Find Online Subtitles…";
+                enabled: MenuPlayback.has-media;
+                activated => {
+                    Actions.patina("find-online-subtitles");
+                }
+            }
+            MenuItem {
+                title: "Save Downloaded Subtitle…";
+                enabled: MenuMedia.downloaded-subtitle;
+                activated => {
+                    Actions.patina("save-downloaded-subtitle");
+                }
+            }
             MenuSeparator { }
             MenuItem {
                 title: "Show Subtitles";

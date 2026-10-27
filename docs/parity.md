@@ -18,7 +18,7 @@ have been run for playback (see M5).
 | --- | --- | --- |
 | M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (the macOS menu bar and title bar tried on an Intel macOS VM) |
 | M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done; tried on Linux and on a Windows 11 VM (media keys and the media panel, sleep prevention, preferences, thumbnails, history, inspector); on macOS only sleep prevention so far |
-| M3 Advanced parity | yt-dlp quality switching and downloads (as IINA's Online Media plugin), music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | in progress: yt-dlp quality switching and downloads done |
+| M3 Advanced parity | yt-dlp quality switching and downloads (as IINA's Online Media plugin), music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | in progress: yt-dlp quality switching and downloads, and online subtitles, done |
 | M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | not planned (see section 18) |
 | M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | in progress: `bundle.yml` builds a universal Patina.app and a Windows folder, each carrying libmpv. Both play video and subtitles on machines that never had mpv or a build tool: a Windows 11 VM and an Intel macOS 26 VM, neither with a GPU, so both draw in software. Releases, signing, Flatpak, Homebrew and winget planned |
 
@@ -78,7 +78,7 @@ have been run for playback (see M5).
 | OSD-01 | Enable, timeout, size | done (in `settings.json`) |
 | OSD-02 | Messages with progress bars | done: volume, seek, colour adjustments |
 | OSD-03 | Text messages | done: pause, speed, delays, tracks, subtitles, loops, A-B loop, chapters, aspect, crop, rotation, deinterlace, hardware decoding, screenshots |
-| OSD-04 | Online subtitle messages | planned with online subtitles |
+| OSD-04 | Online subtitle messages | done: what was downloaded and how many downloads are left today; failures in the dialog |
 | OSD-06 | Templates | planned |
 | OSD-07 | Screenshot preview card | planned |
 | OSD-08 | `show-progress` | done |
@@ -172,7 +172,7 @@ once and applied to running players, as IINA's option observers do
 | SUB-03 | External subtitles | done: dialog, drop |
 | SUB-04 | Intelligent auto-matching | done: names, episode numbers (S01E02, 1x02, "- 02") with series-name similarity, the folder's immediate subfolders, a lone video takes the folder's subtitles, preferred languages first; matches reach mpv through its `on_load` hook so its own track selection applies. The extra search paths and priority strings are planned |
 | SUB-05 | Per-file "Wrong Subtitle" overrides | done: from the row menu, Add Subtitle… gives a file subtitles of the user's choosing and Wrong Subtitle turns its matches down (Patina's and mpv's own), now if it is playing and whenever it plays later in the session |
-| SUB-06..09 | Online subtitles | planned |
+| SUB-06..09 | Online subtitles | done for OpenSubtitles.com, with each user's own API key (Preferences › Subtitles) and optionally their account, whose password is kept in the system's password store. Subtitles › Find Online Subtitles (Ctrl/Command+Shift+D) searches by the file's OpenSubtitles hash and its name in the preferred languages and lists what it finds, the ones made for the very file first; the search text can be changed. Downloads load into the video, and Save Downloaded Subtitle copies one elsewhere. The automatic search loads a subtitle made for the very file when a local video of 20 minutes or more opens without any. Tested against a stand-in API and keyring. Not planned: assrt.net and shooter.cn |
 | SUB-10 | Preferred languages | done (plain text field; ISO 639 autocompletion planned) |
 | SUB-11 | Encodings | partial: default encoding preference; the per-file Encoding menu is planned |
 | SUB-12..14 | Styling and font picker | partial: font, size, bold, italic, colors, outline, shadow, position, ASS override; font picker and color wells planned |
@@ -232,7 +232,7 @@ than it brings.
 | PLAT-09 | Rendering | done: libmpv OpenGL render API into a texture composited by Slint. Where OpenGL fails (no GPU driver, a virtual machine, a remote desktop), Patina draws with Slint's software renderer and mpv's software renderer on a thread of its own. Tested on a Windows 11 VM with only the basic display adapter, an Intel macOS VM whose only OpenGL is Apple's software renderer, and Linux without GLX or EGL |
 | PLAT-10 | HDR | planned |
 | PLAT-11 | Live Text | not planned (no equivalent) |
-| PLAT-12 | Credential storage | planned with online subtitles |
+| PLAT-12 | Credential storage | done: the Secret Service on Linux (GNOME Keyring, KWallet), the Keychain on macOS and Credential Manager on Windows, through the keyring crates; used for the OpenSubtitles password. HTTP authentication planned |
 | A11Y-* | Accessibility and localization | partial: accessible roles and labels on controls; localization planned |
 
 ## Known issues

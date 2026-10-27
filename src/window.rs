@@ -3,6 +3,7 @@
 use crate::app::App;
 use crate::input::{Binding, KeyCombo};
 use crate::mpv::{EndFileReason, Event, Mpv};
+use crate::opensubtitles;
 use crate::player::state::{PlaybackState, PlaylistEntry, Track, TrackKind, file_name};
 use crate::player::{self, Player, Prop};
 use crate::settings::ResizeWindow;
@@ -11,8 +12,8 @@ use crate::thumbnails;
 use crate::util::{self, format_delay, format_speed, format_time};
 use crate::ytdl;
 use crate::{
-    Actions, ChapterItem, DeviceItem, Media, Osd, Platform, Playback, PlayerWindow, PlaylistItem,
-    Prefs, QualityItem, RecentItem, ShortcutItem, TrackItem,
+    Actions, ChapterItem, DeviceItem, Media, OnlineSubs, OnlineSubtitle, Osd, Platform, Playback,
+    PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem, TrackItem,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -105,6 +106,10 @@ pub struct PlayerController {
     /// message for when it has: (address, seconds), (address, title, label).
     resume_at: RefCell<Option<(String, f64)>>,
     quality_message: RefCell<Option<(String, &'static str, String)>>,
+    /// Find Online Subtitles: what each row stands for, and a count that
+    /// tells the answer to the latest search or download from older ones.
+    online_found: RefCell<Vec<opensubtitles::Found>>,
+    online_request: Cell<u64>,
     /// macOS: the transparent title bar has been applied (it can only be
     /// once winit has made the window).
     #[cfg(target_os = "macos")]
@@ -137,6 +142,8 @@ impl PlayerController {
             qualities: RefCell::new(HashMap::new()),
             resume_at: RefCell::new(None),
             quality_message: RefCell::new(None),
+            online_found: RefCell::new(Vec::new()),
+            online_request: Cell::new(0),
             #[cfg(target_os = "macos")]
             titlebar_styled: Cell::new(false),
             playlist_selection: RefCell::new(Default::default()),
@@ -499,6 +506,9 @@ impl PlayerController {
                     if let Some((_, title, label)) = message {
                         self.show_osd(title, &label, None);
                     }
+                    if let Some(this) = self.this.upgrade() {
+                        this.search_online_automatically();
+                    }
                 }
                 // mpv replaced the entry, with the folder's files when it
                 // makes a playlist of them; the file itself plays on.
@@ -790,6 +800,7 @@ impl PlayerController {
             media.set_audio_tracks(track_model(&state, TrackKind::Audio, true, false));
             media.set_sub_tracks(track_model(&state, TrackKind::Sub, true, false));
             media.set_secondary_sub_tracks(track_model(&state, TrackKind::Sub, true, true));
+            media.set_downloaded_subtitle(self.downloaded_subtitle(&state).is_some());
         }
         if any(&[Prop::ChapterList, Prop::Chapter]) {
             let chapters: Vec<ChapterItem> = state
@@ -1230,6 +1241,25 @@ impl PlayerController {
             }
             slint::CloseRequestResponse::HideWindow
         });
+
+        let online = self.window.global::<OnlineSubs>();
+        let weak = Rc::downgrade(self);
+        online.on_search(move |text| {
+            if let Some(this) = weak.upgrade() {
+                this.search_online(text.to_string(), false);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        online.on_download(move |index| {
+            if let Some(this) = weak.upgrade() {
+                let found = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| this.online_found.borrow().get(index).cloned());
+                if let Some(found) = found {
+                    this.download_online(found, false);
+                }
+            }
+        });
     }
 
     fn wire_window_events(self: &Rc<Self>) {
@@ -1490,6 +1520,16 @@ impl PlayerController {
             "audio-quality" => self.choose_quality(None, Some(argument)),
             "download-video" => self.download_video(),
             "downloads" => app.open_downloads(),
+            "find-online-subtitles" => {
+                if let Some(this) = self.this.upgrade() {
+                    this.find_online_subtitles();
+                }
+            }
+            "save-downloaded-subtitle" => {
+                if let Some(this) = self.this.upgrade() {
+                    this.save_downloaded_subtitle();
+                }
+            }
             "inspector" => app.open_inspector(),
             "close-window" => self.close(),
             "quit" => app.quit(),
@@ -2644,6 +2684,328 @@ impl PlayerController {
         }
     }
 
+    // ---- Online subtitles -----------------------------------------------
+
+    /// Subtitles › Find Online Subtitles: the dialog, searching at once for
+    /// what plays.
+    fn find_online_subtitles(self: &Rc<Self>) {
+        let text = self.online_search_text();
+        let online = self.window.global::<OnlineSubs>();
+        online.set_query(text.clone().into());
+        online.set_results(ModelRc::default());
+        online.set_selected(-1);
+        self.online_found.borrow_mut().clear();
+        self.window.set_dialog("online-subtitles".into());
+        self.search_online(text, false);
+    }
+
+    /// What to search for: a local file's name, or a stream's title.
+    fn online_search_text(&self) -> String {
+        let state = self.state.borrow();
+        if state.path.is_empty() || util::is_url(&state.path) {
+            return state.title.clone();
+        }
+        std::path::Path::new(&state.path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| state.title.clone())
+    }
+
+    /// IINA's automatic search: when a local video of 20 minutes or more
+    /// has no subtitles a moment after it opens (Patina's own matching has
+    /// had its turn), a subtitle made for the very file is loaded.
+    fn search_online_automatically(self: &Rc<Self>) {
+        let prefs = self.app().prefs();
+        if !prefs.online_sub_auto || prefs.opensubtitles_api_key.trim().is_empty() {
+            return;
+        }
+        let path = self.state.borrow().path.clone();
+        if path.is_empty() || util::is_url(&path) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        Timer::single_shot(Duration::from_secs(1), move || {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let wanted = {
+                let state = this.state.borrow();
+                state.path == path
+                    && state.duration >= 20.0 * 60.0
+                    && state.tracks(TrackKind::Sub).next().is_none()
+            };
+            if wanted {
+                let text = this.online_search_text();
+                this.search_online(text, true);
+            }
+        });
+    }
+
+    /// Searches OpenSubtitles on a thread of its own; the dialog shows what
+    /// comes back, unless this is the automatic search.
+    fn search_online(self: &Rc<Self>, text: String, automatic: bool) {
+        let prefs = self.app().prefs();
+        let (key, username) = (
+            prefs.opensubtitles_api_key.clone(),
+            prefs.opensubtitles_username.clone(),
+        );
+        let languages = sub_languages(&prefs);
+        let path = self.state.borrow().path.clone();
+        let request = self.online_request.get() + 1;
+        self.online_request.set(request);
+        if !automatic {
+            let online = self.window.global::<OnlineSubs>();
+            online.set_busy(true);
+            online.set_failed(false);
+            online.set_status("Searching…".into());
+            online.set_results(ModelRc::default());
+            online.set_selected(-1);
+            self.online_found.borrow_mut().clear();
+        }
+        let local = (!path.is_empty() && !util::is_url(&path)).then(|| path.clone());
+        let (sender, receiver) = async_channel::bounded(1);
+        let spawned = std::thread::Builder::new()
+            .name("opensubtitles".into())
+            .spawn(move || {
+                let result = opensubtitles::shared(&key, &username).and_then(|client| {
+                    let hash = local.and_then(|path| {
+                        opensubtitles::hash(std::path::Path::new(&path)).unwrap_or_else(|error| {
+                            log::debug!("no OpenSubtitles hash for {path}: {error}");
+                            None
+                        })
+                    });
+                    client.search(&opensubtitles::Query {
+                        languages,
+                        hash,
+                        text,
+                    })
+                });
+                let _ = sender.send_blocking(result);
+            });
+        if let Err(error) = spawned {
+            log::warn!("could not search for subtitles: {error}");
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let spawned = slint::spawn_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.online_request.get() != request {
+                return;
+            }
+            if automatic {
+                // Only one made for this very file, and only if it still plays.
+                let exact = result
+                    .ok()
+                    .and_then(|found| found.into_iter().find(|found| found.exact));
+                if let Some(exact) = exact
+                    && this.state.borrow().path == path
+                {
+                    this.download_online(exact, true);
+                }
+                return;
+            }
+            let online = this.window.global::<OnlineSubs>();
+            online.set_busy(false);
+            match result {
+                Ok(found) => {
+                    let rows: Vec<OnlineSubtitle> = found
+                        .iter()
+                        .map(|found| OnlineSubtitle {
+                            title: found.file_name.clone().into(),
+                            detail: describe_online(found).into(),
+                            exact: found.exact,
+                        })
+                        .collect();
+                    let exact = found.iter().filter(|found| found.exact).count();
+                    online.set_status(
+                        match (found.len(), exact) {
+                            (1, 1) => "One found, made for this file.".to_owned(),
+                            (1, _) => "One found.".to_owned(),
+                            (count, 0) => format!("{count} found."),
+                            (count, exact) => format!("{count} found, {exact} made for this file."),
+                        }
+                        .into(),
+                    );
+                    online.set_failed(false);
+                    online.set_results(ModelRc::new(VecModel::from(rows)));
+                    online.set_selected(0);
+                    *this.online_found.borrow_mut() = found;
+                }
+                Err(error) => {
+                    online.set_failed(error != opensubtitles::Error::NotFound);
+                    online.set_status(error.to_string().into());
+                }
+            }
+        });
+        if let Err(error) = spawned {
+            log::warn!("{error}");
+        }
+    }
+
+    /// Downloads one subtitle on a thread of its own, into Patina's own
+    /// folder, and loads it into what plays.
+    fn download_online(self: &Rc<Self>, found: opensubtitles::Found, automatic: bool) {
+        let app = self.app();
+        let prefs = app.prefs();
+        let (key, username) = (
+            prefs.opensubtitles_api_key.clone(),
+            prefs.opensubtitles_username.clone(),
+        );
+        let folder = app.paths().online_subtitles_dir();
+        let path = self.state.borrow().path.clone();
+        let request = self.online_request.get() + 1;
+        self.online_request.set(request);
+        if !automatic {
+            let online = self.window.global::<OnlineSubs>();
+            online.set_busy(true);
+            online.set_failed(false);
+            online.set_status(format!("Downloading {}…", found.file_name).into());
+        }
+        let file_id = found.file_id;
+        let (sender, receiver) = async_channel::bounded(1);
+        let spawned = std::thread::Builder::new()
+            .name("opensubtitles".into())
+            .spawn(move || {
+                let result = opensubtitles::shared(&key, &username)
+                    .and_then(|client| client.download(file_id))
+                    .and_then(|downloaded| {
+                        // Named for the file it is, so different videos'
+                        // "English.srt" don't meet.
+                        let saved = folder.join(format!(
+                            "{file_id} {}",
+                            safe_file_name(&downloaded.file_name)
+                        ));
+                        std::fs::create_dir_all(&folder)
+                            .and_then(|()| std::fs::write(&saved, &downloaded.contents))
+                            .map_err(|error| {
+                                opensubtitles::Error::Network(format!(
+                                    "could not save {}: {error}",
+                                    saved.display()
+                                ))
+                            })?;
+                        Ok((saved, downloaded.file_name, downloaded.remaining))
+                    });
+                let _ = sender.send_blocking(result);
+            });
+        if let Err(error) = spawned {
+            log::warn!("could not download subtitles: {error}");
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let spawned = slint::spawn_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let current = this.online_request.get() == request;
+            match result {
+                // For the file it was found for, if that still plays.
+                Ok((saved, name, remaining)) if this.state.borrow().path == path => {
+                    let saved = saved.to_string_lossy().into_owned();
+                    let language = found.language.clone();
+                    this.player()
+                        .command(&["sub-add", &saved, "select", &name, &language]);
+                    if current && !automatic {
+                        this.window.global::<OnlineSubs>().set_busy(false);
+                        this.window.set_dialog(SharedString::new());
+                    }
+                    let detail = match remaining {
+                        Some(1) => format!("{name} · 1 download left today"),
+                        Some(left) if left >= 0 => format!("{name} · {left} downloads left today"),
+                        _ => name,
+                    };
+                    this.show_osd("Subtitles Downloaded", &detail, None);
+                }
+                Ok(_) => {}
+                Err(error) if automatic => log::info!("automatic subtitle download: {error}"),
+                Err(error) => {
+                    if current {
+                        let online = this.window.global::<OnlineSubs>();
+                        online.set_busy(false);
+                        online.set_failed(true);
+                        online.set_status(error.to_string().into());
+                    }
+                }
+            }
+        });
+        if let Err(error) = spawned {
+            log::warn!("{error}");
+        }
+    }
+
+    /// The subtitle showing, when it is one downloaded from OpenSubtitles.
+    fn downloaded_subtitle<'a>(&self, state: &'a PlaybackState) -> Option<&'a Track> {
+        let folder = self.app.upgrade()?.paths().online_subtitles_dir();
+        state.tracks(TrackKind::Sub).find(|track| {
+            track.selected
+                && track.main_selection == Some(0)
+                && track.external
+                && std::path::Path::new(&track.external_filename).starts_with(&folder)
+        })
+    }
+
+    /// Subtitles › Save Downloaded Subtitle: copies it where the user
+    /// chooses, beside the video to begin with, under its own name.
+    fn save_downloaded_subtitle(self: &Rc<Self>) {
+        let (source, name, folder) = {
+            let state = self.state.borrow();
+            let Some(track) = self.downloaded_subtitle(&state) else {
+                return;
+            };
+            let name = if track.title.is_empty() {
+                file_name(&track.external_filename)
+            } else {
+                track.title.clone()
+            };
+            let folder = (!util::is_url(&state.path))
+                .then(|| {
+                    std::path::Path::new(&state.path)
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                })
+                .flatten();
+            (
+                std::path::PathBuf::from(&track.external_filename),
+                name,
+                folder,
+            )
+        };
+        let mut dialog = self
+            .app()
+            .dialog_for(Some(self))
+            .set_title("Save Downloaded Subtitle")
+            .set_file_name(&name);
+        if let Some(folder) = folder {
+            dialog = dialog.set_directory(folder);
+        }
+        let weak = Rc::downgrade(self);
+        let spawned = slint::spawn_local(async move {
+            let Some(target) = dialog.save_file().await else {
+                return;
+            };
+            let target = target.path().to_path_buf();
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            match std::fs::copy(&source, &target) {
+                Ok(_) => this.show_osd("Subtitle Saved", &target.to_string_lossy(), None),
+                Err(error) => {
+                    this.show_osd("Could not save the subtitle", &error.to_string(), None)
+                }
+            }
+        });
+        if let Err(error) = spawned {
+            log::warn!("{error}");
+        }
+    }
+
     // ---- Seek-bar thumbnails --------------------------------------------
 
     fn reset_thumbnails(&self) {
@@ -2823,6 +3185,58 @@ fn apply_quality(
             mpv.set_property("file-local-options/start", format!("{at:.3}").as_str())
     {
         log::warn!("{error}");
+    }
+}
+
+/// One line about a subtitle found online: its language, year, frame rate,
+/// downloads and date, and whether it is for the hard of hearing or
+/// machine-translated.
+fn describe_online(found: &opensubtitles::Found) -> String {
+    let mut parts = vec![
+        crate::player::state::language_name(&found.language)
+            .map(str::to_owned)
+            .unwrap_or_else(|| found.language.clone()),
+    ];
+    if let Some(year) = found.year {
+        parts.push(year.to_string());
+    }
+    if let Some(fps) = found.fps {
+        parts.push(format!("{} fps", (fps * 1000.0).round() / 1000.0));
+    }
+    parts.push(match found.downloads {
+        1 => "1 download".to_owned(),
+        count => format!("{count} downloads"),
+    });
+    if !found.uploaded.is_empty() {
+        parts.push(found.uploaded.clone());
+    }
+    if found.hearing_impaired {
+        parts.push("hearing impaired".to_owned());
+    }
+    if found.machine_translated {
+        parts.push("machine translated".to_owned());
+    }
+    parts.join(" · ")
+}
+
+/// A file name from elsewhere made safe to save: no folders, nothing the
+/// file systems refuse.
+fn safe_file_name(name: &str) -> String {
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = name.trim().trim_start_matches('.').to_owned();
+    if name.is_empty() {
+        "subtitle.srt".to_owned()
+    } else {
+        name
     }
 }
 

@@ -1,17 +1,17 @@
 import { Theme } from "theme.slint";
-import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, QualityItem, MenuPlayback, MenuMedia } from "globals.slint";
+import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, QualityItem, MenuPlayback, MenuMedia, OnlineSubs, OnlineSubtitle } from "globals.slint";
 import { ControlBar, TitleBar, OsdView, SeekPreview } from "controls.slint";
 import { Sidebar } from "sidebar.slint";
 import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
-import { PromptDialog, AboutDialog, ShortcutsDialog, ShortcutItem } from "dialogs.slint";
+import { PromptDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog } from "dialogs.slint";
 import { Spinner, IconButton } from "widgets.slint";
 import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
 import { HistoryWindow, HistoryRow } from "history.slint";
 import { DownloadsWindow, DownloadRow } from "downloads.slint";
 import { InspectorWindow, InspectorRow } from "inspector.slint";
 
-export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem }
+export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
 
 export component PlayerWindow inherits Window {
     title: Playback.has-media ? Playback.title : "Patina";
@@ -33,7 +33,8 @@ export component PlayerWindow inherits Window {
     in-out property <string> sidebar-tab: "playlist";
     in-out property <bool> controls-visible: true;
     in-out property <bool> drop-active;
-    // "", "open-url", "add-url", "jump-to", "about", "shortcuts".
+    // "", "open-url", "add-url", "jump-to", "about", "shortcuts",
+    // "online-subtitles".
     in-out property <string> dialog;
     in-out property <string> dialog-text;
     in property <[ShortcutItem]> shortcuts;
@@ -110,6 +111,7 @@ export component PlayerWindow inherits Window {
         MenuMedia.video-qualities = Media.video-qualities;
         MenuMedia.audio-qualities = Media.audio-qualities;
         MenuMedia.online = Media.online;
+        MenuMedia.downloaded-subtitle = Media.downloaded-subtitle;
         menu.show({ x: x, y: y });
     }
 
@@ -753,6 +755,20 @@ export component PlayerWindow inherits Window {
                     Actions.patina("load-subtitles");
                 }
             }
+            MenuItem {
+                title: "Find Online Subtitles…";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.patina("find-online-subtitles");
+                }
+            }
+            MenuItem {
+                title: "Save Downloaded Subtitle…";
+                enabled: Media.downloaded-subtitle;
+                activated => {
+                    Actions.patina("save-downloaded-subtitle");
+                }
+            }
             MenuSeparator { }
             MenuItem {
                 title: "Show Subtitles";
@@ -1173,6 +1189,13 @@ export component PlayerWindow inherits Window {
 
         if root.dialog == "shortcuts": ShortcutsDialog {
             shortcuts: root.shortcuts;
+            cancel => {
+                root.dialog = "";
+                keys.focus();
+            }
+        }
+
+        if root.dialog == "online-subtitles": OnlineSubtitlesDialog {
             cancel => {
                 root.dialog = "";
                 keys.focus();

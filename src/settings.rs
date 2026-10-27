@@ -57,6 +57,11 @@ impl Paths {
         self.data.join("thumbnails")
     }
 
+    /// Subtitles downloaded from OpenSubtitles.
+    pub fn online_subtitles_dir(&self) -> PathBuf {
+        self.data.join("online-subtitles")
+    }
+
     pub fn history_file(&self) -> PathBuf {
         self.data.join("history.json")
     }
@@ -142,6 +147,12 @@ pub struct Preferences {
     // Subtitles.
     pub sub_auto: String,
     pub sub_language: String,
+    /// The user's own OpenSubtitles API key, and their account (whose
+    /// password is in the system's store, not here).
+    pub opensubtitles_api_key: String,
+    pub opensubtitles_username: String,
+    /// Search online when a long enough local video opens without subtitles.
+    pub online_sub_auto: bool,
     pub sub_codepage: String,
     pub sub_font: String,
     pub sub_font_size: f64,
@@ -251,6 +262,9 @@ impl Default for Preferences {
             gapless_audio: "weak".into(),
             sub_auto: "smart".into(),
             sub_language: String::new(),
+            opensubtitles_api_key: String::new(),
+            opensubtitles_username: String::new(),
+            online_sub_auto: false,
             sub_codepage: "auto".into(),
             sub_font: "sans-serif".into(),
             sub_font_size: 55.0,

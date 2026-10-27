@@ -63,6 +63,9 @@ and its state in Patina.
   a quality preference, Video Quality and Audio Quality menus for each
   video that switch where it is playing, and downloads, with a Downloads
   window that shows their progress
+- Subtitles from OpenSubtitles.com, found by the file's hash and name in
+  your languages, with your own API key and, if you like, your account,
+  whose password stays in the system's password store
 
 Written but not yet tested: drag and drop, playing from standard input,
 saving playlists, and pausing when minimized.

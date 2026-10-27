@@ -495,6 +495,7 @@ const DEFAULT_CONF: &str = r##"# Patina key bindings, in mpv input.conf format.
 #@patina PRIMARY+y history
 #@patina PRIMARY+i inspector
 #@patina PRIMARY+d download-video
+#@patina PRIMARY+Shift+d find-online-subtitles
 #@patina PRIMARY+Shift+v video-panel
 #@patina PRIMARY+Shift+a audio-panel
 #@patina PRIMARY+Shift+s sub-panel

@@ -29,6 +29,14 @@ export struct QualityItem {
     selected: bool,
 }
 
+// One subtitle file found online, for the Find Online Subtitles dialog.
+export struct OnlineSubtitle {
+    title: string,
+    detail: string,
+    // Made for this very file: OpenSubtitles matched its hash.
+    exact: bool,
+}
+
 export struct ChapterItem {
     title: string,
     time: float,
@@ -144,6 +152,8 @@ export global Media {
     in property <[QualityItem]> video-qualities;
     in property <[QualityItem]> audio-qualities;
     in property <bool> online;
+    // The subtitle showing is one downloaded from OpenSubtitles.
+    in property <bool> downloaded-subtitle;
     in property <[ChapterItem]> chapters;
     in property <int> chapter: -1;
     in property <[RecentItem]> recent;
@@ -198,6 +208,20 @@ export global MenuMedia {
     in-out property <[QualityItem]> video-qualities;
     in-out property <[QualityItem]> audio-qualities;
     in-out property <bool> online;
+    in-out property <bool> downloaded-subtitle;
+}
+
+// The Find Online Subtitles dialog: what was found for the search text,
+// and what is going on.
+export global OnlineSubs {
+    in property <[OnlineSubtitle]> results;
+    in-out property <int> selected: -1;
+    in property <string> status;
+    in property <bool> failed;
+    in property <bool> busy;
+    in-out property <string> query;
+    callback search(string);
+    callback download(int);
 }
 
 export global Osd {

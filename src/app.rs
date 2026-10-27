@@ -308,6 +308,19 @@ impl App {
         if let Some(downloads) = self.existing_downloads() {
             downloads.stop_all();
         }
+        // OpenSubtitles asks clients to sign out; not worth more than a
+        // moment of quitting.
+        let (signed_out, done) = std::sync::mpsc::channel();
+        if std::thread::Builder::new()
+            .name("opensubtitles".into())
+            .spawn(move || {
+                crate::opensubtitles::sign_out_shared();
+                let _ = signed_out.send(());
+            })
+            .is_ok()
+        {
+            let _ = done.recv_timeout(std::time::Duration::from_secs(2));
+        }
         let windows = self.windows.borrow().clone();
         for window in windows {
             window.close();
@@ -862,7 +875,7 @@ impl App {
 
     // ---- File dialogs ---------------------------------------------------
 
-    fn dialog_for(&self, owner: Option<&PlayerController>) -> rfd::AsyncFileDialog {
+    pub fn dialog_for(&self, owner: Option<&PlayerController>) -> rfd::AsyncFileDialog {
         let mut dialog = Some(rfd::AsyncFileDialog::new());
         if let Some(owner) = owner {
             owner.window().window().with_winit_window(|winit| {
