@@ -2489,11 +2489,36 @@ impl PlayerController {
                 return;
             };
             match size {
-                _ if maximized => this.window.window().set_maximized(true),
+                _ if maximized => this.maximize_again(),
                 Some(size) => this.resize_window(size),
                 None if this.state.borrow().video.is_some() => this.fit_to_video(1.0, true),
                 None => this.resize_window(DEFAULT_SIZE),
             }
+        });
+    }
+
+    /// Maximizes the window again, as music mode found it. On Windows the
+    /// window can be restored once more as it settles from music mode's size
+    /// limits (winit drops the maximized state on a resize, and Slint copies
+    /// what winit reports), so this checks once it has, and tries again.
+    fn maximize_again(&self) {
+        let this = self.this.clone();
+        Timer::single_shot(Duration::from_millis(100), move || {
+            let Some(this) = this.upgrade().filter(|this| !this.in_music_mode()) else {
+                return;
+            };
+            log::debug!("maximizing the window again");
+            this.window.window().set_maximized(true);
+            let this = this.this.clone();
+            Timer::single_shot(Duration::from_millis(300), move || {
+                if let Some(this) = this.upgrade()
+                    && !this.in_music_mode()
+                    && !this.window.window().is_maximized()
+                {
+                    log::debug!("the window was restored; maximizing it again");
+                    this.window.window().set_maximized(true);
+                }
+            });
         });
     }
 
