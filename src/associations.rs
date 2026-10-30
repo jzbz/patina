@@ -417,8 +417,9 @@ mod windows {
     use super::*;
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-        RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
+        RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteKeyW, RegDeleteTreeW, RegOpenKeyExW,
+        RegQueryInfoKeyW, RegSetValueExW,
     };
 
     fn wide(text: &str) -> Vec<u16> {
@@ -484,6 +485,54 @@ mod windows {
         match status {
             ERROR_SUCCESS | ERROR_FILE_NOT_FOUND => Ok(()),
             status => Err(format!("could not remove {path}\\{name}: error {status}")),
+        }
+    }
+
+    /// How many subkeys and values the key at `path` has; None if there is
+    /// no such key.
+    fn contents(path: &str) -> Option<(u32, u32)> {
+        let path_w = wide(path);
+        let mut key: HKEY = std::ptr::null_mut();
+        let (mut subkeys, mut values) = (0u32, 0u32);
+        // SAFETY: a NUL-terminated string, counters to fill in, and a key
+        // this function closes.
+        unsafe {
+            if RegOpenKeyExW(HKEY_CURRENT_USER, path_w.as_ptr(), 0, KEY_READ, &mut key)
+                != ERROR_SUCCESS
+            {
+                return None;
+            }
+            let status = RegQueryInfoKeyW(
+                key,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &mut subkeys,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut values,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            RegCloseKey(key);
+            (status == ERROR_SUCCESS).then_some((subkeys, values))
+        }
+    }
+
+    /// Removes the key at `path` if nothing is left in it: registering made
+    /// keys such as an extension's Open With list that held only Patina.
+    fn delete_if_empty(path: &str) -> Result<(), String> {
+        if contents(path) != Some((0, 0)) {
+            return Ok(());
+        }
+        let path_w = wide(path);
+        // SAFETY: a NUL-terminated string.
+        let status = unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, path_w.as_ptr()) };
+        match status {
+            ERROR_SUCCESS | ERROR_FILE_NOT_FOUND => Ok(()),
+            status => Err(format!("could not remove {path}: error {status}")),
         }
     }
 
@@ -602,8 +651,11 @@ mod windows {
             let id = format!("Patina{extension}");
             delete_tree(&format!(r"{classes}\{id}"))?;
             delete_value(&format!(r"{classes}\{extension}\OpenWithProgids"), &id)?;
+            delete_if_empty(&format!(r"{classes}\{extension}\OpenWithProgids"))?;
+            delete_if_empty(&format!(r"{classes}\{extension}"))?;
         }
         delete_tree(&format!(r"{classes}\Applications\patina.exe"))?;
+        delete_if_empty(&format!(r"{classes}\Applications"))?;
         delete_tree(&format!(r"{classes}\patina"))?;
         delete_tree(&format!(r"{software}\Patina"))?;
         delete_value(&format!(r"{software}\RegisteredApplications"), "Patina")
@@ -619,12 +671,34 @@ mod windows {
         use super::*;
 
         /// Registers under a key of the test's own, which the shell doesn't
-        /// read, and removes it again.
+        /// read, and removes it again, leaving no key behind but those that
+        /// were there before, and what Windows put in them.
         #[test]
         fn registers_and_removes() {
             let software = format!(r"Software\PatinaTest-{}", std::process::id());
+            let classes = format!(r"{software}\Classes");
+            // An extension that has an Open With list of another app's.
+            set(
+                &format!(r"{classes}\.mkv\OpenWithProgids"),
+                Some("Other.mkv"),
+                "",
+            )
+            .unwrap();
             register_in(&software, r"C:\Program Files\Patina\patina.exe").unwrap();
+            assert_eq!(
+                contents(&format!(r"{classes}\.mkv\OpenWithProgids")),
+                Some((0, 2))
+            );
             remove_in(&software).unwrap();
+            assert_eq!(
+                contents(&format!(r"{classes}\.mkv\OpenWithProgids")),
+                Some((0, 1))
+            );
+            // Only .mkv is left in the classes; under the root, only the
+            // classes and the list of registered applications, which the
+            // real Software key has anyway.
+            assert_eq!(contents(&classes), Some((1, 0)));
+            assert_eq!(contents(&software), Some((2, 0)));
             delete_tree(&software).unwrap();
         }
     }
