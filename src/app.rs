@@ -147,9 +147,19 @@ impl App {
             .filter(|option| !before.contains(option))
             .collect();
         let windows = self.windows.borrow().clone();
+        let playlist_tags = prefs.playlist_show_metadata != old.playlist_show_metadata
+            || prefs.playlist_show_metadata_in_music_mode
+                != old.playlist_show_metadata_in_music_mode;
         for window in &windows {
             window.apply_interface_preferences();
             window.apply_mpv_options(&changed);
+            if playlist_tags {
+                window.refresh_playlist();
+            }
+            // A change of the setting starts the automatic switch afresh.
+            if prefs.auto_switch_to_music_mode != old.auto_switch_to_music_mode {
+                window.reset_music_override();
+            }
         }
         if prefs.media_keys != old.media_keys {
             if prefs.media_keys {
@@ -464,6 +474,7 @@ impl App {
             new_window,
             fullscreen,
             pip,
+            music_mode,
             mpv_options,
             activation_token,
             ..
@@ -501,8 +512,11 @@ impl App {
         }
         // Full screen wins over picture-in-picture, as in IINA's links.
         // Picture-in-picture waits for the video that is opening, unless
-        // the files only joined a playlist whose video is showing.
-        if fullscreen {
+        // the files only joined a playlist whose video is showing. Music
+        // mode comes at once, as with IINA's --music-mode.
+        if music_mode && opening {
+            target.start_music_mode();
+        } else if fullscreen {
             target.enter_fullscreen();
         } else if pip && opening && !(appended && target.has_video()) {
             target.pip_when_video();
@@ -545,14 +559,30 @@ impl App {
     }
 
     /// Keeps the screen awake while any window is playing, as IINA does.
+    /// Keeps the screen awake while a window plays, or with the
+    /// allow-screensaver-for-audio preference only the computer while all
+    /// that plays is music, as IINA does.
     pub fn playback_changed(&self) {
-        let playing = self
-            .windows
-            .borrow()
-            .iter()
-            .any(|window| window.is_playing());
-        self.inhibitor
-            .set(playing && self.prefs().prevent_screensaver);
+        use crate::inhibit::Level;
+        let prefs = self.prefs();
+        let level = if !prefs.prevent_screensaver {
+            Level::None
+        } else {
+            self.windows
+                .borrow()
+                .iter()
+                .filter(|window| window.is_playing())
+                .map(|window| {
+                    if prefs.allow_screensaver_for_audio && window.plays_music() {
+                        Level::System
+                    } else {
+                        Level::Display
+                    }
+                })
+                .max()
+                .unwrap_or(Level::None)
+        };
+        self.inhibitor.set(level);
     }
 
     pub fn window_closed(&self, controller: &PlayerController) {

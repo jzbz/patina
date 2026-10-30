@@ -4,6 +4,7 @@ import { ControlBar, TitleBar, OsdView, SeekPreview } from "controls.slint";
 import { Sidebar } from "sidebar.slint";
 import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
+import { MusicPanel, MusicWindowButtons, DefaultArt } from "music.slint";
 import { PromptDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog } from "dialogs.slint";
 import { Spinner, IconButton } from "widgets.slint";
 import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
@@ -14,13 +15,17 @@ import { InspectorWindow, InspectorRow } from "inspector.slint";
 export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
 
 export component PlayerWindow inherits Window {
-    title: Playback.has-media ? Playback.title : "Patina";
+    title: !Playback.has-media ? "Patina" : root.music-mode && Playback.music-title != "" ? Playback.music-title : Playback.title;
     icon: @image-url("icons/patina.svg");
     background: black;
     no-frame: Platform.custom-titlebar;
     resize-border-width: Platform.custom-titlebar && !root.full-screen && !root.maximized ? 6px : 0px;
-    min-width: 360px;
-    min-height: 220px;
+    // Music mode is 300 wide, like IINA's mini player, and as tall as its
+    // cover and controls at least; dragging it taller opens the playlist.
+    // From 2^31 px on Slint sets no maximum at all.
+    min-width: root.music-mode ? 300px : 360px;
+    min-height: root.music-mode ? root.music-art-height + 72px : 220px;
+    max-width: root.music-mode ? 300px : 3000000000px;
     preferred-width: 960px;
     preferred-height: 600px;
     default-font-size: Theme.font-normal;
@@ -29,6 +34,14 @@ export component PlayerWindow inherits Window {
     in-out property <bool> float-on-top;
     // The compact always-on-top window that stands in for picture-in-picture.
     in-out property <bool> pip;
+    // IINA's music mode: the cover, a strip of controls under it, and the
+    // sidebar's playlist as a drawer below (sidebar-open).
+    in-out property <bool> music-mode;
+    in-out property <bool> music-art: true;
+    out property <length> music-art-height: root.music-art ? 300px / Playback.picture-aspect : 0px;
+    // Where mpv's picture goes, which is all of the window but in music mode.
+    out property <length> video-width: root.width;
+    out property <length> video-height: root.music-mode ? root.music-art-height : root.height;
     in-out property <bool> sidebar-open;
     in-out property <string> sidebar-tab: "playlist";
     in-out property <bool> controls-visible: true;
@@ -42,19 +55,38 @@ export component PlayerWindow inherits Window {
     in-out property <length> osc-offset-x;
     in-out property <length> osc-offset-y;
     // Set while a dialog or menu needs the pointer, so controls stay put.
-    property <bool> keep-controls: !Playback.has-media || root.dialog != "" || osc-hover.has-hover || root.title-hovered || osc.seek-hovering;
+    property <bool> keep-controls: !Playback.has-media || root.dialog != "" || osc-hover.has-hover || root.title-hovered || osc.seek-hovering || (root.pip && (root.pip-play-hovered || root.pip-exit-hovered));
     property <bool> title-hovered;
+    property <bool> pip-play-hovered;
+    property <bool> pip-exit-hovered;
+    // How far the sidebar is out, animated; not in music mode, where the
+    // sidebar is the drawer and doesn't slide.
+    property <float> sidebar-shown: root.sidebar-open && !root.music-mode ? 1 : 0;
+    animate sidebar-shown { duration: 200ms; easing: ease-out; }
     property <bool> show-chrome: root.controls-visible || root.keep-controls;
     property <string> pending-click;
+    property <int> volume-shows;
 
     callback dialog-confirmed(string, string);
+    callback video-area-changed();
 
     public function show-controls() {
         root.controls-visible = true;
+        // restart() alone never starts a timer that isn't running.
         hide-timer.restart();
+        hide-timer.running = true;
+    }
+
+    // A volume change made in music mode, which has no OSD.
+    public function show-volume() {
+        root.volume-shows += 1;
     }
 
     public function toggle-sidebar(tab: string) {
+        // Music mode's drawer holds the playlist and chapters only.
+        if root.music-mode && tab != "playlist" && tab != "chapters" {
+            return;
+        }
         let same-group = (tab == "playlist" || tab == "chapters") == (root.sidebar-tab == "playlist" || root.sidebar-tab == "chapters");
         if root.sidebar-open && (tab == root.sidebar-tab || (tab == "settings" && same-group)) {
             root.sidebar-open = false;
@@ -84,6 +116,7 @@ export component PlayerWindow inherits Window {
         MenuPlayback.speed = Playback.speed;
         MenuPlayback.fullscreen = Playback.fullscreen;
         MenuPlayback.on-top = Playback.on-top;
+        MenuPlayback.music-mode = Playback.music-mode;
         MenuPlayback.loop-file = Playback.loop-file;
         MenuPlayback.loop-playlist = Playback.loop-playlist;
         MenuPlayback.shuffle = Playback.shuffle;
@@ -116,6 +149,10 @@ export component PlayerWindow inherits Window {
     }
 
     function run-mouse-action(action: string) {
+        // Music mode keeps pausing, as IINA's mini player does, and the menu.
+        if root.music-mode && action != "pause" && action != "context-menu" {
+            return;
+        }
         if action == "pause" {
             Actions.mpv(["cycle", "pause"]);
         } else if action == "fullscreen" {
@@ -169,6 +206,36 @@ export component PlayerWindow inherits Window {
     }
     changed always-on-top => {
         Playback.on-top = self.always-on-top;
+    }
+    changed music-mode => {
+        Playback.music-mode = self.music-mode;
+    }
+    changed pip => {
+        root.pip-play-hovered = false;
+        root.pip-exit-hovered = false;
+    }
+    // Music mode sizes the window to what it shows.
+    changed sidebar-open => {
+        if self.music-mode {
+            Actions.patina("music-layout");
+        }
+    }
+    changed music-art => {
+        if self.music-mode {
+            Actions.patina("music-layout");
+        }
+    }
+    // A dialog needs more room than music mode's strip.
+    changed dialog => {
+        if self.music-mode {
+            Actions.patina("music-layout");
+        }
+    }
+    changed video-width => {
+        root.video-area-changed();
+    }
+    changed video-height => {
+        root.video-area-changed();
     }
     changed show-chrome => {
         Actions.chrome-visible(self.show-chrome);
@@ -490,6 +557,7 @@ export component PlayerWindow inherits Window {
             title: "Video";
             MenuItem {
                 title: Playback.fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+                enabled: !Playback.music-mode;
                 activated => {
                     Actions.patina("toggle-fullscreen");
                 }
@@ -503,50 +571,57 @@ export component PlayerWindow inherits Window {
             }
             MenuItem {
                 title: "Picture in Picture";
-                enabled: Playback.has-video;
+                enabled: Playback.has-video && !Playback.music-mode;
                 activated => {
                     Actions.patina("toggle-pip");
+                }
+            }
+            MenuItem {
+                title: Playback.music-mode ? "Exit Music Mode" : "Enter Music Mode";
+                enabled: Playback.has-media || Playback.music-mode;
+                activated => {
+                    Actions.patina("toggle-music-mode");
                 }
             }
             MenuSeparator { }
             MenuItem {
                 title: "Half Size";
-                enabled: Playback.has-video;
+                enabled: Playback.has-video && !Playback.music-mode;
                 activated => {
                     Actions.patina("window-scale 0.5");
                 }
             }
             MenuItem {
                 title: "Normal Size";
-                enabled: Playback.has-video;
+                enabled: Playback.has-video && !Playback.music-mode;
                 activated => {
                     Actions.patina("window-scale 1");
                 }
             }
             MenuItem {
                 title: "Double Size";
-                enabled: Playback.has-video;
+                enabled: Playback.has-video && !Playback.music-mode;
                 activated => {
                     Actions.patina("window-scale 2");
                 }
             }
             MenuItem {
                 title: "Fit to Screen";
-                enabled: Playback.has-video;
+                enabled: Playback.has-video && !Playback.music-mode;
                 activated => {
                     Actions.patina("fit-to-screen");
                 }
             }
             MenuItem {
                 title: "Bigger Window";
-                enabled: Playback.has-video;
+                enabled: Playback.has-video && !Playback.music-mode;
                 activated => {
                     Actions.patina("bigger-window");
                 }
             }
             MenuItem {
                 title: "Smaller Window";
-                enabled: Playback.has-video;
+                enabled: Playback.has-video && !Playback.music-mode;
                 activated => {
                     Actions.patina("smaller-window");
                 }
@@ -628,6 +703,7 @@ export component PlayerWindow inherits Window {
             MenuSeparator { }
             MenuItem {
                 title: "Video Settings…";
+                enabled: !Playback.music-mode;
                 activated => {
                     Actions.patina("toggle-sidebar video");
                 }
@@ -718,6 +794,7 @@ export component PlayerWindow inherits Window {
             }
             MenuItem {
                 title: "Audio Settings…";
+                enabled: !Playback.music-mode;
                 activated => {
                     Actions.patina("toggle-sidebar audio");
                 }
@@ -818,6 +895,7 @@ export component PlayerWindow inherits Window {
             MenuSeparator { }
             MenuItem {
                 title: "Subtitle Settings…";
+                enabled: !Playback.music-mode;
                 activated => {
                     Actions.patina("toggle-sidebar subtitles");
                 }
@@ -846,6 +924,7 @@ export component PlayerWindow inherits Window {
             }
             MenuItem {
                 title: "Quick Settings";
+                enabled: !Playback.music-mode;
                 activated => {
                     Actions.patina("toggle-sidebar video");
                 }
@@ -905,15 +984,26 @@ export component PlayerWindow inherits Window {
         menu := MainMenu {
             enabled: false;
 
-            // The video, drawn by mpv into a texture.
+            // The video, drawn by mpv into a texture. Without a picture the
+            // texture holds whatever was shown last.
             if Playback.has-media: Image {
-                width: parent.width;
-                height: parent.height;
+                x: 0;
+                y: 0;
+                width: root.video-width;
+                height: root.video-height;
+                visible: Playback.has-picture;
                 source: Playback.video-frame;
                 image-fit: fill;
             }
 
-            if !Playback.has-media: WelcomeView {
+            if root.music-mode && (!Playback.has-media || !Playback.has-picture) && root.music-art-height > 0: DefaultArt {
+                x: 0;
+                y: 0;
+                width: root.width;
+                height: root.music-art-height;
+            }
+
+            if !Playback.has-media && !root.music-mode: WelcomeView {
                 width: parent.width;
                 height: parent.height;
                 drop-active: root.drop-active;
@@ -923,7 +1013,7 @@ export component PlayerWindow inherits Window {
                 enabled: !root.full-screen;
 
                 video-touch := TouchArea {
-                    mouse-cursor: Playback.has-media && !root.show-chrome ? MouseCursor.none : MouseCursor.default;
+                    mouse-cursor: Playback.has-media && !root.show-chrome && !root.music-mode ? MouseCursor.none : MouseCursor.default;
                     moved => {
                         root.show-controls();
                     }
@@ -946,7 +1036,8 @@ export component PlayerWindow inherits Window {
                         if !Playback.has-media {
                             return;
                         }
-                        if Prefs.double-click == "none" {
+                        // Music mode has no double-click action but pausing.
+                        if Prefs.double-click == "none" || (root.music-mode && Prefs.double-click != "pause") {
                             root.run-mouse-action(Prefs.single-click);
                         } else {
                             root.pending-click = Prefs.single-click;
@@ -972,9 +1063,9 @@ export component PlayerWindow inherits Window {
             }
         }
 
-        if Playback.buffering && Playback.has-media: VerticalLayout {
+        if Playback.buffering && Playback.has-media && (!root.music-mode || root.music-art-height >= 80px): VerticalLayout {
             x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
+            y: ((root.music-mode ? root.music-art-height : parent.height) - self.height) / 2;
             width: 120px;
             height: 80px;
             spacing: 10px;
@@ -1011,7 +1102,7 @@ export component PlayerWindow inherits Window {
         }
 
         // Title bar, faded with the controller like IINA's.
-        if Platform.overlay-titlebar && !root.full-screen && !root.pip: Rectangle {
+        if Platform.overlay-titlebar && !root.full-screen && !root.pip && !root.music-mode: Rectangle {
             y: 0;
             height: Theme.titlebar-height;
             opacity: root.show-chrome ? 1 : 0;
@@ -1046,7 +1137,7 @@ export component PlayerWindow inherits Window {
             }
         }
 
-        if Prefs.osd-font-size > 0: OsdView {
+        if Prefs.osd-font-size > 0 && !root.music-mode: OsdView {
             x: 14px;
             y: (Platform.overlay-titlebar && !root.full-screen && root.show-chrome ? Theme.titlebar-height : 0px) + 12px;
             animate y { duration: 200ms; }
@@ -1059,7 +1150,7 @@ export component PlayerWindow inherits Window {
             height: 74px;
             x: clamp((root.width - self.width) / 2 + root.osc-offset-x, 8px, max(8px, root.width - self.width - 8px - (root.sidebar-open ? Theme.sidebar-width : 0px)));
             y: clamp(root.height - self.height - 24px + root.osc-offset-y, (Platform.overlay-titlebar ? Theme.titlebar-height : 0px) + 8px, root.height - self.height - 8px);
-            opacity: root.show-chrome && Playback.has-media && !root.pip ? 1 : 0;
+            opacity: root.show-chrome && Playback.has-media && !root.pip && !root.music-mode ? 1 : 0;
             visible: self.opacity > 0;
             animate opacity { duration: 250ms; }
 
@@ -1101,6 +1192,9 @@ export component PlayerWindow inherits Window {
                 icon: Playback.paused ? @image-url("icons/play.svg") : @image-url("icons/pause.svg");
                 icon-size: 30px;
                 tooltip: Playback.paused ? "Play" : "Pause";
+                changed has-hover => {
+                    root.pip-play-hovered = self.has-hover;
+                }
                 clicked => {
                     Actions.mpv(["cycle", "pause"]);
                 }
@@ -1113,6 +1207,9 @@ export component PlayerWindow inherits Window {
                 icon-size: 16px;
                 hover-background: true;
                 tooltip: "Exit Picture in Picture";
+                changed has-hover => {
+                    root.pip-exit-hovered = self.has-hover;
+                }
                 clicked => {
                     Actions.patina("toggle-pip");
                 }
@@ -1134,13 +1231,48 @@ export component PlayerWindow inherits Window {
             }
         }
 
+        // Music mode: the strip under the cover, and close and back over it,
+        // all shown while the pointer is over the cover or the strip.
+        if root.music-mode: Rectangle {
+            property <bool> hover: video-touch.has-hover || music-panel.hovered || music-buttons.hovered;
+
+            music-panel := MusicPanel {
+                x: 0;
+                y: root.music-art-height;
+                width: parent.width;
+                controls: parent.hover;
+                volume-shows: root.volume-shows;
+                playlist <=> root.sidebar-open;
+                art <=> root.music-art;
+                mouse-action(action, x, y) => {
+                    if action == "context-menu" {
+                        root.open-menu(x, self.y + y);
+                    } else {
+                        root.run-mouse-action(action);
+                    }
+                }
+            }
+
+            // At the right on macOS, clear of its window buttons.
+            music-buttons := MusicWindowButtons {
+                x: Platform.macos ? parent.width - self.width - 8px : 8px;
+                y: 6px;
+                compact: root.music-art-height < 40px;
+                opacity: parent.hover ? 1 : 0;
+                visible: self.opacity > 0;
+                animate opacity { duration: 200ms; }
+            }
+        }
+
+        // The sidebar, or in music mode the drawer under the controls.
         sidebar := Sidebar {
-            x: root.sidebar-open ? root.width - self.width : root.width;
-            y: Platform.overlay-titlebar && !root.full-screen ? Theme.titlebar-height : 0px;
+            drawer: root.music-mode;
+            x: root.music-mode ? 0px : root.width - self.width * root.sidebar-shown;
+            y: root.music-mode ? root.music-art-height + 72px : Platform.overlay-titlebar && !root.full-screen ? Theme.titlebar-height : 0px;
+            width: root.music-mode ? root.width : Theme.sidebar-width;
             height: root.height - self.y;
             tab <=> root.sidebar-tab;
-            visible: self.x < root.width;
-            animate x { duration: 200ms; easing: ease-out; }
+            visible: root.music-mode ? root.sidebar-open && self.height > 0 : root.sidebar-shown > 0;
             close => {
                 root.sidebar-open = false;
             }

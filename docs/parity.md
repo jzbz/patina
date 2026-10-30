@@ -18,7 +18,7 @@ have been run for playback (see M5).
 | --- | --- | --- |
 | M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (the macOS menu bar and title bar tried on an Intel macOS VM) |
 | M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done; tried on Linux and on a Windows 11 VM (media keys and the media panel, sleep prevention, preferences, thumbnails, history, inspector); on macOS only sleep prevention so far |
-| M3 Advanced parity | yt-dlp quality switching and downloads (as IINA's Online Media plugin), music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | in progress: yt-dlp quality switching and downloads, online subtitles, the single instance, the URL scheme and file associations done (tried on Linux and a Windows 11 VM, not yet on macOS) |
+| M3 Advanced parity | yt-dlp quality switching and downloads (as IINA's Online Media plugin), music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | in progress: yt-dlp quality switching and downloads, online subtitles, the single instance, the URL scheme and file associations done (tried on Linux and a Windows 11 VM, not yet on macOS); music mode done (tried on Linux) |
 | M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | not planned (see section 18) |
 | M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | in progress: `bundle.yml` builds a universal Patina.app and a Windows folder, each carrying libmpv. Both play video and subtitles on machines that never had mpv or a build tool: a Windows 11 VM and an Intel macOS 26 VM, neither with a GPU, so both draw in software. Releases, signing, Flatpak, Homebrew and winget planned |
 
@@ -60,10 +60,10 @@ have been run for playback (see M5).
 | OSC-01 | Floating, top or bottom layout | partial: floating |
 | OSC-02 | Draggable floating panel | partial: draggable; position memory and snap-to-centre planned |
 | OSC-03 | Volume, transport, toolbar, seek row | done |
-| OSC-04 | Configurable toolbar buttons | done: chosen in Preferences > Interface (PiP, playlist, settings, subtitles, screenshot, full screen); drag-to-reorder planned |
+| OSC-04 | Configurable toolbar buttons | done: chosen in Preferences > Interface (PiP, playlist, settings, subtitles, screenshot, full screen, music mode); drag-to-reorder planned |
 | OSC-05 | Subtitle-track button menu | planned |
 | OSC-06 | Arrow buttons: speed ladder, playlist or seek | done (press-and-hold acceleration planned) |
-| OSC-07 | Auto-hide with cursor | done |
+| OSC-07 | Auto-hide with cursor | done (the controller hides after the timeout; it used to stay until the pointer left the window) |
 | OSC-08 | Seek bar: cache, chapters, A-B loop, hover preview | partial: cache, chapter ticks, A-B range, and a preview with thumbnail, time and chapter; draggable loop knobs planned |
 | OSC-09 | Elapsed / remaining toggle | done (precision menu planned) |
 | OSC-10 | Volume slider up to the maximum volume | done |
@@ -88,7 +88,7 @@ have been run for playback (see M5).
 
 | Item | IINA | Patina |
 | --- | --- | --- |
-| PLC-01 | Playlist rows | done: name, folder, current item, multi-select (Ctrl/Command and Shift), duration, watched progress, the series prefix a name shares with others folded into a "…" that unfolds, and title and artist for tagged audio files (preference). Adapted: long names are cut at the end, not in the middle (Slint elides only there); the music-mode variant of the metadata setting waits for music mode |
+| PLC-01 | Playlist rows | done: name, folder, current item, multi-select (Ctrl/Command and Shift), duration, watched progress, the series prefix a name shares with others folded into a "…" that unfolds, and title and artist for tagged audio files (preference, by default in music mode only, as in IINA). Adapted: long names are cut at the end, not in the middle (Slint elides only there) |
 | PLC-02 | Durations prefetched in the background | done: a headless mpv reads each local file's length and tags; the footer shows the total, or "X of Y selected" |
 | PLC-03 | Loop, shuffle, sort, add, remove, clear | partial: sort planned |
 | PLC-04 | Double-click to play | done |
@@ -138,7 +138,7 @@ once and applied to running players, as IINA's option observers do
 
 | Area | Patina |
 | --- | --- |
-| PREF-GEN | done: launch action, multiple windows, start paused, full screen on open, auto-play next, keep open, folder auto-add, resume, pause when minimized, keep the screen awake, history, recent files, screenshot folder, format and subtitles. Planned: pause when inactive or asleep, grouping simultaneous opens, clipboard and screenshot preview |
+| PREF-GEN | done: launch action, multiple windows, start paused, full screen on open, auto-play next, keep open, folder auto-add, playlist tags (in music mode only), switching to music mode, resume, pause when minimized, keep the screen awake (and only the computer for audio), history, recent files, screenshot folder, format and subtitles. Planned: pause when inactive or asleep, grouping simultaneous opens, clipboard and screenshot preview |
 | PREF-UI | done: title bar, window fitting and size, float on top, controller timeout, arrow buttons, toolbar buttons, chapter marks, remaining time, OSD switch, timeout and size, thumbnails. Planned: theme, compact UI, controller position, initial geometry, PiP behaviour, animations |
 | PREF-VID | done: hardware decoding (off / automatic / copy-back), deinterlacing, tone mapping, target peak. Planned: ICC profiles, HDR mode |
 | PREF-AUD | done: start volume, maximum volume, device, gapless, preferred languages, ReplayGain. Planned: S/PDIF passthrough |
@@ -183,7 +183,16 @@ once and applied to running players, as IINA's option observers do
 
 | Item | IINA | Patina |
 | --- | --- | --- |
-| MUS-01..10 | Music mode | planned |
+| MUS-01 | Compact window: cover, scrolling title and "artist - album", seek row, transport row, controls fading in on hover | done: 300 wide, the cover or video on top at its own aspect ratio (kept between 1:2 and 4:1), a long title scrolling once when it changes and when the controls fade out, the transport row and the close and back buttons fading in over the cover and strip in 0.2 s. Adapted: a layout of the player window rather than a window of its own (see architecture.md), so it opens where the player was and has no position of its own; the close and back buttons sit at the right on macOS, clear of its window buttons. Tried on Linux (X11, and Wayland in a virtual KWin) |
+| MUS-02 | Back and close | done: Back returns to the player at its size from before; Close closes the window and its playback |
+| MUS-03 | Volume popover | done: the speaker opens into a slider and the volume, a second click mutes; scrolling, or a volume key, shows it for the OSD's timeout (IINA shows it for scrolling only) |
+| MUS-04 | Playlist and chapters drawer | done: the sidebar's Playlist and Chapters under the controls, opening 300 tall; resizing the window by hand opens it at 200 or more and shuts it below that, and the choice is remembered either way (IINA remembers only the button's) |
+| MUS-05 | Automatic switching | done: in for audio (no video, or covers only), out for video and streams, never out of full screen or picture-in-picture; a switch by hand turns it off for the window until the next switch by hand, a change of the setting, or the end of playback (IINA keeps it past the end) |
+| MUS-06 | Music metadata | done: an album in one file is titled by its chapters, with each chapter's performer; shown in the strip, the window title and Now Playing |
+| MUS-07 | Float on top, mouse actions, sleep | done: Float on Top; over the cover, the pause click, the menu click and scrolling. "Not for audio or in music mode" keeps only the computer awake: on Linux through the desktop portal (falling back to keeping the screen on without one), on Windows and macOS through their power settings (not yet tried there) |
+| MUS-08 | No OSD in music mode | done (OSD-10): the strip, the volume and the buttons show what changed |
+| MUS-09 | Entry points | done: `--music-mode` (refused with `--pip` or `-f`), Video › Enter Music Mode, Alt+Ctrl+M (Alt+Command+M on macOS), the toolbar's music button; full screen, picture-in-picture, the window sizes and quick settings are refused while in it. Not planned: the plugin event |
+| MUS-10 | Cover aspect ratio, default artwork | done: the window's height follows the cover; Patina's own artwork for audio without one. Adapted: it stays when subtitles are on (IINA hides it, SUB-17), since mpv makes no video for audio without a cover to draw them on |
 | PIP-01..04 | Picture in picture | adapted, partial: a small always-on-top window without the title bar |
 | HIS-01 | Resume through watch-later | done |
 | HIS-02 | History window | done: grouped by date or folder, search, watched progress, missing files dimmed; Play, Play in New Window, Show in File Manager, Remove; Return, Ctrl+Return, Delete, Ctrl+L, Ctrl+F |
@@ -207,7 +216,7 @@ once and applied to running players, as IINA's option observers do
 | NET-05 | yt-dlp | done: mpv's `ytdl_hook`, with what IINA's Online Media plugin adds. A quality preference (the best, or up to a height, or a yt-dlp format); Video Quality and Audio Quality menus for each video, offering its resolutions and frame rates rather than yt-dlp's raw list, which load it again where it was; Download Video (Ctrl/Command+D) in the quality playing, with a Downloads window that shows progress, speed and time left and can cancel, retry and show the file. Tested with an HLS stream with separate audio. Adapted: Patina uses the yt-dlp that is installed, where the plugin downloads and updates its own copy and Deno |
 | NET-07 | Browser extensions | partial: patina:// links work (CLI-10); there is no Patina extension yet, and IINA's would need its scheme changed |
 | CLI-01..02 | Command line with `--mpv-*` options | done. Beyond IINA, whose `iina-cli` starts another IINA each time: while Patina runs, a launch hands it what to open and exits (in 0.02 s), the window comes to the front (on Wayland with the launcher's activation token), and the first launch to start is the one that serves. `--mpv-*` options from such a launch apply to a new window of their own; `--new-instance` starts a separate Patina. Tested on Linux (X11, and Wayland in a virtual KWin), including two launches at once, quitting while one launches, and a crash, and on a Windows 11 VM: a launch hands over in about a quarter of a second, three at once share one window, and the window comes to the front |
-| CLI-03..06 | Separate windows, stdin, keep running, music mode / PiP flags | partial: `-w` and `--pip` done; `-` is passed to mpv for standard input, in a Patina of its own (not yet tested); keep running and music mode planned |
+| CLI-03..06 | Separate windows, stdin, keep running, music mode / PiP flags | partial: `-w`, `--pip` and `--music-mode` done; `-` is passed to mpv for standard input, in a Patina of its own (not yet tested); keep running planned |
 | CLI-10 | URL scheme | done: `patina://open` (or `weblink`) with `url`, `new_window`, `enqueue`, `full_screen`, `pip` and `mpv_` options, decoded as IINA does. Stricter than IINA: `url` must be a network stream (no local files, mpv protocols, or srt:// and rtp://, which can listen), IINA's safe mpv options lose those that turn off certificate checks, raise the volume limit or use up memory and threads, a playlist a link opens may only list such streams, and the files a playlist from the network names are not read. Tested on Linux through the desktop entry and on a Windows 11 VM through the shell, where a link with a stray quote stays one link |
 | CLI-12..15 | File associations | done: one table of 63 extensions for every platform. Linux: a desktop entry (`packaging/linux`), and Preferences › Utilities makes Patina the default for videos, music or playlists with `xdg-mime`, writing an entry for the running executable when none is installed. macOS: the bundle declares the types, folders and the scheme, and Apple event handlers take Finder's opens and links (not yet tried on a Mac); the same preferences make Patina the default through LaunchServices. Windows: the preferences add Patina to Open With and Default apps under the user's own registry classes, open Settings at Patina's Default apps page, and remove it all again, keys made only for Patina included (tried on a Windows 11 VM, running the registered commands as Explorer does). Opens 0.2 s apart are batched (CLI-14); IINA's "nothing to open" alert is not shown |
 

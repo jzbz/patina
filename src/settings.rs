@@ -94,10 +94,20 @@ pub struct Preferences {
     pub playlist_auto_add: bool,
     /// Show audio files by their title and artist tags in the playlist.
     pub playlist_show_metadata: bool,
+    /// ...in music mode only.
+    pub playlist_show_metadata_in_music_mode: bool,
     pub resume_playback: bool,
     pub record_history: bool,
     pub recent_limit: usize,
     pub prevent_screensaver: bool,
+    /// Keep only the computer awake for audio and music mode, letting the
+    /// screen sleep.
+    pub allow_screensaver_for_audio: bool,
+    /// Enter music mode for audio files, and leave it for video.
+    pub auto_switch_to_music_mode: bool,
+    /// Music mode shows its playlist drawer, and the cover.
+    pub music_mode_show_playlist: bool,
+    pub music_mode_show_album_art: bool,
     /// Empty for the platform's Pictures folder.
     pub screenshot_dir: String,
     pub screenshot_format: String,
@@ -224,10 +234,15 @@ impl Default for Preferences {
             auto_play_next: true,
             playlist_auto_add: true,
             playlist_show_metadata: true,
+            playlist_show_metadata_in_music_mode: true,
             resume_playback: true,
             record_history: true,
             recent_limit: 12,
             prevent_screensaver: true,
+            allow_screensaver_for_audio: false,
+            auto_switch_to_music_mode: true,
+            music_mode_show_playlist: false,
+            music_mode_show_album_art: true,
             screenshot_dir: String::new(),
             screenshot_format: "png".into(),
             screenshot_subtitles: true,

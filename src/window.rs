@@ -4,7 +4,9 @@ use crate::app::App;
 use crate::input::{Binding, KeyCombo};
 use crate::mpv::{EndFileReason, Event, Mpv};
 use crate::opensubtitles;
-use crate::player::state::{PlaybackState, PlaylistEntry, Track, TrackKind, file_name};
+use crate::player::state::{
+    AudioStatus, PlaybackState, PlaylistEntry, Track, TrackKind, file_name,
+};
 use crate::player::{self, Player, Prop};
 use crate::settings::ResizeWindow;
 use crate::subtitle_match;
@@ -55,6 +57,18 @@ const ARROW_SPEEDS: [f64; 11] = [
 const EQ_BANDS: [u32; 10] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 /// How long after a user action property changes still count as caused by it.
 const USER_ACTION_WINDOW: Duration = Duration::from_millis(1500);
+/// Music mode's width and strip of controls, as in IINA's mini player, and
+/// how tall its playlist drawer opens; with less of it than the minimum,
+/// the drawer shuts.
+const MUSIC_WIDTH: f32 = 300.0;
+const MUSIC_PANEL: f32 = 72.0;
+const MUSIC_DRAWER: f32 = 300.0;
+const MUSIC_DRAWER_MIN: f32 = 200.0;
+/// The player window's size when it opens (its preferred size in app.slint).
+const DEFAULT_SIZE: slint::LogicalSize = slint::LogicalSize::new(960.0, 600.0);
+/// How long a size change waits for Slint to apply new size limits: its own
+/// zero-delay timer, which a later one of the same deadline would precede.
+const AFTER_LIMITS: Duration = Duration::from_millis(1);
 
 pub struct PlayerController {
     app: Weak<App>,
@@ -91,6 +105,15 @@ pub struct PlayerController {
     wheel: Cell<(f32, f32)>,
     /// Window geometry to restore when leaving picture-in-picture.
     pip_restore: Cell<Option<(slint::LogicalSize, bool)>>,
+    /// What music mode puts back when it ends.
+    music_restore: RefCell<Option<MusicRestore>>,
+    /// Set by a switch made by hand, and cleared by the next one: music
+    /// mode doesn't switch by itself meanwhile, as in IINA.
+    music_override: Cell<bool>,
+    /// How tall the playlist drawer is while it is open.
+    music_drawer: Cell<f32>,
+    /// Snaps the drawer open or shut once the window stops being resized.
+    music_snap_timer: Timer,
     /// The property a user command targeted, for an OSD message even when
     /// the value did not change (volume already at its maximum, say).
     osd_fallback: Cell<Option<Prop>>,
@@ -98,6 +121,9 @@ pub struct PlayerController {
     /// A size we asked for, re-requested if a stale configure from the
     /// Wayland compositor undoes it: (size, deadline, attempts left).
     wanted_size: Cell<Option<(slint::LogicalSize, Instant, u8)>>,
+    /// Counts the sizes asked for, so that a delayed one can tell it came
+    /// too late.
+    resizes: Cell<u64>,
     /// Seek-bar thumbnails for the current file, filled in as they arrive.
     thumbnails: RefCell<Vec<Option<slint::Image>>>,
     thumbnail_job: RefCell<Option<thumbnails::Job>>,
@@ -143,6 +169,7 @@ impl PlayerController {
             osd_fallback: Cell::new(None),
             osd_fallback_timer: Timer::default(),
             wanted_size: Cell::new(None),
+            resizes: Cell::new(0),
             thumbnails: RefCell::new(Vec::new()),
             thumbnail_job: RefCell::new(None),
             thumbnail_path: RefCell::new(String::new()),
@@ -183,6 +210,10 @@ impl PlayerController {
             drop_timer: Timer::default(),
             wheel: Cell::new((0.0, 0.0)),
             pip_restore: Cell::new(None),
+            music_restore: RefCell::new(None),
+            music_override: Cell::new(false),
+            music_drawer: Cell::new(MUSIC_DRAWER),
+            music_snap_timer: Timer::default(),
         });
 
         controller
@@ -271,10 +302,14 @@ impl PlayerController {
     /// The title bar and controller faded in or out. On macOS the window
     /// buttons fade with them, as in IINA (not in fullscreen, where macOS
     /// shows them itself).
+    /// Music mode keeps them hidden, as IINA's mini player does.
     fn chrome_visible(&self, visible: bool) {
         #[cfg(target_os = "macos")]
         if self.app().prefs().transparent_titlebar() && !self.window.window().is_fullscreen() {
-            crate::macos::set_window_buttons_visible(self.window.window(), visible);
+            crate::macos::set_window_buttons_visible(
+                self.window.window(),
+                visible && !self.in_music_mode(),
+            );
         }
         #[cfg(not(target_os = "macos"))]
         let _ = visible;
@@ -388,6 +423,7 @@ impl PlayerController {
         ui.set_show_remaining_time(prefs.show_remaining_time);
         ui.set_show_chapter_marks(prefs.show_chapter_marks);
         ui.set_osc_timeout((prefs.osc_timeout.max(0.5) * 1000.0) as i64);
+        ui.set_osd_timeout((prefs.osd_timeout.max(0.3) * 1000.0) as i64);
         ui.set_osd_font_size(if prefs.osd_enabled {
             prefs.osd_font_size
         } else {
@@ -427,11 +463,11 @@ impl PlayerController {
                 }
             }
         }
-        let size = self.window.window().size();
+        let (width, height) = self.video_size();
         let video = crate::video::software::SoftwareVideo::start(
             self.mpv.clone(),
-            size.width,
-            size.height,
+            width,
+            height,
             self.video_hooks(),
         )?;
         *self.software_video.borrow_mut() = Some(video);
@@ -441,6 +477,7 @@ impl PlayerController {
     fn video_hooks(self: &Rc<Self>) -> crate::video::Hooks {
         let ready = Rc::downgrade(self);
         let frame = self.window.as_weak();
+        let target = self.window.as_weak();
         let error = self.window.as_weak();
         crate::video::Hooks {
             set_frame: Box::new(move |image| {
@@ -448,6 +485,7 @@ impl PlayerController {
                     window.global::<Playback>().set_video_frame(image);
                 }
             }),
+            target_size: Box::new(move || target.upgrade().and_then(|window| video_area(&window))),
             ready: Box::new(move || {
                 if let Some(controller) = ready.upgrade() {
                     controller.on_renderer_ready();
@@ -458,6 +496,21 @@ impl PlayerController {
                     window.set_error(message.into());
                 }
             }),
+        }
+    }
+
+    /// The size mpv draws at, in physical pixels.
+    fn video_size(&self) -> (u32, u32) {
+        video_area(&self.window).unwrap_or_else(|| {
+            let size = self.window.window().size();
+            (size.width, size.height)
+        })
+    }
+
+    fn resize_software_video(&self) {
+        if let Some(video) = &*self.software_video.borrow() {
+            let (width, height) = self.video_size();
+            video.resize(width, height);
         }
     }
 
@@ -700,6 +753,15 @@ impl PlayerController {
         let media = self.window.global::<Media>();
         let any = |props: &[Prop]| props.iter().any(|prop| changed.contains(prop));
 
+        // Music mode ends with what played, and back comes the welcome
+        // screen; the next file decides afresh.
+        if any(&[Prop::Idle]) && state.idle {
+            self.music_override.set(false);
+            self.leave_music_mode(false);
+        }
+        if any(&[Prop::TrackList, Prop::Idle]) && !state.idle {
+            self.auto_music_mode(&state);
+        }
         if any(&[Prop::Idle]) {
             playback.set_has_media(!state.idle);
             if state.idle {
@@ -709,7 +771,7 @@ impl PlayerController {
         if any(&[Prop::Pause]) {
             playback.set_paused(state.paused);
         }
-        if any(&[Prop::Pause, Prop::Idle])
+        if any(&[Prop::Pause, Prop::Idle, Prop::TrackList])
             && let Some(app) = self.app.upgrade()
         {
             // Deferred: the app may be borrowing its window list right now.
@@ -757,6 +819,32 @@ impl PlayerController {
         if any(&[Prop::VideoParams, Prop::TrackList, Prop::Idle]) {
             playback.set_has_video(state.has_video() && !state.is_audio_only());
             playback.set_audio_only(state.is_audio_only());
+        }
+        if any(&[Prop::VideoParams, Prop::TrackList, Prop::Idle, Prop::Vid])
+            && let Some(picture) = state.picture_aspect()
+        {
+            // Music mode keeps its cover to sensible shapes; mpv letterboxes
+            // anything beyond them.
+            let aspect = picture.unwrap_or(1.0).clamp(0.5, 4.0) as f32;
+            let resize = playback.get_has_picture() != picture.is_some()
+                || (playback.get_picture_aspect() - aspect).abs() > 0.001;
+            playback.set_has_picture(picture.is_some());
+            playback.set_picture_aspect(aspect);
+            if resize {
+                self.resize_music_later();
+            }
+        }
+        if any(&[
+            Prop::MediaTitle,
+            Prop::Metadata,
+            Prop::ChapterList,
+            Prop::Chapter,
+            Prop::ChapterMetadata,
+        ]) {
+            let (title, artist, album) = state.music_metadata();
+            playback.set_music_title(title.into());
+            playback.set_artist(artist.into());
+            playback.set_album(album.into());
         }
         if any(&[Prop::ChapterList]) {
             let marks: Vec<f32> = state
@@ -938,6 +1026,9 @@ impl PlayerController {
             Prop::PlaylistPos,
             Prop::Seekable,
             Prop::TrackList,
+            Prop::ChapterList,
+            Prop::Chapter,
+            Prop::ChapterMetadata,
         ]) && let Some(app) = self.app.upgrade()
             && app.is_active(self)
         {
@@ -946,10 +1037,29 @@ impl PlayerController {
 
         // mpv window properties, driven by key bindings such as "cycle fullscreen".
         if any(&[Prop::Fullscreen]) && self.window.window().is_fullscreen() != state.fullscreen {
-            self.window.window().set_fullscreen(state.fullscreen);
+            if self.in_music_mode() && state.fullscreen {
+                // Music mode has no full screen, as IINA's mini player has none.
+                self.player().set("fullscreen", false);
+            } else {
+                self.window.window().set_fullscreen(state.fullscreen);
+            }
         }
         if any(&[Prop::Ontop]) && self.window.get_float_on_top() != state.ontop {
             self.window.set_float_on_top(state.ontop);
+        }
+        // Music mode sizes the window to the cover rather than fitting it,
+        // and has no picture-in-picture or full screen to start in.
+        if any(&[Prop::VideoParams]) && self.in_music_mode() {
+            // Leaving music mode sizes the window itself.
+            if state.video.is_some() {
+                self.fit_pending.set(false);
+            }
+            drop(state);
+            if self.pip_pending.get() == PipPending::Opening {
+                self.pip_pending.set(PipPending::No);
+            }
+            self.osd_for_changes(changed);
+            return;
         }
         if any(&[Prop::VideoParams]) && self.fit_pending.get() && state.video.is_some() {
             self.fit_pending.set(false);
@@ -1002,6 +1112,10 @@ impl PlayerController {
 
     pub fn show_osd(&self, text: &str, detail: &str, progress: Option<f64>) {
         self.osd_fallback.set(None);
+        // Music mode shows its state in its own controls instead.
+        if self.in_music_mode() {
+            return;
+        }
         let prefs = self.app().prefs();
         if !prefs.osd_enabled {
             return;
@@ -1043,6 +1157,12 @@ impl PlayerController {
     /// changes made shortly after a user action.
     fn osd_for_changes(&self, changed: &HashSet<Prop>) {
         if !self.user_acted() {
+            return;
+        }
+        if self.in_music_mode() {
+            if changed.contains(&Prop::Volume) || changed.contains(&Prop::Mute) {
+                self.window.invoke_show_volume();
+            }
             return;
         }
         let state = self.state.borrow();
@@ -1271,6 +1391,8 @@ impl PlayerController {
             this.handle_key(&text, shift, ctrl, alt, meta)
         });
         handler!(on_wheel, |this, dx, dy| this.handle_wheel(dx, dy));
+        handler!(on_seek_wheel, |this, dx, dy| this
+            .wheel_action(dx, dy, "seek", "seek"));
         handler!(on_select_track, |this, kind, id| {
             this.mark_user_action();
             let property = match kind.as_str() {
@@ -1325,6 +1447,13 @@ impl PlayerController {
         handler!(on_set_eq, |this, band, gain| this.set_eq(band, gain));
         handler!(on_activity, |this| this.mark_user_action());
         handler!(on_preview, |this, time| this.show_preview(time as f64));
+
+        let weak = Rc::downgrade(self);
+        self.window.on_video_area_changed(move || {
+            if let Some(this) = weak.upgrade() {
+                this.resize_software_video();
+            }
+        });
 
         let weak = Rc::downgrade(self);
         self.window.on_dialog_confirmed(move |kind, text| {
@@ -1393,8 +1522,25 @@ impl PlayerController {
                 }
                 winit::event::WindowEvent::Resized(size) => {
                     this.check_size(*size);
+                    // Slint takes the new size after this.
                     if let Some(video) = &*this.software_video.borrow() {
-                        video.resize(size.width, size.height);
+                        let (width, height) =
+                            video_area(&this.window).unwrap_or((size.width, size.height));
+                        video.resize(width, height);
+                    }
+                    // winit tells of no end to a resize by hand: take a
+                    // moment without one for it.
+                    if this.in_music_mode() {
+                        let weak = Rc::downgrade(&this);
+                        this.music_snap_timer.start(
+                            TimerMode::SingleShot,
+                            Duration::from_millis(300),
+                            move || {
+                                if let Some(this) = weak.upgrade() {
+                                    this.snap_music_drawer();
+                                }
+                            },
+                        );
                     }
                     // Keep mpv's fullscreen property in step when the window
                     // manager changes the state itself.
@@ -1480,6 +1626,12 @@ impl PlayerController {
     }
 
     fn handle_wheel(&self, dx: f32, dy: f32) {
+        let prefs = self.app().prefs();
+        self.wheel_action(dx, dy, &prefs.vertical_scroll, &prefs.horizontal_scroll);
+    }
+
+    /// Scrolling with these actions for its two directions.
+    fn wheel_action(&self, dx: f32, dy: f32, vertical: &str, horizontal: &str) {
         // Accumulate pixel deltas into notches of 40 logical pixels, so
         // touchpads and wheels step at a similar pace.
         const NOTCH: f32 = 40.0;
@@ -1493,14 +1645,11 @@ impl PlayerController {
         self.wheel.set((ax, ay));
         self.mark_user_action();
         let prefs = self.app().prefs();
-        for (steps, action) in [
-            (steps_y, &prefs.vertical_scroll),
-            (-steps_x, &prefs.horizontal_scroll),
-        ] {
+        for (steps, action) in [(steps_y, vertical), (-steps_x, horizontal)] {
             if steps == 0.0 {
                 continue;
             }
-            match action.as_str() {
+            match action {
                 "volume" => {
                     let delta = format!("{}", steps as f64 * prefs.volume_step);
                     self.player().command_quiet(&["add", "volume", &delta]);
@@ -1646,10 +1795,23 @@ impl PlayerController {
             "close-window" => self.close(),
             "quit" => app.quit(),
             "minimize" => self.window.window().set_minimized(true),
+            // Music mode has no full screen, as IINA's mini player has none.
+            "toggle-fullscreen" if self.in_music_mode() => {}
             "toggle-fullscreen" => {
                 let fullscreen = !self.window.window().is_fullscreen();
                 self.player().set("fullscreen", fullscreen);
             }
+            "toggle-music-mode" => self.toggle_music_mode(),
+            "music-layout" => self.music_layout(),
+            "music-previous" => {
+                // The first entry starts over, as in IINA.
+                if self.state.borrow().playlist_pos > 0 {
+                    self.player().command(&["playlist-prev"]);
+                } else {
+                    self.player().command(&["seek", "0", "absolute"]);
+                }
+            }
+            "music-next" => self.player().command(&["playlist-next"]),
             "toggle-ontop" => {
                 let ontop = !self.window.get_float_on_top();
                 self.player().set("ontop", ontop);
@@ -1662,6 +1824,7 @@ impl PlayerController {
                 "subtitles" => self.window.invoke_toggle_sidebar("subtitles".into()),
                 "fullscreen" => self.run_action("toggle-fullscreen"),
                 "screenshot" => self.run_action("screenshot"),
+                "music" => self.toggle_music_mode(),
                 other => log::warn!("unknown toolbar button {other}"),
             },
             "toggle-sidebar" => self.window.invoke_toggle_sidebar(argument.into()),
@@ -2006,6 +2169,9 @@ impl PlayerController {
     /// screen. An infinite scale fills the screen.
     fn fit_to_video(&self, scale: f64, initial: bool) {
         let window = self.window.window();
+        if self.in_music_mode() {
+            return;
+        }
         if window.is_fullscreen() || window.is_maximized() {
             log::debug!("not fitting the window: it is fullscreen or maximized");
             return;
@@ -2041,9 +2207,41 @@ impl PlayerController {
     }
 
     fn resize_window(&self, size: slint::LogicalSize) {
+        self.resizes.set(self.resizes.get() + 1);
+        let window = self.window.window();
+        window.set_size(size);
+        // Wayland takes a size at once, and reports nothing to check.
+        if self.has_size(size) {
+            self.wanted_size.set(None);
+            return;
+        }
         self.wanted_size
             .set(Some((size, Instant::now() + Duration::from_secs(2), 3)));
-        self.window.window().set_size(size);
+        // A window manager that held to the old size limits sends no
+        // Resized for check_size to retry on.
+        let this = self.this.clone();
+        Timer::single_shot(Duration::from_millis(150), move || {
+            let Some(this) = this.upgrade() else {
+                return;
+            };
+            if let Some((wanted, deadline, attempts)) = this.wanted_size.get()
+                && wanted == size
+                && attempts > 0
+                && !this.has_size(size)
+            {
+                this.wanted_size.set(Some((size, deadline, attempts - 1)));
+                log::debug!("re-requesting window size {size:?}");
+                this.window.window().set_size(size);
+            }
+        });
+    }
+
+    /// Whether the window is `size` already, give or take a pixel or two.
+    fn has_size(&self, size: slint::LogicalSize) -> bool {
+        let window = self.window.window();
+        let wanted = size.to_physical(window.scale_factor());
+        let actual = window.size();
+        actual.width.abs_diff(wanted.width) <= 2 && actual.height.abs_diff(wanted.height) <= 2
     }
 
     /// Re-requests a wanted size that a compositor configure overrode.
@@ -2069,7 +2267,13 @@ impl PlayerController {
         self.wanted_size.set(Some((size, deadline, attempts - 1)));
         let this = self.this.clone();
         Timer::single_shot(Duration::from_millis(30), move || {
-            if let Some(this) = this.upgrade() {
+            // Unless another size has been asked for since.
+            if let Some(this) = this.upgrade()
+                && this
+                    .wanted_size
+                    .get()
+                    .is_some_and(|(wanted, ..)| wanted == size)
+            {
                 log::debug!("re-requesting window size {size:?}");
                 this.window.window().set_size(size);
             }
@@ -2078,6 +2282,9 @@ impl PlayerController {
 
     fn scale_window(&self, factor: f32) {
         let window = self.window.window();
+        if self.in_music_mode() {
+            return;
+        }
         let size = window.size().to_logical(window.scale_factor());
         self.resize_window(slint::LogicalSize::new(
             size.width * factor,
@@ -2089,6 +2296,10 @@ impl PlayerController {
     /// picture-in-picture on platforms without a system PiP.
     fn toggle_pip(&self) {
         let window = self.window.window();
+        // Not in music mode, as in IINA.
+        if self.in_music_mode() {
+            return;
+        }
         if let Some((size, ontop)) = self.pip_restore.take() {
             self.window.set_pip(false);
             self.resize_window(size);
@@ -2121,6 +2332,264 @@ impl PlayerController {
         ));
     }
 
+    // ---- Music mode -----------------------------------------------------
+
+    pub fn in_music_mode(&self) -> bool {
+        self.window.get_music_mode()
+    }
+
+    /// Whether the computer, but not the screen, is all that need stay
+    /// awake for this window (the allow-screensaver-for-audio preference).
+    pub fn plays_music(&self) -> bool {
+        self.in_music_mode() || self.state.borrow().is_audio_only()
+    }
+
+    /// A switch by hand: it turns the automatic one off until the next
+    /// switch by hand, as in IINA.
+    /// Not with nothing to play, as the menu has it: IINA's mini player
+    /// belongs to a player.
+    fn toggle_music_mode(&self) {
+        if self.in_music_mode() {
+            self.leave_music_mode(true);
+        } else if !self.is_idle() {
+            self.enter_music_mode(true);
+        }
+    }
+
+    /// Music mode asked for with what this window opens (--music-mode): a
+    /// switch by hand, as IINA's, so a video stays in it.
+    pub fn start_music_mode(&self) {
+        self.enter_music_mode(false);
+        self.music_override.set(true);
+    }
+
+    /// The automatic switch, by what the file turned out to be: in for
+    /// music, out for video and streams, as IINA's.
+    fn auto_music_mode(&self, state: &PlaybackState) {
+        if self.music_override.get() || !self.app().prefs().auto_switch_to_music_mode {
+            return;
+        }
+        // Picture-in-picture asked for a file with no picture at all.
+        if self.pip_pending.get() != PipPending::No
+            && !state.tracks.is_empty()
+            && state.tracks(TrackKind::Video).next().is_none()
+        {
+            self.pip_pending.set(PipPending::No);
+        }
+        match state.audio_status() {
+            // Never out of full screen or picture-in-picture.
+            AudioStatus::Audio
+                if !self.in_music_mode()
+                    && !self.window.window().is_fullscreen()
+                    && !self.window.get_pip()
+                    && self.pip_pending.get() == PipPending::No =>
+            {
+                self.enter_music_mode(false);
+            }
+            AudioStatus::NotAudio if self.in_music_mode() => self.leave_music_mode(false),
+            _ => {}
+        }
+    }
+
+    pub fn reset_music_override(&self) {
+        self.music_override.set(false);
+    }
+
+    fn enter_music_mode(&self, manual: bool) {
+        if self.in_music_mode() {
+            return;
+        }
+        if manual {
+            self.music_override.set(!self.music_override.get());
+        }
+        // What to go back to, read before leaving picture-in-picture, full
+        // screen or maximized: the window's size changes only later.
+        let window = self.window.window();
+        let maximized = window.is_maximized();
+        let size = match self.pip_restore.get() {
+            Some((size, _)) => Some(size),
+            None if window.is_fullscreen()
+                || maximized
+                || window.with_winit_window(|_| ()).is_none() =>
+            {
+                None
+            }
+            None => Some(window.size().to_logical(window.scale_factor())),
+        };
+        *self.music_restore.borrow_mut() = Some(MusicRestore {
+            size,
+            maximized,
+            sidebar_open: self.window.get_sidebar_open(),
+            sidebar_tab: self.window.get_sidebar_tab(),
+        });
+        if self.window.get_pip() {
+            self.toggle_pip();
+        }
+        self.pip_pending.set(PipPending::No);
+        if window.is_fullscreen() {
+            window.set_fullscreen(false);
+            if self.is_running() {
+                self.player().set("fullscreen", false);
+            }
+        }
+        if maximized {
+            window.set_maximized(false);
+        }
+        let prefs = self.app().prefs();
+        self.window.set_music_mode(true);
+        self.window.set_music_art(prefs.music_mode_show_album_art);
+        if !matches!(
+            self.window.get_sidebar_tab().as_str(),
+            "playlist" | "chapters"
+        ) {
+            self.window.set_sidebar_tab("playlist".into());
+        }
+        self.music_drawer.set(MUSIC_DRAWER);
+        self.window.set_sidebar_open(prefs.music_mode_show_playlist);
+        self.window.global::<Osd>().set_visible(false);
+        self.chrome_visible(false);
+        log::debug!("entering music mode");
+        self.music_mode_changed();
+        self.resize_music_later();
+    }
+
+    fn leave_music_mode(&self, manual: bool) {
+        if !self.in_music_mode() {
+            return;
+        }
+        if manual {
+            self.music_override.set(!self.music_override.get());
+        }
+        self.music_snap_timer.stop();
+        self.window.set_music_mode(false);
+        let restore = self.music_restore.borrow_mut().take();
+        let restore = restore.unwrap_or_else(|| MusicRestore {
+            size: None,
+            maximized: false,
+            sidebar_open: false,
+            sidebar_tab: self.window.get_sidebar_tab(),
+        });
+        self.window.set_sidebar_tab(restore.sidebar_tab);
+        self.window.set_sidebar_open(restore.sidebar_open);
+        self.chrome_visible(true);
+        self.window.invoke_show_controls();
+        log::debug!("leaving music mode");
+        self.music_mode_changed();
+        // Once Slint has lifted music mode's size limits, unless the window
+        // was sized since (fitted to the video that ended music mode).
+        // Without a size from before, the video's, or the window's first.
+        let this = self.this.clone();
+        let resizes = self.resizes.get();
+        let (size, maximized) = (restore.size, restore.maximized);
+        Timer::single_shot(AFTER_LIMITS, move || {
+            let Some(this) = this
+                .upgrade()
+                .filter(|this| !this.in_music_mode() && this.resizes.get() == resizes)
+            else {
+                return;
+            };
+            match size {
+                _ if maximized => this.window.window().set_maximized(true),
+                Some(size) => this.resize_window(size),
+                None if this.state.borrow().video.is_some() => this.fit_to_video(1.0, true),
+                None => this.resize_window(DEFAULT_SIZE),
+            }
+        });
+    }
+
+    /// What follows the mode: the playlist's rows (their tags may be for
+    /// music mode only) and how awake the computer is kept.
+    fn music_mode_changed(&self) {
+        self.rebuild_playlist(&self.state.borrow());
+        if let Some(app) = self.app.upgrade() {
+            Timer::single_shot(Duration::ZERO, move || app.playback_changed());
+        }
+    }
+
+    /// The drawer opened or shut, or the cover was shown or hidden: the
+    /// window follows, and the choice is remembered, as in IINA.
+    fn music_layout(&self) {
+        if !self.in_music_mode() {
+            return;
+        }
+        let playlist = self.window.get_sidebar_open();
+        let art = self.window.get_music_art();
+        if !playlist {
+            self.music_drawer.set(MUSIC_DRAWER);
+        }
+        self.app().update_prefs(|prefs| {
+            prefs.music_mode_show_playlist = playlist;
+            prefs.music_mode_show_album_art = art;
+        });
+        self.resize_music_later();
+    }
+
+    /// Sizes the window to music mode's cover, controls and drawer, and
+    /// while a dialog shows, tall enough for it.
+    fn resize_music(&self) {
+        if !self.in_music_mode() || self.window.window().is_fullscreen() {
+            return;
+        }
+        let drawer = if self.window.get_sidebar_open() {
+            self.music_drawer.get()
+        } else {
+            0.0
+        };
+        let dialog = match self.window.get_dialog().as_str() {
+            "" => 0.0,
+            "shortcuts" | "online-subtitles" => 540.0,
+            "about" => 340.0,
+            _ => 260.0,
+        };
+        let height = (self.window.get_music_art_height() + MUSIC_PANEL + drawer).max(dialog);
+        self.resize_window(slint::LogicalSize::new(MUSIC_WIDTH, height));
+    }
+
+    /// resize_music, once Slint has applied size limits that just changed
+    /// (a window manager would hold the window to the old ones).
+    fn resize_music_later(&self) {
+        let this = self.this.clone();
+        Timer::single_shot(AFTER_LIMITS, move || {
+            if let Some(this) = this.upgrade() {
+                this.resize_music();
+            }
+        });
+    }
+
+    /// Once a resize by hand ends, as IINA does: made tall enough, the
+    /// drawer opens at that height; made too short, it shuts.
+    fn snap_music_drawer(&self) {
+        let window = self.window.window();
+        let resizing = self
+            .wanted_size
+            .get()
+            .is_some_and(|(_, deadline, _)| Instant::now() < deadline);
+        if !self.in_music_mode()
+            || resizing
+            || window.is_fullscreen()
+            || window.is_maximized()
+            || !self.window.get_dialog().is_empty()
+        {
+            return;
+        }
+        // A tiling window manager keeps its own size, which isn't the user
+        // asking for the drawer.
+        let size = window.size().to_logical(window.scale_factor());
+        if (size.width - MUSIC_WIDTH).abs() > 2.0 {
+            return;
+        }
+        let height = size.height;
+        let extra = height - (self.window.get_music_art_height() + MUSIC_PANEL);
+        if extra >= MUSIC_DRAWER_MIN {
+            self.music_drawer.set(extra);
+            self.window.set_sidebar_open(true);
+        } else if self.window.get_sidebar_open() {
+            self.window.set_sidebar_open(false);
+        } else if extra.abs() > 1.0 {
+            self.resize_music();
+        }
+    }
+
     // ---- System media controls ------------------------------------------
 
     /// This window's state as the system media controls show it.
@@ -2137,9 +2606,14 @@ impl PlayerController {
                 .map(|(_, value)| value.clone())
                 .unwrap_or_default()
         };
-        // Streams and music are known by their title; local videos by name.
-        let titled = util::is_url(&state.path) || state.is_audio_only();
-        let title = if titled && !state.title.is_empty() {
+        // Streams and music are known by their title, which for an album in
+        // one file follows its chapters; local videos by name.
+        let audio = state.is_audio_only();
+        let (music_title, music_artist, music_album) = state.music_metadata();
+        let titled = util::is_url(&state.path) || audio;
+        let title = if audio && !music_title.is_empty() {
+            music_title
+        } else if titled && !state.title.is_empty() {
             state.title.clone()
         } else {
             file_name(&state.path)
@@ -2158,8 +2632,12 @@ impl PlayerController {
             },
             track: self.track.get(),
             title,
-            artist: meta(&["artist", "album_artist", "performer"]),
-            album: meta(&["album"]),
+            artist: if audio {
+                music_artist
+            } else {
+                meta(&["artist", "album_artist", "performer"])
+            },
+            album: if audio { music_album } else { meta(&["album"]) },
             url,
             art_url: String::new(),
             duration: state.duration,
@@ -2264,6 +2742,10 @@ impl PlayerController {
     // ---- Playlist ------------------------------------------------------
 
     /// Rebuilds every playlist row, after the playlist itself changed.
+    pub fn refresh_playlist(&self) {
+        self.rebuild_playlist(&self.state.borrow());
+    }
+
     fn rebuild_playlist(&self, state: &PlaybackState) {
         let labels: Vec<String> = state.playlist.iter().map(PlaylistEntry::label).collect();
         let names: Vec<&str> = labels.iter().map(String::as_str).collect();
@@ -2299,10 +2781,14 @@ impl PlayerController {
                 .filter(|d| *d > 0.0)
         };
         let folder = util::parent_directory(&entry.filename);
+        let prefs = app.prefs();
         let tags = probe
             .as_ref()
             .filter(|probe| probe.audio_only && !probe.title.is_empty())
-            .filter(|_| app.prefs().playlist_show_metadata);
+            .filter(|_| {
+                prefs.playlist_show_metadata
+                    && (self.in_music_mode() || !prefs.playlist_show_metadata_in_music_mode)
+            });
         let (title, short_title, detail) = match tags {
             Some(probe) if probe.artist.is_empty() => (probe.title.clone(), String::new(), folder),
             Some(probe) => (probe.title.clone(), String::new(), probe.artist.clone()),
@@ -3290,6 +3776,17 @@ impl PlayerController {
     }
 }
 
+/// The player window as music mode found it.
+struct MusicRestore {
+    /// None to fit the window to the video instead: it was full screen, or
+    /// not shown yet.
+    size: Option<slint::LogicalSize>,
+    maximized: bool,
+    /// The sidebar, which is music mode's drawer.
+    sidebar_open: bool,
+    sidebar_tab: SharedString,
+}
+
 /// Where a picture-in-picture request for an opening file stands.
 #[derive(Clone, Copy, PartialEq)]
 enum PipPending {
@@ -3298,6 +3795,21 @@ enum PipPending {
     Asked,
     /// Its file has started: enter on its video, forget at its end.
     Opening,
+}
+
+/// Music mode's cover, where mpv draws in it, in physical pixels; None for
+/// the whole window. At least a pixel, so that video keeps playing while
+/// the cover is hidden.
+fn video_area(window: &PlayerWindow) -> Option<(u32, u32)> {
+    if !window.get_music_mode() {
+        return None;
+    }
+    let scale = window.window().scale_factor();
+    let pixels = |length: f32| (length * scale).round().max(1.0) as u32;
+    Some((
+        pixels(window.get_video_width()),
+        pixels(window.get_video_height()),
+    ))
 }
 
 /// Entry ids in playlist order, which the selection is kept by.

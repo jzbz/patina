@@ -236,6 +236,25 @@ pub const ITEMS: &[Item] = &[
         "From their tags, in the playlist.",
         Switch,
     ),
+    needs(
+        item(
+            General,
+            "Playback",
+            "playlist-show-metadata-in-music-mode",
+            "Only in music mode",
+            "",
+            Switch,
+        ),
+        "playlist-show-metadata",
+    ),
+    item(
+        General,
+        "Playback",
+        "auto-switch-to-music-mode",
+        "Switch to music mode for audio files",
+        "And back for video.",
+        Switch,
+    ),
     item(
         General,
         "Playback",
@@ -259,6 +278,17 @@ pub const ITEMS: &[Item] = &[
         "Keep the screen awake while playing",
         "",
         Switch,
+    ),
+    needs(
+        item(
+            General,
+            "Playback",
+            "allow-screensaver-for-audio",
+            "Not for audio or in music mode",
+            "The computer still stays awake.",
+            Switch,
+        ),
+        "prevent-screensaver",
     ),
     item(
         General,
@@ -418,6 +448,14 @@ pub const ITEMS: &[Item] = &[
         "On-screen controller",
         "toolbar.fullscreen",
         "Full screen button",
+        "",
+        Switch,
+    ),
+    item(
+        Interface,
+        "On-screen controller",
+        "toolbar.music",
+        "Music mode button",
         "",
         Switch,
     ),
@@ -1171,6 +1209,7 @@ pub const TOOLBAR: &[&str] = &[
     "subtitles",
     "screenshot",
     "fullscreen",
+    "music",
 ];
 
 #[cfg(test)]

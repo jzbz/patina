@@ -946,6 +946,9 @@ component SubtitlesPanel inherits ScrollView {
 
 export component Sidebar inherits Rectangle {
     in-out property <string> tab;
+    // Music mode's drawer under the controls, rather than a panel at the
+    // side: no close button, and a line along the top instead.
+    in property <bool> drawer;
     callback close;
 
     property <bool> playlist-group: root.tab == "playlist" || root.tab == "chapters";
@@ -963,7 +966,9 @@ export component Sidebar inherits Rectangle {
 
     Rectangle {
         x: 0;
-        width: 1px;
+        y: 0;
+        width: root.drawer ? parent.width : 1px;
+        height: root.drawer ? 1px : parent.height;
         background: Theme.panel-divider;
     }
 
@@ -982,7 +987,7 @@ export component Sidebar inherits Rectangle {
                     root.tab = root.playlist-group ? (index == 0 ? "playlist" : "chapters") : (index == 0 ? "video" : index == 1 ? "audio" : "subtitles");
                 }
             }
-            IconButton {
+            if !root.drawer: IconButton {
                 y: -2px;
                 icon: @image-url("icons/x.svg");
                 icon-size: 13px;

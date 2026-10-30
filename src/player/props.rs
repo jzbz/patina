@@ -51,6 +51,7 @@ props! {
     TrackList => "track-list",
     ChapterList => "chapter-list",
     Chapter => "chapter",
+    ChapterMetadata => "chapter-metadata",
     Vid => "vid",
     Aid => "aid",
     Sid => "sid",

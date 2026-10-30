@@ -9,6 +9,7 @@ pub struct Options {
     pub separate_windows: bool,
     pub fullscreen: bool,
     pub pip: bool,
+    pub music_mode: bool,
     pub verbose: bool,
     pub new_instance: bool,
     /// `--mpv-NAME=VALUE` options passed straight to mpv, as with iina-cli.
@@ -32,6 +33,7 @@ Options:
   -w, --separate-windows  Open each input in a window of its own
   -f, --fullscreen        Play in full screen
       --pip               Play in picture-in-picture
+      --music-mode        Play in music mode
       --mpv-NAME=VALUE    Set an mpv option (e.g. --mpv-hwdec=no)
       --new-instance      Start another Patina rather than use the running one
   -v, --verbose           Log mpv and Patina diagnostics to stderr
@@ -62,6 +64,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "-w" | "--separate-windows" => options.separate_windows = true,
             "-f" | "--fullscreen" => options.fullscreen = true,
             "--pip" => options.pip = true,
+            "--music-mode" => options.music_mode = true,
             "-v" | "--verbose" => options.verbose = true,
             "--new-instance" => options.new_instance = true,
             // How Windows starts Patina for a patina:// link: what follows
@@ -85,6 +88,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             },
         }
     }
+    // As iina-cli has it; music mode has no full screen either.
+    if options.music_mode && (options.pip || options.fullscreen) {
+        return Err("--music-mode can't be used with --pip or --fullscreen".into());
+    }
     if let Some(parts) = link {
         let link = parts.join(" ");
         if !options.sources.is_empty() || !crate::scheme::is_link(&link) {
@@ -105,6 +112,7 @@ impl Options {
             separate_windows: self.separate_windows,
             fullscreen: self.fullscreen,
             pip: self.pip,
+            music_mode: self.music_mode,
             mpv_options: self.mpv_options.clone(),
             // Lets the running Patina come to the front on Wayland.
             activation_token: std::env::var("XDG_ACTIVATION_TOKEN")
@@ -195,6 +203,15 @@ mod tests {
             [r"patina://open?url=https://x \\evil\share\a.mkv"]
         );
         assert!(parse(["--open-link", "--", "/etc/passwd"].map(String::from)).is_err());
+    }
+
+    #[test]
+    fn music_mode_goes_alone() {
+        let options = run(&["--music-mode", "a.flac"]);
+        assert!(options.music_mode && options.request().music_mode);
+        for other in ["--pip", "-f"] {
+            assert!(parse(["--music-mode", other].map(String::from)).is_err());
+        }
     }
 
     #[test]

@@ -60,10 +60,14 @@ and its state in Patina.
 - `patina://open?url=…` links for browser extensions and web pages, as
   IINA's `iina://` scheme, limited to streams and to mpv options that are
   safe for a web page to set
-- Keeping the screen awake during playback
+- Keeping the screen awake during playback (or for music only the
+  computer)
 - A playback history window, grouped by day or folder and searchable, and
   an inspector with the file, its tracks, live playback statistics and any
   mpv property you choose to watch
+- Music mode, IINA's mini player: the cover with the title and artist (an
+  album in one file by its chapters), compact controls and the playlist as
+  a drawer below; it comes on for audio files and goes for video
 - Resuming where you left off, screenshots, URLs and network streams, A-B
   loops, and a compact always-on-top picture-in-picture window
 - Online video through yt-dlp, with what IINA's Online Media plugin adds:
@@ -130,6 +134,7 @@ Usage: patina [OPTIONS] [FILE | URL | -] ...
   -w, --separate-windows  Open each input in a window of its own
   -f, --fullscreen        Play in full screen
       --pip               Play in picture-in-picture
+      --music-mode        Play in music mode
       --mpv-NAME=VALUE    Set an mpv option (e.g. --mpv-hwdec=no)
       --new-instance      Start another Patina rather than use the running one
   -v, --verbose           Log mpv and Patina diagnostics to stderr
@@ -155,6 +160,7 @@ Help > Keyboard Shortcuts lists all of them.
 | Ctrl+O, Ctrl+Shift+O | Open file, open URL |
 | Ctrl+Shift+P / C | Playlist / chapters |
 | Ctrl+Shift+V / A / S | Video / audio / subtitle settings |
+| Ctrl+Alt+M | Music mode |
 | Ctrl+S | Screenshot |
 | Ctrl+L | A-B loop |
 | Shift+Z / Shift+X, Shift+C | Subtitle delay, reset |

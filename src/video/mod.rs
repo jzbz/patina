@@ -1,7 +1,7 @@
 //! Draws mpv's video into an OpenGL texture that Slint shows as an image.
 //!
-//! mpv renders into a framebuffer object we own, sized to the window, only
-//! when it has a new frame or the size changed. Slint then composites that
+//! mpv renders into a framebuffer object we own, sized to the window (or
+//! to music mode's cover), only when it has a new frame or the size changed. Slint then composites that
 //! texture under the interface like any other image, so interface-only
 //! redraws (hovering a button while paused) never touch the video.
 
@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct Hooks {
     /// The frame texture changed (first frame, or after a resize).
     pub set_frame: Box<dyn Fn(slint::Image)>,
+    /// The size to draw at in physical pixels, when it isn't the window's.
+    pub target_size: Box<dyn Fn() -> Option<(u32, u32)>>,
     /// mpv's renderer exists; files can be opened from now on.
     pub ready: Box<dyn Fn()>,
     pub error: Box<dyn Fn(String)>,
@@ -424,8 +426,11 @@ pub fn attach<C: ComponentHandle + 'static>(
                 let (Some(renderer), Some(component)) = (renderer.as_mut(), weak.upgrade()) else {
                     return;
                 };
-                let size = component.window().size();
-                match renderer.render(size.width, size.height) {
+                let (width, height) = (hooks.target_size)().unwrap_or_else(|| {
+                    let size = component.window().size();
+                    (size.width, size.height)
+                });
+                match renderer.render(width, height) {
                     Ok(Some(image)) => (hooks.set_frame)(image),
                     Ok(None) => {}
                     Err(error) => {

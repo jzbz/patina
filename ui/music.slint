@@ -1,0 +1,459 @@
+// Music mode: IINA's mini player, laid out in the player window. The cover
+// (or the video) sits on top, this strip of controls under it, and the
+// playlist below that as a drawer.
+
+import { Theme } from "theme.slint";
+import { Playback, Prefs, Actions } from "globals.slint";
+import { IconButton, Slider, SeekBar, Format } from "widgets.slint";
+
+// One line of text that scrolls once, the way IINA's does, when it is too
+// long to fit: after a moment it moves left at 1 px every 30 ms, until a
+// second copy has taken the first one's place.
+export component MarqueeText inherits Rectangle {
+    in property <string> text;
+    in property <length> font-size: Theme.font-normal;
+    in property <int> font-weight: 400;
+    in property <brush> text-color: Theme.text;
+
+    property <length> gap: 2 * root.font-size;
+    property <bool> overflows: label.preferred-width > root.width;
+    property <length> travel: label.preferred-width + root.gap;
+    property <bool> scrolling;
+    property <length> offset;
+
+    height: label.preferred-height;
+    clip: true;
+
+    // Scrolls once more, from the start.
+    public function restart() {
+        root.scrolling = false;
+        root.offset = 0;
+        end-timer.running = false;
+        if root.overflows {
+            delay-timer.restart();
+            delay-timer.running = true;
+        } else {
+            delay-timer.running = false;
+        }
+    }
+
+    init => {
+        root.restart();
+    }
+    changed text => {
+        root.restart();
+    }
+    // The window may reach its width only after this was made.
+    changed overflows => {
+        root.restart();
+    }
+
+    animate offset {
+        duration: root.scrolling ? root.travel / 33.333px * 1s : 0ms;
+        easing: linear;
+    }
+
+    delay-timer := Timer {
+        interval: 200ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.scrolling = true;
+            root.offset = -root.travel;
+            end-timer.restart();
+            end-timer.running = true;
+        }
+    }
+
+    end-timer := Timer {
+        interval: root.travel / 33.333px * 1s;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.scrolling = false;
+            root.offset = 0;
+        }
+    }
+
+    label := Text {
+        x: root.overflows ? root.offset : (root.width - self.width) / 2;
+        width: self.preferred-width;
+        text: root.text;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        color: root.text-color;
+    }
+
+    if root.overflows: Text {
+        x: root.offset + root.travel;
+        width: self.preferred-width;
+        text: root.text;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        color: root.text-color;
+    }
+}
+
+// The 72-pixel strip: the title and "artist - album", which give way to the
+// transport row while the pointer is over the window, and the seek bar,
+// which is always there.
+export component MusicPanel inherits Rectangle {
+    // The pointer is over the cover or the strip: the controls show.
+    in property <bool> controls;
+    // Counts volume changes to show, from scrolling or a key.
+    in property <int> volume-shows;
+    in-out property <bool> playlist;
+    in-out property <bool> art;
+    out property <bool> hovered: touch.has-hover;
+    // A right or middle click on the strip, with that button's action;
+    // music mode has no title bar for the menu.
+    callback mouse-action(string, length, length);
+
+    property <string> title: Playback.music-title != "" ? Playback.music-title : Playback.title;
+    property <string> subtitle: Playback.artist != "" && Playback.album != "" ? Playback.artist + " - " + Playback.album : Playback.artist != "" ? Playback.artist : Playback.album;
+    property <bool> volume-open;
+    property <image> volume-icon: Playback.muted || Playback.volume <= 0 ? @image-url("icons/volume-x.svg")
+        : Playback.volume < 34 ? @image-url("icons/volume.svg")
+        : Playback.volume < 67 ? @image-url("icons/volume-1.svg")
+        : @image-url("icons/volume-2.svg");
+    // The play button sits 2 px right of the middle, as in IINA, and the
+    // rest of the row is spaced from it.
+    property <length> play-x: root.width / 2 + 2px - 14px;
+
+    height: 72px;
+    background: Theme.panel-background;
+
+    // Shows the volume for a moment; it stays while the pointer is over it.
+    changed volume-shows => {
+        root.volume-open = true;
+        volume-timer.restart();
+        volume-timer.running = true;
+    }
+
+    changed controls => {
+        if !root.controls {
+            title-text.restart();
+            subtitle-text.restart();
+        }
+    }
+
+    volume-timer := Timer {
+        interval: Prefs.osd-timeout;
+        running: false;
+        triggered => {
+            self.running = false;
+            if !volume-touch.has-hover {
+                root.volume-open = false;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        // Scrolling the seek bar seeks, as in IINA; the rest of the strip
+        // takes no scrolling.
+        scroll-event(event) => {
+            if self.mouse-x >= seek.x && self.mouse-x < seek.x + seek.width && self.mouse-y >= seek.y && self.mouse-y < seek.y + seek.height {
+                Actions.activity();
+                Actions.seek-wheel(event.delta-x / 1px, event.delta-y / 1px);
+            }
+            return accept;
+        }
+
+        // The background moves the window, as the cover does.
+        WindowMoveArea {
+            TouchArea {
+                pointer-event(event) => {
+                    if event.kind != PointerEventKind.down {
+                        return;
+                    }
+                    Actions.activity();
+                    if event.button == PointerEventButton.right {
+                        root.mouse-action(Prefs.right-click, self.mouse-x, self.mouse-y);
+                    } else if event.button == PointerEventButton.middle {
+                        root.mouse-action(Prefs.middle-click, self.mouse-x, self.mouse-y);
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            opacity: root.controls ? 0 : 1;
+            visible: self.opacity > 0;
+            animate opacity { duration: 200ms; }
+
+            title-text := MarqueeText {
+                x: 24px;
+                y: root.subtitle == "" ? 15px : 7px;
+                width: root.width - 48px;
+                text: root.title;
+                font-size: Theme.font-normal;
+                font-weight: 700;
+                text-color: Theme.text;
+            }
+
+            subtitle-text := MarqueeText {
+                x: 24px;
+                y: 27px;
+                width: root.width - 48px;
+                text: root.subtitle;
+                font-size: Theme.font-small;
+                text-color: Theme.secondary-text;
+            }
+        }
+
+        Rectangle {
+            opacity: root.controls ? 1 : 0;
+            visible: self.opacity > 0;
+            animate opacity { duration: 200ms; }
+
+            previous := IconButton {
+                x: root.play-x - 24px - self.width;
+                y: 10px;
+                icon: @image-url("icons/skip-back.svg");
+                icon-size: 20px;
+                enabled: Playback.has-media;
+                tooltip: "Previous";
+                clicked => {
+                    Actions.patina("music-previous");
+                }
+            }
+
+            IconButton {
+                x: root.play-x;
+                y: 10px;
+                icon: Playback.paused ? @image-url("icons/play.svg") : @image-url("icons/pause.svg");
+                icon-size: 24px;
+                enabled: Playback.has-media;
+                tooltip: Playback.paused ? "Play" : "Pause";
+                clicked => {
+                    Actions.mpv(["cycle", "pause"]);
+                }
+            }
+
+            next := IconButton {
+                x: root.play-x + 28px + 20px;
+                y: 10px;
+                icon: @image-url("icons/skip-forward.svg");
+                icon-size: 20px;
+                enabled: Playback.has-media;
+                tooltip: "Next";
+                clicked => {
+                    Actions.patina("music-next");
+                }
+            }
+
+            playlist-button := IconButton {
+                x: next.x + next.width + 20px;
+                y: 15px;
+                width: 18px;
+                height: 18px;
+                icon: @image-url("icons/list-music.svg");
+                icon-size: 17px;
+                active: root.playlist;
+                tooltip: "Playlist";
+                clicked => {
+                    root.playlist = !root.playlist;
+                }
+            }
+
+            IconButton {
+                x: playlist-button.x + playlist-button.width + 16px;
+                y: 15px;
+                width: 18px;
+                height: 18px;
+                icon: @image-url("icons/image.svg");
+                icon-size: 16px;
+                active: root.art;
+                tooltip: "Toggle Album Art";
+                clicked => {
+                    root.art = !root.art;
+                }
+            }
+
+            // The speaker, which opens into the volume over the buttons
+            // beside it: a first click opens it, a second one mutes.
+            Rectangle {
+                x: previous.x - 20px - 24px - 10px;
+                y: 6px;
+                width: root.volume-open ? 182px : 44px;
+                height: 36px;
+                animate width { duration: 200ms; }
+
+                Rectangle {
+                    border-radius: 18px;
+                    background: Theme.menu-background;
+                    border-width: 1px;
+                    border-color: Theme.osc-border;
+                    drop-shadow-blur: 2px;
+                    drop-shadow-color: #00000080;
+                    opacity: root.volume-open ? 1 : 0;
+                    visible: self.opacity > 0;
+                    animate opacity { duration: 200ms; }
+                }
+
+                volume-touch := TouchArea {
+                    changed has-hover => {
+                        if !self.has-hover && !volume-timer.running {
+                            root.volume-open = false;
+                        }
+                    }
+                    scroll-event(event) => {
+                        let delta = event.delta-y != 0 ? event.delta-y : -event.delta-x;
+                        if delta != 0 {
+                            Actions.set("volume", round(clamp(Playback.volume + (delta > 0 ? 2 : -2), 0, Playback.volume-max)));
+                        }
+                        return accept;
+                    }
+
+                    IconButton {
+                        x: 10px;
+                        y: 6px;
+                        width: 24px;
+                        height: 24px;
+                        icon: root.volume-icon;
+                        icon-size: 18px;
+                        tooltip: "Volume";
+                        clicked => {
+                            if root.volume-open {
+                                Actions.mpv(["cycle", "mute"]);
+                            } else {
+                                root.volume-open = true;
+                            }
+                        }
+                    }
+
+                    // Faded in with the pill behind them.
+                    Slider {
+                        x: 45px;
+                        y: (parent.height - self.height) / 2;
+                        width: 100px;
+                        opacity: root.volume-open ? 1 : 0;
+                        visible: self.opacity > 0;
+                        animate opacity { duration: 200ms; }
+                        knob-size: 12px;
+                        value: Playback.volume;
+                        maximum: Playback.volume-max;
+                        scroll-step: 2;
+                        changed(value) => {
+                            Actions.set("volume", round(value));
+                        }
+                    }
+
+                    Text {
+                        x: 153px;
+                        width: 26px;
+                        opacity: root.volume-open ? 1 : 0;
+                        visible: self.opacity > 0;
+                        animate opacity { duration: 200ms; }
+                        text: round(Playback.volume);
+                        color: Theme.secondary-text;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Elapsed time, seek bar, and the length or the time left.
+        Text {
+            x: 6px;
+            y: 44px;
+            width: 44px;
+            height: 18px;
+            text: Format.time(seek.dragging ? seek.hover-time : Playback.position);
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        seek := SeekBar {
+            x: 56px;
+            y: 44px;
+            width: root.width - 112px;
+            position: Playback.position;
+            duration: Playback.duration;
+            cache-end: Playback.cache-end;
+            enabled: Playback.seekable;
+            ab-a: Playback.ab-a;
+            ab-b: Playback.ab-b;
+            seek(time, exact) => {
+                Actions.seek(time, exact);
+            }
+        }
+
+        Text {
+            x: root.width - 50px;
+            y: 44px;
+            width: 44px;
+            height: 18px;
+            text: Playback.duration <= 0 ? "--:--" : Prefs.show-remaining-time ? "-" + Format.time(Playback.duration - Playback.position) : Format.time(Playback.duration);
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+
+            TouchArea {
+                clicked => {
+                    Prefs.show-remaining-time = !Prefs.show-remaining-time;
+                    Actions.patina("save-ui-prefs");
+                }
+            }
+        }
+    }
+}
+
+// Close and back, at the top of the window, shown with the controls.
+export component MusicWindowButtons inherits Rectangle {
+    // Smaller when there is no cover above the strip.
+    in property <bool> compact;
+    out property <bool> hovered: touch.has-hover;
+    property <length> size: root.compact ? 12px : 13px;
+    property <length> gap: root.compact ? 4px : 5px;
+
+    width: root.size + 6px;
+    height: 2 * root.size + root.gap + 6px;
+    border-radius: 10px;
+    background: Theme.osd-background;
+
+    touch := TouchArea {
+        IconButton {
+            x: 3px;
+            y: 3px;
+            width: root.size;
+            height: root.size;
+            icon: @image-url("icons/circle-x.svg");
+            icon-size: root.size;
+            tooltip: "Close";
+            clicked => {
+                Actions.patina("close-window");
+            }
+        }
+
+        IconButton {
+            x: 3px;
+            y: 3px + root.size + root.gap;
+            width: root.size;
+            height: root.size;
+            icon: @image-url("icons/undo-2.svg");
+            icon-size: root.size;
+            tooltip: "Exit Music Mode";
+            clicked => {
+                Actions.patina("toggle-music-mode");
+            }
+        }
+    }
+}
+
+// What music mode shows for audio without a cover: Patina's own, a note on
+// a ground of the same verdigris as its icon.
+export component DefaultArt inherits Rectangle {
+    background: @linear-gradient(135deg, #2c7d6b 0%, #1d5a4e 55%, #12362f 100%);
+
+    Image {
+        source: @image-url("icons/music.svg");
+        width: min(root.width, root.height) * 0.36;
+        height: self.width;
+        colorize: #ffffffd0;
+    }
+}

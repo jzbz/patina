@@ -71,6 +71,7 @@ export global Playback {
     // The window's state, for the menus, which the window keeps up to date.
     in-out property <bool> fullscreen;
     in-out property <bool> on-top;
+    in-out property <bool> music-mode;
     in property <bool> ready;
     in property <bool> has-media;
     in property <bool> has-video;
@@ -88,7 +89,16 @@ export global Playback {
     in property <float> speed: 1;
     in property <string> title;
     in property <string> path;
+    // What music mode shows: the title, which follows the chapters of an
+    // album in one file, and its artist and album.
+    in property <string> music-title;
+    in property <string> artist;
+    in property <string> album;
     in property <image> video-frame;
+    // The file shows a picture (its video, or its cover), and its aspect
+    // ratio as music mode lays it out.
+    in property <bool> has-picture;
+    in property <float> picture-aspect: 1;
     in property <[float]> chapter-marks;
     in property <bool> loop-file;
     in property <bool> loop-playlist;
@@ -176,6 +186,7 @@ export global MenuPlayback {
     in-out property <float> speed: 1;
     in-out property <bool> fullscreen;
     in-out property <bool> on-top;
+    in-out property <bool> music-mode;
     in-out property <bool> loop-file;
     in-out property <bool> loop-playlist;
     in-out property <bool> shuffle;
@@ -236,6 +247,7 @@ export global Prefs {
     in-out property <bool> show-remaining-time;
     in property <bool> show-chapter-marks;
     in property <duration> osc-timeout: 2500ms;
+    in property <duration> osd-timeout: 1000ms;
     in property <length> osd-font-size: 20px;
     // "speed", "seek" or "playlist".
     in property <string> arrow-action: "speed";
@@ -261,6 +273,8 @@ export global Actions {
     callback key(string, bool, bool, bool, bool, bool) -> bool;
     // A scroll over the video in logical pixels.
     callback wheel(float, float);
+    // A scroll over music mode's seek bar, which seeks.
+    callback seek-wheel(float, float);
     callback select-track(string, int);
     callback select-secondary-sub(int);
     callback play-index(int);

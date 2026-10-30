@@ -273,6 +273,14 @@ impl Filter {
     }
 }
 
+/// What [`PlaybackState::audio_status`] makes of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioStatus {
+    Unknown,
+    Audio,
+    NotAudio,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaybackState {
     pub idle: bool,
@@ -296,6 +304,8 @@ pub struct PlaybackState {
     pub file_format: String,
     pub file_size: i64,
     pub metadata: Vec<(String, String)>,
+    /// The current chapter's own tags, such as its performer.
+    pub chapter_metadata: Vec<(String, String)>,
     pub playlist: Vec<PlaylistEntry>,
     pub playlist_pos: i64,
     pub tracks: Vec<Track>,
@@ -370,6 +380,7 @@ impl Default for PlaybackState {
             file_format: String::new(),
             file_size: 0,
             metadata: Vec::new(),
+            chapter_metadata: Vec::new(),
             playlist: Vec::new(),
             playlist_pos: -1,
             tracks: Vec::new(),
@@ -459,6 +470,17 @@ fn text(value: &Node) -> String {
     }
 }
 
+/// A tag map such as `metadata`, as (key, value) pairs.
+fn tags(value: &Node) -> Vec<(String, String)> {
+    match value {
+        Node::Map(entries) => entries
+            .iter()
+            .map(|(key, value)| (key.clone(), text(value)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// An aspect ratio given as a number, "w:h", or "no"/"-1" for none.
 fn aspect_ratio(value: &Node) -> f64 {
     let ratio = match value {
@@ -522,16 +544,8 @@ impl PlaybackState {
             Prop::Filename => set(&mut self.filename, text(value)),
             Prop::FileFormat => set(&mut self.file_format, text(value)),
             Prop::FileSize => set(&mut self.file_size, int(value)),
-            Prop::Metadata => set(
-                &mut self.metadata,
-                match value {
-                    Node::Map(entries) => entries
-                        .iter()
-                        .map(|(key, value)| (key.clone(), text(value)))
-                        .collect(),
-                    _ => Vec::new(),
-                },
-            ),
+            Prop::Metadata => set(&mut self.metadata, tags(value)),
+            Prop::ChapterMetadata => set(&mut self.chapter_metadata, tags(value)),
             Prop::Playlist => set(
                 &mut self.playlist,
                 value
@@ -659,6 +673,82 @@ impl PlaybackState {
 
     pub fn has_video(&self) -> bool {
         self.video.is_some()
+    }
+
+    /// Whether the file is music, as IINA decides it for music mode: never
+    /// for a stream, not yet while its tracks aren't known, and otherwise
+    /// when it has no video but covers.
+    pub fn audio_status(&self) -> AudioStatus {
+        if self.idle || crate::util::is_remote(&self.path) {
+            return if self.idle {
+                AudioStatus::Unknown
+            } else {
+                AudioStatus::NotAudio
+            };
+        }
+        let mut video = self.tracks(TrackKind::Video).peekable();
+        if video.peek().is_none() && self.tracks(TrackKind::Audio).next().is_none() {
+            return AudioStatus::Unknown;
+        }
+        if video.all(|track| track.albumart) {
+            AudioStatus::Audio
+        } else {
+            AudioStatus::NotAudio
+        }
+    }
+
+    /// The aspect ratio of the picture the file shows (its video, or its
+    /// cover), or None when it shows none. None of either while its tracks
+    /// aren't known yet: the picture of the file before stays until then.
+    pub fn picture_aspect(&self) -> Option<Option<f64>> {
+        if self.idle {
+            return Some(None);
+        }
+        if let Some(video) = &self.video {
+            let (width, height) = video.oriented_size();
+            if width > 0 && height > 0 {
+                return Some(Some(width as f64 / height as f64));
+            }
+        }
+        if self.tracks.is_empty() {
+            return None;
+        }
+        // A cover not yet decoded, sized by its stream as IINA does.
+        Some(self.selected_track(TrackKind::Video).map(|track| {
+            if track.width > 0 && track.height > 0 {
+                track.width as f64 / track.height as f64
+            } else {
+                1.0
+            }
+        }))
+    }
+
+    /// Title, artist and album as IINA shows music: an album in one file
+    /// is titled by its chapters, with each chapter's performer.
+    pub fn music_metadata(&self) -> (String, String, String) {
+        let tag = |tags: &[(String, String)], keys: &[&str]| {
+            keys.iter()
+                .find_map(|wanted| {
+                    tags.iter()
+                        .find(|(key, value)| key.eq_ignore_ascii_case(wanted) && !value.is_empty())
+                })
+                .map(|(_, value)| value.clone())
+        };
+        let artist = tag(&self.metadata, &["artist", "album_artist", "performer"]);
+        let album = tag(&self.metadata, &["album"]).unwrap_or_default();
+        if let Some(chapter) = self.current_chapter() {
+            let title = Some(chapter.title.clone())
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| self.title.clone());
+            // Matroska names it LEAD_PERFORMER.
+            let artist = tag(
+                &self.chapter_metadata,
+                &["performer", "lead_performer", "artist"],
+            )
+            .or(artist);
+            return (title, artist.unwrap_or_default(), album);
+        }
+        (self.title.clone(), artist.unwrap_or_default(), album)
     }
 
     pub fn current_chapter(&self) -> Option<&Chapter> {
@@ -852,6 +942,77 @@ mod tests {
             ]),
         );
         assert!(state.is_audio_only());
+    }
+
+    #[test]
+    fn music_is_told_as_iina_tells_it() {
+        let mut state = PlaybackState::default();
+        assert_eq!(state.audio_status(), AudioStatus::Unknown);
+        state.apply(Prop::Idle, &Node::Flag(false));
+        state.apply(Prop::Path, &string("/music/a.flac"));
+        assert_eq!(state.audio_status(), AudioStatus::Unknown, "no tracks yet");
+        assert_eq!(state.picture_aspect(), None, "the picture before stays");
+        let cover = map(vec![
+            ("id", Node::Int(1)),
+            ("type", string("video")),
+            ("albumart", Node::Flag(true)),
+            ("demux-w", Node::Int(500)),
+            ("demux-h", Node::Int(400)),
+            ("selected", Node::Flag(true)),
+        ]);
+        let audio = map(vec![("id", Node::Int(1)), ("type", string("audio"))]);
+        state.apply(Prop::TrackList, &Node::Array(vec![cover, audio.clone()]));
+        state.apply(Prop::Vid, &Node::Int(1));
+        assert_eq!(state.audio_status(), AudioStatus::Audio);
+        assert_eq!(state.picture_aspect(), Some(Some(1.25)));
+        state.apply(Prop::Vid, &Node::Flag(false));
+        assert_eq!(state.picture_aspect(), Some(None));
+        // An image that isn't a cover is a picture to look at.
+        let image = map(vec![
+            ("id", Node::Int(1)),
+            ("type", string("video")),
+            ("image", Node::Flag(true)),
+        ]);
+        state.apply(Prop::TrackList, &Node::Array(vec![image, audio.clone()]));
+        assert_eq!(state.audio_status(), AudioStatus::NotAudio);
+        // Streams never count as music.
+        state.apply(Prop::TrackList, &Node::Array(vec![audio]));
+        assert_eq!(state.audio_status(), AudioStatus::Audio);
+        state.apply(Prop::Path, &string("https://radio.example/stream"));
+        assert_eq!(state.audio_status(), AudioStatus::NotAudio);
+    }
+
+    #[test]
+    fn music_titles_follow_chapters() {
+        let mut state = PlaybackState::default();
+        state.apply(Prop::MediaTitle, &string("The Album"));
+        state.apply(
+            Prop::Metadata,
+            &map(vec![
+                ("ARTIST", string("Band")),
+                ("Album", string("The Album")),
+            ]),
+        );
+        assert_eq!(
+            state.music_metadata(),
+            ("The Album".into(), "Band".into(), "The Album".into())
+        );
+        state.apply(
+            Prop::ChapterList,
+            &Node::Array(vec![map(vec![
+                ("time", Node::Double(0.0)),
+                ("title", string("First Song")),
+            ])]),
+        );
+        state.apply(Prop::Chapter, &Node::Int(0));
+        state.apply(
+            Prop::ChapterMetadata,
+            &map(vec![("LEAD_PERFORMER", string("Guest"))]),
+        );
+        assert_eq!(
+            state.music_metadata(),
+            ("First Song".into(), "Guest".into(), "The Album".into())
+        );
     }
 
     #[test]

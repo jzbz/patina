@@ -1,19 +1,31 @@
-//! Keeps the screen awake while something is playing.
+//! Keeps the screen awake while something is playing, or for music only
+//! the computer.
 //!
 //! mpv cannot do this itself when it has no window of its own, so Patina
 //! asks the desktop directly: the `org.freedesktop.ScreenSaver` D-Bus
-//! interface on Linux (KDE, GNOME and most others implement it),
-//! `SetThreadExecutionState` on Windows, and an IOKit power assertion on
-//! macOS. The calls run on a small thread of their own so a slow D-Bus
-//! never stalls the interface.
+//! interface on Linux (KDE, GNOME and most others implement it), and for
+//! the computer alone the desktop portal's Inhibit; `SetThreadExecutionState`
+//! on Windows, and an IOKit power assertion on macOS. The calls run on a
+//! small thread of their own so a slow D-Bus never stalls the interface.
+
+/// What to keep awake, weakest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Level {
+    #[default]
+    None,
+    /// The computer, letting the screen sleep.
+    System,
+    /// The screen, and with it the computer.
+    Display,
+}
 
 pub struct Inhibitor {
-    requests: async_channel::Sender<bool>,
+    requests: async_channel::Sender<Level>,
 }
 
 impl Inhibitor {
     pub fn new() -> Self {
-        let (requests, receiver) = async_channel::unbounded::<bool>();
+        let (requests, receiver) = async_channel::unbounded::<Level>();
         let spawned = std::thread::Builder::new()
             .name("inhibit".into())
             .spawn(move || run(receiver));
@@ -23,28 +35,26 @@ impl Inhibitor {
         Self { requests }
     }
 
-    /// Requests the screen to stay awake (true) or allows it to sleep.
-    pub fn set(&self, inhibit: bool) {
-        let _ = self.requests.try_send(inhibit);
+    pub fn set(&self, level: Level) {
+        let _ = self.requests.try_send(level);
     }
 }
 
 #[cfg(not(all(unix, not(target_os = "macos"))))]
-fn run(receiver: async_channel::Receiver<bool>) {
+fn run(receiver: async_channel::Receiver<Level>) {
     let mut backend = Backend::default();
     while let Ok(wanted) = receiver.recv_blocking() {
         backend.set(wanted);
     }
-    backend.set(false);
+    backend.set(Level::None);
 }
 
-/// Linux: `org.freedesktop.ScreenSaver.Inhibit`, through zbus, which is
-/// async and driven on this thread.
+/// Linux: `org.freedesktop.ScreenSaver.Inhibit` for the screen, and the
+/// portal's Inhibit for the computer alone (which the ScreenSaver
+/// interface has no way to ask for), through zbus, which is async and
+/// driven on this thread.
 #[cfg(all(unix, not(target_os = "macos")))]
-fn run(receiver: async_channel::Receiver<bool>) {
-    const SERVICE: &str = "org.freedesktop.ScreenSaver";
-    const PATH: &str = "/org/freedesktop/ScreenSaver";
-
+fn run(receiver: async_channel::Receiver<Level>) {
     zbus::block_on(async move {
         let connection = match zbus::Connection::session().await {
             Ok(connection) => connection,
@@ -53,41 +63,11 @@ fn run(receiver: async_channel::Receiver<bool>) {
                 return;
             }
         };
-        let mut cookie: Option<u32> = None;
-        let mut wanted = false;
+        let mut held = linux::Held::default();
         loop {
             let next = receiver.recv().await;
             // Shutting down releases the inhibition too.
-            let inhibit = *next.as_ref().unwrap_or(&false);
-            if inhibit != wanted || next.is_err() {
-                wanted = inhibit;
-                if inhibit && cookie.is_none() {
-                    let reply = connection
-                        .call_method(
-                            Some(SERVICE),
-                            PATH,
-                            Some(SERVICE),
-                            "Inhibit",
-                            &("Patina", "Playing media"),
-                        )
-                        .await;
-                    match reply.and_then(|reply| reply.body().deserialize::<u32>()) {
-                        Ok(value) => {
-                            log::debug!("screen saver inhibited (cookie {value})");
-                            cookie = Some(value);
-                        }
-                        Err(error) => log::warn!("could not keep the screen awake: {error}"),
-                    }
-                } else if !inhibit && let Some(value) = cookie.take() {
-                    match connection
-                        .call_method(Some(SERVICE), PATH, Some(SERVICE), "UnInhibit", &(value,))
-                        .await
-                    {
-                        Ok(_) => log::debug!("screen saver released"),
-                        Err(error) => log::warn!("could not release the screen saver: {error}"),
-                    }
-                }
-            }
+            held.set(&connection, next.unwrap_or_default()).await;
             if next.is_err() {
                 break;
             }
@@ -95,26 +75,138 @@ fn run(receiver: async_channel::Receiver<bool>) {
     });
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
+mod linux {
+    use super::Level;
+    use std::collections::HashMap;
+    use zbus::{Connection, OwnedObjectPath, Variant};
+
+    const SCREENSAVER: &str = "org.freedesktop.ScreenSaver";
+    const SCREENSAVER_PATH: &str = "/org/freedesktop/ScreenSaver";
+    const PORTAL: &str = "org.freedesktop.portal.Desktop";
+    const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+    /// The portal's flag for keeping the session from suspending.
+    const SUSPEND: u32 = 4;
+
+    /// What is held: the screen saver's cookie, or the portal's request.
+    #[derive(Default)]
+    pub struct Held {
+        level: Level,
+        cookie: Option<u32>,
+        request: Option<OwnedObjectPath>,
+    }
+
+    impl Held {
+        pub async fn set(&mut self, connection: &Connection, level: Level) {
+            if level == self.level {
+                return;
+            }
+            self.level = level;
+            let mut display = level == Level::Display;
+            if level == Level::System && self.request.is_none() {
+                match inhibit_suspend(connection).await {
+                    Ok(request) => {
+                        log::debug!("system sleep inhibited ({request})");
+                        self.request = Some(request);
+                    }
+                    // Kept awake all the same, screen and all.
+                    Err(error) => {
+                        log::warn!("could not keep the computer awake alone: {error}");
+                        display = true;
+                    }
+                }
+            }
+            if display && self.cookie.is_none() {
+                let reply = connection
+                    .call_method(
+                        Some(SCREENSAVER),
+                        SCREENSAVER_PATH,
+                        Some(SCREENSAVER),
+                        "Inhibit",
+                        &("Patina", "Playing media"),
+                    )
+                    .await;
+                match reply.and_then(|reply| reply.body().deserialize::<u32>()) {
+                    Ok(value) => {
+                        log::debug!("screen saver inhibited (cookie {value})");
+                        self.cookie = Some(value);
+                    }
+                    Err(error) => log::warn!("could not keep the screen awake: {error}"),
+                }
+            }
+            if !display && let Some(value) = self.cookie.take() {
+                match connection
+                    .call_method(
+                        Some(SCREENSAVER),
+                        SCREENSAVER_PATH,
+                        Some(SCREENSAVER),
+                        "UnInhibit",
+                        &(value,),
+                    )
+                    .await
+                {
+                    Ok(_) => log::debug!("screen saver released"),
+                    Err(error) => log::warn!("could not release the screen saver: {error}"),
+                }
+            }
+            if level != Level::System
+                && let Some(request) = self.request.take()
+            {
+                match connection
+                    .call_method(
+                        Some(PORTAL),
+                        request.as_str(),
+                        Some("org.freedesktop.portal.Request"),
+                        "Close",
+                        &(),
+                    )
+                    .await
+                {
+                    Ok(_) => log::debug!("system sleep released"),
+                    Err(error) => log::warn!("could not release system sleep: {error}"),
+                }
+            }
+        }
+    }
+
+    /// The portal's request handle, which holds the inhibition until it is
+    /// closed or Patina disconnects.
+    async fn inhibit_suspend(connection: &Connection) -> zbus::Result<OwnedObjectPath> {
+        let options = HashMap::from([("reason", Variant::from("Playing audio"))]);
+        connection
+            .call_method(
+                Some(PORTAL),
+                PORTAL_PATH,
+                Some("org.freedesktop.portal.Inhibit"),
+                "Inhibit",
+                &("", SUSPEND, options),
+            )
+            .await?
+            .body()
+            .deserialize::<OwnedObjectPath>()
+    }
+}
+
 #[cfg(target_os = "windows")]
 #[derive(Default)]
 struct Backend {
-    inhibiting: bool,
+    level: Level,
 }
 
 #[cfg(target_os = "windows")]
 impl Backend {
-    fn set(&mut self, inhibit: bool) {
-        if inhibit == self.inhibiting {
+    fn set(&mut self, level: Level) {
+        if level == self.level {
             return;
         }
-        self.inhibiting = inhibit;
+        self.level = level;
         use windows_sys::Win32::System::Power::{
             ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, SetThreadExecutionState,
         };
-        let flags = if inhibit {
-            ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
-        } else {
-            ES_CONTINUOUS
+        let flags = match level {
+            Level::Display => ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED,
+            Level::System => ES_CONTINUOUS | ES_SYSTEM_REQUIRED,
+            Level::None => ES_CONTINUOUS,
         };
         // SAFETY: plain flag call; the state belongs to this thread, which
         // lives as long as the inhibitor.
@@ -127,7 +219,7 @@ impl Backend {
 #[cfg(target_os = "macos")]
 #[derive(Default)]
 struct Backend {
-    assertion: Option<u32>,
+    assertion: Option<(Level, u32)>,
 }
 
 #[cfg(target_os = "macos")]
@@ -162,17 +254,24 @@ mod iokit {
 
 #[cfg(target_os = "macos")]
 impl Backend {
-    fn set(&mut self, inhibit: bool) {
+    fn set(&mut self, level: Level) {
         use iokit::*;
-        if inhibit && self.assertion.is_none() {
+        if self.assertion.is_some_and(|(held, _)| held != level)
+            && let Some((_, id)) = self.assertion.take()
+        {
+            // SAFETY: releases an assertion this backend created.
+            unsafe { IOPMAssertionRelease(id) };
+        }
+        let kind = match level {
+            Level::Display => c"PreventUserIdleDisplaySleep",
+            Level::System => c"PreventUserIdleSystemSleep",
+            Level::None => return,
+        };
+        if self.assertion.is_none() {
             // SAFETY: the strings are NUL-terminated literals; both CF
             // objects are released after the call, which copies them.
             unsafe {
-                let kind = CFStringCreateWithCString(
-                    std::ptr::null(),
-                    c"PreventUserIdleDisplaySleep".as_ptr(),
-                    UTF8,
-                );
+                let kind = CFStringCreateWithCString(std::ptr::null(), kind.as_ptr(), UTF8);
                 let name = CFStringCreateWithCString(
                     std::ptr::null(),
                     c"Patina is playing media".as_ptr(),
@@ -183,14 +282,11 @@ impl Backend {
                 CFRelease(kind);
                 CFRelease(name);
                 if result == 0 {
-                    self.assertion = Some(id);
+                    self.assertion = Some((level, id));
                 } else {
-                    log::warn!("could not keep the display awake (IOKit error {result})");
+                    log::warn!("could not keep the computer awake (IOKit error {result})");
                 }
             }
-        } else if !inhibit && let Some(id) = self.assertion.take() {
-            // SAFETY: releases an assertion this backend created.
-            unsafe { IOPMAssertionRelease(id) };
         }
     }
 }

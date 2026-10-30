@@ -59,6 +59,7 @@ const PRESETS: &[(&str, &str, bool)] = &[
     ("Audio settings panel", "audio-panel", true),
     ("Subtitle settings panel", "sub-panel", true),
     ("Picture in picture", "toggle-pip", true),
+    ("Music mode", "toggle-music-mode", true),
     ("Bigger window", "bigger-window", true),
     ("Smaller window", "smaller-window", true),
     ("Fit to screen", "fit-to-screen", true),

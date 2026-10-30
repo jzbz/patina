@@ -506,6 +506,7 @@ const DEFAULT_CONF: &str = r##"# Patina key bindings, in mpv input.conf format.
 #@patina PRIMARY+- smaller-window
 #@patina PRIMARY+= bigger-window
 #@patina SECONDARY+p toggle-pip
+#@patina Alt+PRIMARY+m toggle-music-mode
 #@patina F1 show-shortcuts
 #@patina F11 toggle-fullscreen
 

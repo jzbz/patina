@@ -71,8 +71,8 @@ Slint draws that texture as an ordinary `Image` under the interface. In
 Slint's `BeforeRendering` notification the renderer asks mpv whether a new
 frame is ready, and renders only then or after a resize. Interface-only
 redraws (hovering a button while paused) cost nothing on the video side,
-and the video could later be placed anywhere in the scene (music mode, a
-docked controller).
+and the video can be placed anywhere in the scene: music mode draws it in
+the cover's place only (see Music mode).
 
 - mpv's update callback, which runs on an mpv thread, only posts a redraw
   request to the event loop, coalesced with an atomic flag.
@@ -147,6 +147,8 @@ The Slint files mirror IINA's window:
   the OSD.
 - `ui/sidebar.slint`: playlist and chapters, and the video, audio and
   subtitle quick settings.
+- `ui/music.slint`: music mode's strip of controls, its close and back
+  buttons, and the artwork for audio without a cover.
 - `ui/menus.slint`: the application menu.
 - `ui/welcome.slint`, `ui/dialogs.slint`, `ui/widgets.slint`,
   `ui/theme.slint`, `ui/globals.slint`.
@@ -167,6 +169,41 @@ changes, and an open submenu asking for its entries by an old number gets
 none; a player's state changes all the time (tracks and chapters as a file
 plays), which left submenus empty where Slint draws the menus itself, as on
 Linux. The copies don't change while the menu is open.
+
+## Music mode
+
+IINA's mini player is a window of its own that the player's one video view
+moves into. Patina's video can't move to another window: each Slint window
+has its own OpenGL context, an mpv core takes one render context, and
+Wayland destroys a hidden window. So music mode is a layout of the player
+window (`music-mode` in `PlayerWindow`), as picture-in-picture is:
+
+- The window is 300 wide. On top is the picture, 300 divided by its aspect
+  ratio tall (`Playback.picture-aspect`, the video's or the cover's, kept
+  between 1:2 and 4:1), or Patina's own artwork when there is none; under
+  it `MusicPanel`, 72 tall; under that the sidebar, as a drawer showing
+  the playlist and chapters (`sidebar-open` is the drawer being open). The
+  window's minimum and maximum sizes follow the mode, and the title bar,
+  controller and OSD give way.
+- mpv draws at the picture's size rather than the window's: the renderer
+  asks the window for a size of its own (`video::Hooks::target_size`), and
+  the software renderer is resized whenever that area changes.
+- `PlayerController` enters and leaves the mode, sizing the window once
+  Slint has applied the mode's size limits (a zero-delay timer). Leaving
+  puts back the window's size from before, unless something sized the
+  window in the meantime, such as fitting it to the video that ended music
+  mode. Opening or closing the drawer, or hiding the cover, resizes the
+  window from Slint's `changed` handlers (`music-layout`), and a resize by
+  hand opens or shuts the drawer once it ends, which winit doesn't report:
+  300 ms after the last `Resized`.
+- The automatic switch follows IINA's test (`PlaybackState::audio_status`):
+  a stream is never music, a file whose tracks aren't known yet is left
+  alone, and one is music when its only video tracks are covers. A switch
+  by hand turns it off for the window until the next one, as IINA's
+  override does.
+- `Playback.has-picture` is false for a file without a picture, which
+  hides the video image in either layout: the texture otherwise keeps the
+  last frame of whatever played before.
 
 ## Input
 
@@ -343,8 +380,8 @@ process per selected file). `-e` appends, `-w` gives each source an idle or
 new window (a window counts as busy from the moment a load is asked of it),
 `--mpv-*` options from a launch (and a link's `mpv_` options) are set as a
 new window's core starts, and that window is kept from other opens, which
-would inherit them. `-f` applies to the window that opened, `--pip` once its
-video shows, and a launch with nothing to open brings the active window
+would inherit them. `-f` and `--music-mode` apply to the window that
+opened, `--pip` once its video shows, and a launch with nothing to open brings the active window
 forward. Coming to the front needs the desktop's consent: on Wayland the
 launch passes on `XDG_ACTIVATION_TOKEN` and `wayland.rs` hands it to
 xdg_activation_v1 on winit's connection (winit 0.30's `focus_window` does

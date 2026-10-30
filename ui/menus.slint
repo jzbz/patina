@@ -318,6 +318,7 @@ export component MainMenu inherits ContextMenuArea {
             title: "Video";
             MenuItem {
                 title: MenuPlayback.fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+                enabled: !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("toggle-fullscreen");
                 }
@@ -331,50 +332,57 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Picture in Picture";
-                enabled: MenuPlayback.has-video;
+                enabled: MenuPlayback.has-video && !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("toggle-pip");
+                }
+            }
+            MenuItem {
+                title: MenuPlayback.music-mode ? "Exit Music Mode" : "Enter Music Mode";
+                enabled: MenuPlayback.has-media || MenuPlayback.music-mode;
+                activated => {
+                    Actions.patina("toggle-music-mode");
                 }
             }
             MenuSeparator { }
             MenuItem {
                 title: "Half Size";
-                enabled: MenuPlayback.has-video;
+                enabled: MenuPlayback.has-video && !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("window-scale 0.5");
                 }
             }
             MenuItem {
                 title: "Normal Size";
-                enabled: MenuPlayback.has-video;
+                enabled: MenuPlayback.has-video && !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("window-scale 1");
                 }
             }
             MenuItem {
                 title: "Double Size";
-                enabled: MenuPlayback.has-video;
+                enabled: MenuPlayback.has-video && !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("window-scale 2");
                 }
             }
             MenuItem {
                 title: "Fit to Screen";
-                enabled: MenuPlayback.has-video;
+                enabled: MenuPlayback.has-video && !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("fit-to-screen");
                 }
             }
             MenuItem {
                 title: "Bigger Window";
-                enabled: MenuPlayback.has-video;
+                enabled: MenuPlayback.has-video && !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("bigger-window");
                 }
             }
             MenuItem {
                 title: "Smaller Window";
-                enabled: MenuPlayback.has-video;
+                enabled: MenuPlayback.has-video && !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("smaller-window");
                 }
@@ -456,6 +464,7 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             MenuItem {
                 title: "Video Settings…";
+                enabled: !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("toggle-sidebar video");
                 }
@@ -546,6 +555,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Audio Settings…";
+                enabled: !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("toggle-sidebar audio");
                 }
@@ -646,6 +656,7 @@ export component MainMenu inherits ContextMenuArea {
             MenuSeparator { }
             MenuItem {
                 title: "Subtitle Settings…";
+                enabled: !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("toggle-sidebar subtitles");
                 }
@@ -674,6 +685,7 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuItem {
                 title: "Quick Settings";
+                enabled: !MenuPlayback.music-mode;
                 activated => {
                     Actions.patina("toggle-sidebar video");
                 }

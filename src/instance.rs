@@ -59,6 +59,8 @@ pub struct Request {
     pub separate_windows: bool,
     pub fullscreen: bool,
     pub pip: bool,
+    /// Play in music mode (patina --music-mode).
+    pub music_mode: bool,
     /// mpv options for the windows this request opens.
     pub mpv_options: Vec<(String, String)>,
     /// The desktop's token for bringing a window to the front (Wayland's
