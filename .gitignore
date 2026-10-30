@@ -1,2 +1,7 @@
 /target/
 .DS_Store
+
+# Generated from Cargo.lock by packaging/cargo-sources.py, 320K of it, and
+# stale the moment a dependency moves. release.yml generates it for each
+# Flatpak build; here the generator is the thing worth keeping.
+packaging/cargo-sources.json

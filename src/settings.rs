@@ -333,6 +333,22 @@ impl Default for Preferences {
     }
 }
 
+fn home_or_temp() -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// In a Flatpak whose Pictures or Downloads folder isn't set up, a folder of
+/// the app's own: the sandbox grants those folders only when they are
+/// configured, and could write neither the home folder nor anything else
+/// Patina would fall back to.
+fn sandboxed_folder(name: &str) -> Option<PathBuf> {
+    crate::platform::flatpak()
+        .then(|| directories::BaseDirs::new().map(|dirs| dirs.data_dir().join(name)))
+        .flatten()
+}
+
 fn yes_no(value: bool) -> String {
     if value { "yes" } else { "no" }.into()
 }
@@ -356,11 +372,14 @@ impl Preferences {
         if !self.screenshot_dir.is_empty() {
             return PathBuf::from(&self.screenshot_dir);
         }
-        directories::UserDirs::new()
+        match directories::UserDirs::new()
             .and_then(|dirs| dirs.picture_dir().map(Path::to_path_buf))
-            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Patina")
+        {
+            Some(pictures) => pictures.join("Patina"),
+            None => {
+                sandboxed_folder("Screenshots").unwrap_or_else(|| home_or_temp().join("Patina"))
+            }
+        }
     }
 
     /// The volume a new window starts at.
@@ -380,8 +399,8 @@ impl Preferences {
         }
         directories::UserDirs::new()
             .and_then(|dirs| dirs.download_dir().map(Path::to_path_buf))
-            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
-            .unwrap_or_else(std::env::temp_dir)
+            .or_else(|| sandboxed_folder("Downloads"))
+            .unwrap_or_else(home_or_temp)
     }
 
     /// The yt-dlp format filter for the video quality preference, such as

@@ -21,6 +21,9 @@ pub enum Command {
     Run(Options),
     Help,
     Version,
+    /// `--remove-file-types`, which the Windows uninstaller runs, and which
+    /// HELP leaves out.
+    RemoveFileTypes,
 }
 
 pub const HELP: &str = "\
@@ -60,6 +63,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--" => only_inputs = true,
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
+            "--remove-file-types" => return Ok(Command::RemoveFileTypes),
             "-e" | "--enqueue" => options.enqueue = true,
             "-w" | "--separate-windows" => options.separate_windows = true,
             "-f" | "--fullscreen" => options.fullscreen = true,
@@ -212,6 +216,18 @@ mod tests {
         for other in ["--pip", "-f"] {
             assert!(parse(["--music-mode", other].map(String::from)).is_err());
         }
+    }
+
+    #[test]
+    fn removing_file_types_is_a_command_of_its_own() {
+        assert_eq!(
+            parse(["--remove-file-types".to_string()]),
+            Ok(Command::RemoveFileTypes)
+        );
+        assert!(!HELP.contains("--remove-file-types"));
+        // After --, it is a file like any other.
+        let options = run(&["--", "--remove-file-types"]);
+        assert!(options.sources[0].ends_with("--remove-file-types"));
     }
 
     #[test]

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for Patina.app. macos-sign.sh applies them to
+  the app, that is to Contents/MacOS/patina. On a library they would mean
+  nothing, so the dylibs in Contents/Frameworks are signed without them.
+
+  Every entitlement switches off part of the hardened runtime, so this lists
+  only what Patina cannot run without, which is one.
+
+  com.apple.security.cs.allow-unsigned-executable-memory
+
+    For LuaJIT, which runs mpv's Lua scripts. Patina refuses a libmpv without
+    Lua (mpv's yt-dlp hook, which plays online video, is a Lua script, and so
+    are the scripts mpv loads by default and any a user adds), and the one in
+    the bundle uses LuaJIT. LuaJIT's compiler writes machine code into memory
+    it mapped itself and then makes that memory executable. The hardened
+    runtime kills a process that runs such memory ("Code Signature Invalid",
+    "Invalid Page") unless it has this entitlement, or the memory was mapped
+    with MAP_JIT and the process has com.apple.security.cs.allow-jit.
+
+    allow-jit is the narrower of the two and would be the one to use, but only
+    a LuaJIT built with LUAJIT_ENABLE_OSX_HRT maps its code with MAP_JIT (see
+    src/lj_mcode.c and src/lj_ccallback.c in LuaJIT 2.1: commit 4f2bb19 put the
+    MAP_JIT path behind that option, issue 1334). Built without it, LuaJIT maps
+    ordinary anonymous memory and mprotect()s it executable, and allow-jit on
+    its own does not prevent the kill; issue 1334 opens with exactly that
+    crash. The libluajit-5.1.2.dylib that macos-libmpv.txt pins is built
+    without the option: neither slice imports pthread_jit_write_protect_np,
+    and every mmap() in it passes MAP_PRIVATE|MAP_ANON (0x1002) and no MAP_JIT
+    (0x800). IINA, whose build it is, ships this entitlement for the same
+    reason (IINA commit a4ae19d replaced allow-jit with it, issue 3551).
+
+    macos-sign.sh checks the LuaJIT it is about to sign against this file and
+    stops if the two disagree. A refreshed macos-libmpv.txt that brings a
+    LuaJIT built with LUAJIT_ENABLE_OSX_HRT is the time to replace this
+    entitlement with allow-jit.
+
+    (FFmpeg's libswscale also makes generated code executable, on x86_64 and
+    only for its fast-bilinear scaler, which mpv uses only when asked to.)
+
+  Left out on purpose:
+
+    com.apple.security.cs.allow-jit: nothing in the bundle maps MAP_JIT.
+
+    com.apple.security.cs.disable-library-validation: every library in
+    Contents/Frameworks is signed with the same Developer ID as the app, which
+    is all library validation asks. What it refuses is code from elsewhere: a
+    libmpv named by PATINA_LIBMPV or found in Homebrew's or MacPorts' prefix,
+    mpv C plugins, Lua C modules, libbluray's libaacs. Patina carries its own
+    libmpv and finds it even when started through a link, such as the
+    Homebrew cask's patina command (src/mpv/ffi.rs resolves the link first),
+    so it needs none of those.
+
+    com.apple.security.cs.allow-dyld-environment-variables: nothing relies on
+    DYLD_ variables.
+
+    Sandbox, network, file and Apple-event entitlements: Patina is not
+    sandboxed, so it needs none to reach the network or the files it is
+    given. It receives Apple events (Finder's opens, patina:// links) and
+    sends none, and its OpenSubtitles password is kept in the login keychain,
+    which needs no entitlement either.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

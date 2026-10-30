@@ -1,0 +1,334 @@
+# Flatpak manifest for Patina's release bundles.
+#
+# This manifest builds the .flatpak bundles that release.yml attaches to each
+# GitHub release. It is not a Flathub submission: a manifest for Flathub is
+# written separately, by hand.
+#
+# flatpak-builder builds with no network access, so every crate is declared up
+# front in cargo-sources.json (generated from Cargo.lock by
+# packaging/cargo-sources.py, and not committed) and cargo runs --offline
+# against a vendored registry. Every other source is pinned too: archives by
+# sha256, git sources by tag and commit.
+app-id: video.patina.Patina
+# The plain freedesktop runtime: Slint draws its own widgets, so nothing from
+# GNOME or KDE is needed. FFmpeg comes from it as well. The codecs its own
+# build leaves out arrive with the org.freedesktop.Platform.codecs-extra
+# extension, which Flatpak installs along with the runtime by itself, so it is
+# not listed here.
+#
+# runtime-version moves together with RUNTIME_VERSION in release.yml, which
+# installs the runtime itself rather than through --install-deps-from.
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+# The Rust toolchain. On 26.08 it is rustc 1.98, which is why Cargo.toml's
+# rust-version is no newer than that. rust-toolchain.toml does not apply in
+# here: the extension's cargo is not rustup.
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: patina
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    # Inside the patina module's build directory, where cargo-sources.json
+    # puts the vendored crates and the config that points cargo at them. The
+    # module below has to keep that name.
+    CARGO_HOME: /run/build/patina/cargo
+
+finish-args:
+  # Wayland first, X11 as the fallback; shared IPC is what the X11 path needs.
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Slint draws the window with OpenGL (femtovg) and libmpv renders the video
+  # into it, and mpv's hardware decoding opens the same devices: VA-API
+  # through /dev/dri, and NVDEC through the NVIDIA device nodes, which this
+  # grant includes as well. Without a GPU Patina falls back to software
+  # rendering, but that is a fallback, not the plan.
+  - --device=dri
+  # Sound. mpv plays through PulseAudio, or PipeWire's PulseAudio server on a
+  # desktop that runs PipeWire.
+  - --socket=pulseaudio
+  # Streams and online videos, opened directly, from patina:// links or
+  # through yt-dlp; downloads; and subtitle search on OpenSubtitles.
+  - --share=network
+
+  # Read-only access to every file the user can see. Patina reads more than
+  # the file it was asked to open: the rest of its folder for the playlist,
+  # subtitles beside it or in a Subs folder, folders opened whole, and files
+  # dropped from a file manager, which arrive as plain paths. The document
+  # portal would hand over the one file and hide its neighbours.
+  - --filesystem=host:ro
+  # Screenshots, which go to Pictures/Patina unless the preferences name
+  # another folder. ":create" makes the folder the first time.
+  - --filesystem=xdg-pictures/Patina:create
+  # Downloads, which yt-dlp writes to the Downloads folder unless the
+  # preferences name another. A folder named there outside these two grants
+  # can be read, through host:ro, but not written.
+  - --filesystem=xdg-download
+
+  # The OpenSubtitles password, kept in the desktop's keyring. The keyring
+  # crates Patina uses speak the Secret Service directly, not the Secret
+  # portal.
+  - --talk-name=org.freedesktop.secrets
+  # Show in Folder, which asks the file manager over D-Bus to open the folder
+  # with the file selected.
+  - --talk-name=org.freedesktop.FileManager1
+
+  # Note what is *not* here. No --own-name, though Patina exports itself over
+  # MPRIS: in a Flatpak its bus name is
+  # org.mpris.MediaPlayer2.video.patina.Patina.instance..., under the app id,
+  # and Flatpak lets every app own that subtree without being granted it. No
+  # org.freedesktop.ScreenSaver either: in a Flatpak the screen is kept awake
+  # through the Inhibit portal. Nor xdg-data/Trash: files go to the trash
+  # through the Trash portal. Picking files and opening links go through
+  # portals as well, which need no grant.
+
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+  - /share/doc
+  - /share/man
+  - '*.a'
+  - '*.la'
+
+modules:
+  # libmpv, which Patina loads at run time as libmpv.so.2 from /app/lib. The
+  # runtime has FFmpeg but not mpv, and not these libraries mpv needs: libass,
+  # libplacebo, uchardet, LuaJIT, and libXpresent for its X11 support. Their
+  # definitions, versions and pins follow Flathub's own mpv-based players
+  # (io.mpv.Mpv, Celluloid, Haruna and Tsukimi) as of October 2026. They are
+  # nested under libmpv, which builds them first.
+  - name: libmpv
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=true
+      # Only the library: Patina is the player, so no mpv executable, and none
+      # of the desktop entry, icons and shell completions that come with it.
+      - -Dcplayer=false
+      - -Dbuild-date=false
+      - -Dmanpage-build=disabled
+      - -Dhtml-build=disabled
+      - -Dpdf-build=disabled
+      # Lua is not optional: Patina will not start a player without it, and
+      # mpv's yt-dlp hook, which plays web pages, is a Lua script. LuaJIT by
+      # name, so that some other Lua in the SDK is never picked instead.
+      - -Dlua=luajit
+      # mpv's other script language, through mujs. Patina ships no JavaScript
+      # scripts, and leaving it out leaves mujs unbuilt.
+      - -Djavascript=disabled
+      - -Duchardet=enabled
+      # Sound goes through the PulseAudio socket granted above. ALSA would
+      # have no device to open: the sandbox has no /dev/snd.
+      - -Dalsa=disabled
+      - -Dpulse=enabled
+      # What Patina's window and hardware decoding rely on: Patina hands
+      # libmpv its X11 or Wayland display, and VA-API frames reach its OpenGL
+      # context through EGL. Named rather than left to detection, so that a
+      # dependency gone missing fails this build instead of shipping a libmpv
+      # that quietly decodes in software.
+      - -Dx11=enabled
+      - -Dwayland=enabled
+      - -Degl=enabled
+      - -Dplain-gl=enabled
+      - -Dvaapi=enabled
+      - -Dvaapi-x11=enabled
+      - -Dvaapi-wayland=enabled
+      # The copying hardware decoders ("Automatic, copying frames back")
+      # don't use the display Patina hands over: mpv opens VA-API on its own,
+      # through DRM, or through X11, which a Wayland session hides from the
+      # sandbox. mpv builds DRM only with libdisplay-info, built below.
+      - -Ddrm=enabled
+      - -Dvaapi-drm=enabled
+    sources:
+      - type: archive
+        url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.41.0.tar.gz
+        sha256: ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209
+    modules:
+      # libdisplay-info, which mpv's DRM support needs, and hwdata, whose PNP
+      # ID list libdisplay-info compiles in; the list itself isn't shipped.
+      # As Flathub's mpv builds them.
+      - name: hwdata
+        buildsystem: autotools
+        cleanup:
+          - '*'
+        sources:
+          - type: archive
+            url: https://github.com/vcrhonek/hwdata/archive/refs/tags/v0.394.tar.gz
+            sha256: b7c3fd7214a3b7c49d2661db127a712dc11cffd1799f793947aa1cb20aaf3298
+
+      - name: libdisplay-info
+        buildsystem: meson
+        sources:
+          - type: archive
+            url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz
+            sha256: f7331fcaf5527251b84c8fb84238d06cd2f458422ce950c80e86c72927aa8c2b
+
+      # mpv's X11 support will not build without the Present extension's
+      # client library, and Patina's VA-API path under X11 needs that support.
+      - name: libXpresent
+        config-opts:
+          - --disable-static
+        sources:
+          - type: archive
+            url: https://xorg.freedesktop.org/archive/individual/lib/libXpresent-1.0.2.tar.xz
+            sha256: 4e5b21b4812206a4b223013606ae31170502c1043038777a1ef8f70c09d37602
+
+      # OpenResty's LuaJIT, which tags its releases; upstream's 2.1 is a
+      # rolling release with no tag to pin.
+      - name: luajit
+        no-autogen: true
+        make-args:
+          - BUILDMODE=dynamic
+          - PREFIX=${FLATPAK_DEST}
+        make-install-args:
+          - PREFIX=${FLATPAK_DEST}
+        cleanup:
+          - /bin
+        sources:
+          - type: git
+            url: https://github.com/openresty/luajit2.git
+            tag: v2.1-20261023
+            commit: 5d8d0a27bfa4595b24b8ed36123555fcd2bb2f8c
+
+      # Guesses the character set of a subtitle file that is not UTF-8.
+      - name: uchardet
+        buildsystem: cmake-ninja
+        config-opts:
+          - -DCMAKE_BUILD_TYPE=Release
+          - -DBUILD_STATIC=0
+          - -DBUILD_BINARY=OFF
+          # uchardet 0.0.8 declares CMake 3.1 as its minimum, older than
+          # CMake 4 accepts without this.
+          - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        sources:
+          - type: archive
+            url: https://www.freedesktop.org/software/uchardet/releases/uchardet-0.0.8.tar.xz
+            sha256: e97a60cfc00a1c147a674b097bb1422abd9fa78a2d9ce3f3fdcc2e78a34ac5f0
+
+      # Subtitle rendering.
+      - name: libass
+        config-opts:
+          - --disable-static
+        sources:
+          - type: archive
+            url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
+            sha256: 2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc
+
+      # mpv's rendering library. From git rather than a release archive: its
+      # build runs glad and jinja from submodules, which an archive leaves
+      # out. The OpenGL backend is named rather than left to detection, since
+      # OpenGL is what Patina draws with.
+      - name: libplacebo
+        buildsystem: meson
+        config-opts:
+          - -Dopengl=enabled
+          - -Ddemos=false
+        sources:
+          - type: git
+            url: https://github.com/haasn/libplacebo.git
+            tag: v7.387.0
+            commit: 275f7dea27924cdd34ab2e6c20e448b6bc4fab65
+
+  # yt-dlp, which plays web pages through mpv's yt-dlp hook and makes Patina's
+  # downloads. Both look for it on PATH, which has /app/bin. Merging separate
+  # video and audio downloads uses the runtime's own ffmpeg.
+  #
+  # YouTube also needs a JavaScript runtime and yt-dlp's EJS scripts to answer
+  # its challenges, so Deno and yt-dlp-ejs come with it, as they do in
+  # Flathub's mpv. The three move together: yt-dlp 2026.10.26 names
+  # yt-dlp-ejs 0.8.0 exactly, and Deno 2.9.8 or newer, in its pyproject.toml.
+  - name: yt-dlp
+    no-autogen: true
+    no-make-install: true
+    make-args:
+      - yt-dlp
+      - PYTHON=/usr/bin/python3
+    post-install:
+      - install -Dm755 yt-dlp /app/bin/yt-dlp
+    sources:
+      - type: archive
+        url: https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.tar.gz
+        sha256: 21f942d258d25cc4e60b4982a25c423460f0bebb835f38e6dfd1fcb140087f95
+    modules:
+      # Deno's own release build, the one prebuilt binary in this manifest,
+      # as Flathub's mpv and Celluloid ship it. yt-dlp finds it on PATH.
+      - name: deno
+        buildsystem: simple
+        build-commands:
+          - install -Dm755 deno /app/bin/deno
+          # The release zip holds only the binary; MIT asks for the notice.
+          - install -Dm644 LICENSE.md /app/share/licenses/video.patina.Patina/deno/LICENSE.md
+        sources:
+          - type: file
+            url: https://raw.githubusercontent.com/denoland/deno/v2.9.8/LICENSE.md
+            sha256: f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588
+          - type: archive
+            only-arches:
+              - x86_64
+            url: https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-unknown-linux-gnu.zip
+            sha256: e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609
+          - type: archive
+            only-arches:
+              - aarch64
+            url: https://github.com/denoland/deno/releases/download/v2.9.8/deno-aarch64-unknown-linux-gnu.zip
+            sha256: d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905
+
+      - name: yt-dlp-ejs
+        buildsystem: simple
+        build-commands:
+          - pip3 install --no-index --no-deps --prefix=/app yt_dlp_ejs-*.whl
+        sources:
+          - type: file
+            url: https://files.pythonhosted.org/packages/e3/bd/520769863744b669440a924271a6159ddd82ad5ae26b4ac4d4b69e9f8d44/yt_dlp_ejs-0.8.0-py3-none-any.whl
+            sha256: 79300e5fca7f937a1eeede11f0456862c1b41107ce1d726871e0207424f4bdb4
+
+  - name: patina
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --verbose
+      - install -Dm755 target/release/patina /app/bin/patina
+      - install -Dm644 packaging/linux/video.patina.Patina.desktop
+        /app/share/applications/video.patina.Patina.desktop
+      - install -Dm644 packaging/linux/video.patina.Patina.metainfo.xml
+        /app/share/metainfo/video.patina.Patina.metainfo.xml
+      # PNG as well as the SVG. AppStream's catalogue generator rasterises the
+      # icon itself and the freedesktop SDK's copy has no SVG loader, so an
+      # SVG-only install fails the build with icon-file-read-error. The PNGs
+      # are rendered from that same SVG by packaging/icons.sh. Its 1024 is for
+      # macOS and stays out: flatpak build-export checks every exported icon
+      # and refuses one larger than 512 pixels.
+      - for size in 16 24 32 48 64 128 256 512; do
+          install -Dm644 packaging/icons/patina-$size.png
+          /app/share/icons/hicolor/${size}x${size}/apps/video.patina.Patina.png;
+        done
+      - install -Dm644 ui/icons/patina.svg
+        /app/share/icons/hicolor/scalable/apps/video.patina.Patina.svg
+      # Lucide's licence, for the icons compiled into Patina. Patina's own
+      # LICENSE, at the top of the tree, flatpak-builder records by itself.
+      - install -Dm644 ui/icons/LICENSE
+        /app/share/licenses/video.patina.Patina/lucide/LICENSE
+    sources:
+      - type: git
+        url: https://github.com/jzbz/patina.git
+        tag: v0.1.0
+        # Pinned alongside the tag so a tag that is later moved cannot change
+        # what is built. Both have to be updated together on a release.
+        #
+        # This value trails the tag by one commit and always will: the commit a
+        # tag names cannot be known while writing the file that commit contains.
+        # `release.yml` rewrites this line to `git rev-parse HEAD` before it
+        # builds, and the tag: line with it (to the tag being built, or out
+        # altogether for an untagged commit), so what CI ships is the tree it
+        # checked out regardless. It finds this source by its url: line and
+        # these two beside it, so all three keep the same indentation. What is
+        # written here is corrected to the tag's own commit immediately after
+        # tagging.
+        commit: 3b05f77edcc9d5a1887699267d8c73de087bcdd3
+      - cargo-sources.json

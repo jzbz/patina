@@ -16,11 +16,16 @@ explains the design.
   Tests that need libmpv or ffmpeg skip without them; set
   `PATINA_TEST_REQUIRE_MPV=1` and `PATINA_TEST_REQUIRE_FFMPEG=1` to make
   them fail instead, as CI does.
-- `bundle.yml`, run by hand with a pushed commit's SHA, builds a universal
-  Patina.app (with IINA's libmpv, pinned in `packaging/macos-libmpv.txt`)
-  and a Windows folder (patina.exe, libmpv-2.dll and vulkan-1.dll, pinned in
-  `packaging/windows-deps.env`) as artifacts, for running on machines with
-  nothing else installed. `packaging/icons.sh` renders the icons they use.
+- `release.yml` builds every package: the Flatpak bundles
+  (`packaging/video.patina.Patina.yml`), a universal Patina.app (with IINA's
+  libmpv, pinned in `packaging/macos-libmpv.txt`), and a Windows folder
+  (patina.exe, libmpv-2.dll and vulkan-1.dll, pinned in
+  `packaging/windows-deps.env`) with its installer
+  (`packaging/windows/patina.iss`). Run by hand with a pushed commit's SHA
+  (`gh workflow run release.yml --repo jzbz/patina --ref master -f
+  ref=<sha>`), it builds and tests them all and publishes nothing, which is
+  how to try a change to packaging; never pass it a `v*` tag by hand.
+  `packaging/icons.sh` renders the icons the packages use.
 - After editing `ui/menus.slint`, run `tools/menubar.py` to copy the menus
   into the macOS menu bar. The menus read `MenuPlayback` and `MenuMedia`
   in `ui/globals.slint`, which `open-menu` in `ui/app.slint` fills in from
@@ -57,6 +62,34 @@ online subtitles at a stand-in for the OpenSubtitles API (the URL that
 `/subtitles` and the rest hang off). Run inside `dbus-run-session`, Patina
 uses whatever Secret Service that session has, so a stand-in keeps a test's
 password out of your own keyring.
+
+## Releases
+
+The runbook is the header of `.github/workflows/release.yml` and
+`checksums.yml`; in short:
+
+1. Before tagging: the version in `Cargo.toml`, and a
+   `<release version="X.Y.Z" date="YYYY-MM-DD">` in
+   `packaging/linux/video.patina.Patina.metainfo.xml` (the workflow's
+   version job checks both); the screenshot URLs there pinned to a commit;
+   and live pins in `packaging/windows-deps.env` (zhongfly's builds expire
+   after about a month) and `packaging/macos-libmpv.txt`, since release
+   builds download them afresh.
+2. A signed `vX.Y.Z` tag starts `release.yml`, which attaches the Flatpaks,
+   the Windows installer and the portable zip to a draft release.
+3. The macOS bundle comes from the run as an unsigned artifact; it is signed
+   and notarised by hand with `packaging/macos-sign.sh`, then uploaded to the
+   draft.
+4. `checksums.yml` hashes every asset into `SHA256SUMS`, which is signed by
+   hand; then the draft is published.
+5. Afterwards, and only when wanted: the Homebrew cask in jzbz/homebrew-tap
+   (`packaging/homebrew/README.md`) and the winget manifests
+   (`packaging/winget/README.md`).
+
+The Flatpak manifest builds the release bundles only. It is not a Flathub
+submission; one for Flathub would be written for Flathub's repository by
+hand. Flathub, winget and the metainfo also want https://patina.video/ (and
+its `/privacy/` page) to answer.
 
 ## Source map
 

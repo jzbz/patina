@@ -3063,8 +3063,25 @@ impl PlayerController {
         if entries.is_empty() {
             return;
         }
-        self.playlist_remove(entries);
-        let paths: Vec<String> = entries
+        let count = entries.len();
+        // Files that can't go (in a Flatpak, those Patina may only read) stay
+        // in the playlist.
+        let mut refused = Vec::new();
+        let movable: Vec<(usize, PlaylistEntry)> = entries
+            .iter()
+            .filter(
+                |(_, entry)| match crate::platform::can_trash(&entry.filename) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        refused.push((entry.filename.clone(), error));
+                        false
+                    }
+                },
+            )
+            .cloned()
+            .collect();
+        self.playlist_remove(&movable);
+        let paths: Vec<String> = movable
             .iter()
             .map(|(_, entry)| entry.filename.clone())
             .collect();
@@ -3072,8 +3089,23 @@ impl PlayerController {
             [path] => file_name(path),
             paths => format!("{} files", paths.len()),
         };
-        crate::platform::move_to_trash(paths);
-        self.show_osd("Moved to Trash", &detail, None);
+        // Said once it is done.
+        crate::platform::move_to_trash(paths, move |mut failed| {
+            failed.splice(0..0, refused);
+            let _ = slint::invoke_from_event_loop(move || {
+                App::with_current(|app| match failed.as_slice() {
+                    [] => app.notify("Moved to Trash", &detail),
+                    [(path, error)] if count == 1 => app.notify(
+                        "Could Not Move to Trash",
+                        &format!("{}: {error}", file_name(path)),
+                    ),
+                    failed => app.notify(
+                        "Could Not Move to Trash",
+                        &format!("{} of {count} files", failed.len()),
+                    ),
+                });
+            });
+        });
     }
 
     /// Turns a file's matched subtitles down, as IINA's Wrong Subtitle

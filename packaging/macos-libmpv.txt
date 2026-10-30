@@ -5,9 +5,8 @@
 #
 # Pinned by digest, one line per file, because those URLs carry no version:
 # IINA replaces the files when it updates them, and then these fail to match.
-# bundle.yml caches the downloads by this file's hash, which keeps it working
-# for as long as master runs at least once a week; after that, refresh the
-# list from what IINA serves:
+# release.yml downloads them afresh for every build, caching nothing, so once
+# IINA has replaced one, refresh the list from what IINA serves:
 #   curl -fsSL https://iina.io/dylibs/universal/filelist.txt | while read -r f; do curl -fsSLO "https://iina.io/dylibs/universal/$f"; done; shasum -a 256 *.dylib
 #
 # These are built with GPL parts (mpv, FFmpeg, rubberband), so a Patina.app

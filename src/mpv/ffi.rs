@@ -323,9 +323,12 @@ fn library_candidates() -> Vec<PathBuf> {
     };
 
     // A packaged build keeps its libmpv beside the executable (Windows), in the
-    // bundle's Frameworks directory (macOS), or in a lib directory (Linux).
+    // bundle's Frameworks directory (macOS), or in a lib directory (Linux),
+    // all found from the executable itself rather than a link to it, such as
+    // the one a Homebrew cask puts on the PATH.
     if let Some(dir) = std::env::current_exe()
         .ok()
+        .map(|exe| std::fs::canonicalize(&exe).unwrap_or(exe))
         .and_then(|exe| exe.parent().map(PathBuf::from))
     {
         let bundled = if cfg!(target_os = "macos") {

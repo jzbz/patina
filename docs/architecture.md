@@ -258,7 +258,9 @@ it follows entries as they move; turning "move these rows there" into the
 one-entry `playlist-move` commands mpv has; the series prefix each name
 shares with another, folded in the list; and reading pasted text as paths
 and URLs. The clipboard is `arboard`; moving files to the trash is the
-`trash` crate, on a thread of its own.
+`trash` crate, on a thread of its own, or in a Flatpak the desktop portal's
+Trash, which moves only files the sandbox may write. Patina says it moved
+them once that is done, or that it couldn't.
 
 ## Subtitle matching
 
@@ -427,13 +429,17 @@ matching and MPRIS; a test keeps the MimeType line of
 does, as far as each system allows. On Linux, Preferences › Utilities runs
 `xdg-mime default` for videos, music or playlists and patina:// links,
 after writing a desktop entry for the running executable when no package
-installed one. On macOS it asks LaunchServices to make Patina the default
+installed one; a Flatpak shows none of this, since the system's own settings
+choose a sandboxed app's file types, from what its desktop entry declares.
+On macOS it asks LaunchServices to make Patina the default
 for the media types each extension maps to (not another app's type that
-shares it, such as TypeScript's .ts), and for patina:// links with videos. On Windows, a folder without an
-installer, where no app may make itself the default, it writes ProgIDs,
-Open With entries, the `patina` protocol and Default apps capabilities
-under the user's own classes, opens Default apps for the user to choose
-Patina, and takes it all out again on request.
+shares it, such as TypeScript's .ts), and for patina:// links with videos. On Windows, where
+no app may make itself the default, it writes ProgIDs, Open With entries,
+the `patina` protocol and Default apps capabilities under the user's own
+classes, opens Default apps for the user to choose Patina, and takes it all
+out again on request. The installer registers none of it, but its
+uninstaller runs `patina.exe --remove-file-types`, which takes out what
+Patina wrote, so nothing is left pointing at a deleted program.
 
 winit's macOS application delegate handles no opens, so `macos.rs`
 installs Apple event handlers for open-documents and get-URL as the app
@@ -448,7 +454,13 @@ most recently) and turns media keys into `Command`s: MPRIS over D-Bus on
 Linux, the System Media Transport Controls on Windows, and MediaPlayer's
 remote command and now-playing centers on macOS. zbus is async, so the MPRIS
 service and the screen-saver inhibitor each run `zbus::block_on` on a thread
-of their own. Commands arrive on other threads and reach the UI thread
+of their own. The MPRIS name is
+`org.mpris.MediaPlayer2.video.patina.Patina.instance<pid>_<token>`: under the
+application ID, which a Flatpak may own without being granted it, and with a
+token drawn per process, since every Flatpak launch is process 2 in a PID
+namespace of its own. In a Flatpak the screen is kept awake through the
+desktop portal's Inhibit rather than `org.freedesktop.ScreenSaver`, and
+revealing a file asks `org.freedesktop.FileManager1` over D-Bus. Commands arrive on other threads and reach the UI thread
 through `slint::invoke_from_event_loop`. As in IINA, a media key runs the
 user's binding for it (`PLAYPAUSE`, `NEXT`, ...) when one exists.
 

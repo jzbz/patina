@@ -4,9 +4,10 @@
 //! mpv cannot do this itself when it has no window of its own, so Patina
 //! asks the desktop directly: the `org.freedesktop.ScreenSaver` D-Bus
 //! interface on Linux (KDE, GNOME and most others implement it), and for
-//! the computer alone the desktop portal's Inhibit; `SetThreadExecutionState`
-//! on Windows, and an IOKit power assertion on macOS. The calls run on a
-//! small thread of their own so a slow D-Bus never stalls the interface.
+//! the computer alone, or for both in a Flatpak, the desktop portal's
+//! Inhibit; `SetThreadExecutionState` on Windows, and an IOKit power
+//! assertion on macOS. The calls run on a small thread of their own so a
+//! slow D-Bus never stalls the interface.
 
 /// What to keep awake, weakest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -52,7 +53,9 @@ fn run(receiver: async_channel::Receiver<Level>) {
 /// Linux: `org.freedesktop.ScreenSaver.Inhibit` for the screen, and the
 /// portal's Inhibit for the computer alone (which the ScreenSaver
 /// interface has no way to ask for), through zbus, which is async and
-/// driven on this thread.
+/// driven on this thread. In a Flatpak the portal keeps the screen awake
+/// too: every sandbox reaches the portal, and none the screen saver unless
+/// its manifest asks.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn run(receiver: async_channel::Receiver<Level>) {
     zbus::block_on(async move {
@@ -87,12 +90,31 @@ mod linux {
     const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
     /// The portal's flag for keeping the session from suspending.
     const SUSPEND: u32 = 4;
+    /// And from going idle, which is what blanks the screen.
+    const IDLE: u32 = 8;
 
-    /// What is held: the screen saver's cookie, or the portal's request.
+    /// What keeps the screen awake: the screen saver's cookie, or in a
+    /// Flatpak the portal's request.
+    enum Screen {
+        Cookie(u32),
+        Request(OwnedObjectPath),
+    }
+
+    impl std::fmt::Display for Screen {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            match self {
+                Screen::Cookie(value) => write!(f, "cookie {value}"),
+                Screen::Request(request) => write!(f, "{request}"),
+            }
+        }
+    }
+
+    /// What is held: the screen, and the portal's request for the computer
+    /// alone.
     #[derive(Default)]
     pub struct Held {
         level: Level,
-        cookie: Option<u32>,
+        screen: Option<Screen>,
         request: Option<OwnedObjectPath>,
     }
 
@@ -104,7 +126,7 @@ mod linux {
             self.level = level;
             let mut display = level == Level::Display;
             if level == Level::System && self.request.is_none() {
-                match inhibit_suspend(connection).await {
+                match inhibit(connection, SUSPEND, "Playing audio").await {
                     Ok(request) => {
                         log::debug!("system sleep inhibited ({request})");
                         self.request = Some(request);
@@ -116,74 +138,99 @@ mod linux {
                     }
                 }
             }
-            if display && self.cookie.is_none() {
-                let reply = connection
-                    .call_method(
-                        Some(SCREENSAVER),
-                        SCREENSAVER_PATH,
-                        Some(SCREENSAVER),
-                        "Inhibit",
-                        &("Patina", "Playing media"),
-                    )
-                    .await;
-                match reply.and_then(|reply| reply.body().deserialize::<u32>()) {
-                    Ok(value) => {
-                        log::debug!("screen saver inhibited (cookie {value})");
-                        self.cookie = Some(value);
+            if display && self.screen.is_none() {
+                match inhibit_screen(connection).await {
+                    Ok(screen) => {
+                        log::debug!("screen saver inhibited ({screen})");
+                        self.screen = Some(screen);
                     }
                     Err(error) => log::warn!("could not keep the screen awake: {error}"),
                 }
             }
-            if !display && let Some(value) = self.cookie.take() {
-                match connection
-                    .call_method(
-                        Some(SCREENSAVER),
-                        SCREENSAVER_PATH,
-                        Some(SCREENSAVER),
-                        "UnInhibit",
-                        &(value,),
-                    )
-                    .await
-                {
-                    Ok(_) => log::debug!("screen saver released"),
+            if !display && let Some(screen) = self.screen.take() {
+                let released = match screen {
+                    Screen::Cookie(value) => connection
+                        .call_method(
+                            Some(SCREENSAVER),
+                            SCREENSAVER_PATH,
+                            Some(SCREENSAVER),
+                            "UnInhibit",
+                            &(value,),
+                        )
+                        .await
+                        .map(drop),
+                    Screen::Request(request) => close(connection, &request).await,
+                };
+                match released {
+                    Ok(()) => log::debug!("screen saver released"),
                     Err(error) => log::warn!("could not release the screen saver: {error}"),
                 }
             }
             if level != Level::System
                 && let Some(request) = self.request.take()
             {
-                match connection
-                    .call_method(
-                        Some(PORTAL),
-                        request.as_str(),
-                        Some("org.freedesktop.portal.Request"),
-                        "Close",
-                        &(),
-                    )
-                    .await
-                {
-                    Ok(_) => log::debug!("system sleep released"),
+                match close(connection, &request).await {
+                    Ok(()) => log::debug!("system sleep released"),
                     Err(error) => log::warn!("could not release system sleep: {error}"),
                 }
             }
         }
     }
 
+    /// The screen saver's Inhibit, or in a Flatpak the portal's, asked to
+    /// keep the computer from suspending too, as [`Level::Display`] means.
+    async fn inhibit_screen(connection: &Connection) -> zbus::Result<Screen> {
+        if crate::platform::flatpak() {
+            return inhibit(connection, IDLE | SUSPEND, "Playing media")
+                .await
+                .map(Screen::Request);
+        }
+        connection
+            .call_method(
+                Some(SCREENSAVER),
+                SCREENSAVER_PATH,
+                Some(SCREENSAVER),
+                "Inhibit",
+                &("Patina", "Playing media"),
+            )
+            .await?
+            .body()
+            .deserialize::<u32>()
+            .map(Screen::Cookie)
+    }
+
     /// The portal's request handle, which holds the inhibition until it is
     /// closed or Patina disconnects.
-    async fn inhibit_suspend(connection: &Connection) -> zbus::Result<OwnedObjectPath> {
-        let options = HashMap::from([("reason", Variant::from("Playing audio"))]);
+    async fn inhibit(
+        connection: &Connection,
+        flags: u32,
+        reason: &str,
+    ) -> zbus::Result<OwnedObjectPath> {
+        let options = HashMap::from([("reason", Variant::from(reason))]);
         connection
             .call_method(
                 Some(PORTAL),
                 PORTAL_PATH,
                 Some("org.freedesktop.portal.Inhibit"),
                 "Inhibit",
-                &("", SUSPEND, options),
+                &("", flags, options),
             )
             .await?
             .body()
             .deserialize::<OwnedObjectPath>()
+    }
+
+    async fn close(connection: &Connection, request: &OwnedObjectPath) -> zbus::Result<()> {
+        connection
+            .call_method(
+                Some(PORTAL),
+                request.as_str(),
+                Some("org.freedesktop.portal.Request"),
+                "Close",
+                &(),
+            )
+            .await
+            .map(drop)
     }
 }
 

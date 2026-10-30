@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+
+PackageIdentifier: Patina.Patina
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Jonathan Zeppettini
+PublisherUrl: https://jz.bz/
+PublisherSupportUrl: https://github.com/jzbz/patina/issues
+# winget's moderators asked rPGP for a privacy page before merging it, so
+# this has one from the start. The page has to be live before submitting.
+PrivacyUrl: https://patina.video/privacy/
+Author: Jonathan Zeppettini
+PackageName: Patina
+PackageUrl: https://patina.video/
+License: MIT
+# Pinned to the tag, not HEAD: a manifest describing 0.1.0 should point at the
+# license 0.1.0 shipped under, whatever master does later.
+LicenseUrl: https://github.com/jzbz/patina/blob/v0.1.0/LICENSE
+Copyright: Copyright (c) 2026 Jonathan Zeppettini
+ShortDescription: A media player built on mpv that follows IINA's design
+Description: A media player for Linux, macOS and Windows, written in Rust with a Slint interface on top of mpv. It follows IINA's design and behaviour, and its goal is feature parity with IINA on all three platforms. Patina is at an early stage. Playback, the IINA-style window and controls, the sidebars, menus, key bindings and history work today; much of IINA is still to come.
+Moniker: patina
+Tags:
+- media-player
+- video-player
+- music-player
+- video
+- audio
+- music
+- mpv
+- iina
+ReleaseNotesUrl: https://github.com/jzbz/patina/releases/tag/v0.1.0
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

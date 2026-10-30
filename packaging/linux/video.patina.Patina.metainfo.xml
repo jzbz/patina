@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Jonathan Zeppettini -->
+<component type="desktop-application">
+  <id>video.patina.Patina</id>
+
+  <name>Patina</name>
+  <summary>Play videos and music</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="video.patina">
+    <name>Jonathan Zeppettini</name>
+  </developer>
+
+  <description>
+    <p>
+      Patina is a media player for video and music, built on mpv. It follows
+      the design and behaviour of IINA, the macOS player: the video fills the
+      window edge to edge, and the title bar and a floating controller fade
+      out together while it plays.
+    </p>
+    <p>
+      Files opened from a file manager, a terminal or a patina:// link go to
+      the Patina already running. The other files of the same folder join the
+      playlist, and subtitle files are matched to each one by name or by
+      episode number.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Hardware decoding, and a seek bar with chapter ticks and a thumbnail
+      preview</li>
+      <li>Quick settings for tracks, aspect ratio, crop, rotation, colour,
+      delays and a 10-band equalizer</li>
+      <li>Music mode, a mini player with the cover, compact controls and the
+      playlist below</li>
+      <li>Picture-in-picture, A-B loops, screenshots, resuming where you left
+      off, and a playback history</li>
+      <li>Online video through yt-dlp, with quality menus and downloads</li>
+      <li>Subtitles from OpenSubtitles.com, with your own API key</li>
+      <li>Key bindings in mpv's input.conf format with IINA's defaults, and the
+      desktop's media keys and player controls</li>
+    </ul>
+    <p>
+      Patina is at an early stage, and much of IINA is still to come. It is an
+      independent project, not affiliated with IINA.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">video.patina.Patina.desktop</launchable>
+
+  <!-- The binary only. The file types Patina opens are the desktop file's
+       MimeType line, which a test keeps in step with media-types.tsv, and
+       AppStream's catalog generator copies that line into the catalog as
+       mediatypes; a second copy here would be one more list to drift. -->
+  <provides>
+    <binary>patina</binary>
+  </provides>
+
+  <!-- On master until the screenshots are committed. Then each URL is to
+       name the commit that last changed them, not a branch, as Flathub asks:
+       a later retake cannot then change what an older release shows.
+       Retaking them means pointing every URL at the new commit. -->
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/01-video.png</image>
+      <caption>A video playing, with the title bar and the floating controller over it</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/02-music-mode.png</image>
+      <caption>Music mode, with the cover, the title and artist, and the playlist below</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/03-playlist.png</image>
+      <caption>The playlist, filled with the other files from the same folder</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/04-welcome.png</image>
+      <caption>The welcome window, with Open, Open URL and recent files</caption>
+    </screenshot>
+  </screenshots>
+
+  <url type="homepage">https://patina.video/</url>
+  <url type="bugtracker">https://github.com/jzbz/patina/issues</url>
+  <url type="vcs-browser">https://github.com/jzbz/patina</url>
+
+  <!-- The desktop file's, so that both say the same. -->
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Audio</category>
+    <category>Player</category>
+    <category>TV</category>
+  </categories>
+
+  <!-- In a software center these replace the desktop file's Keywords rather
+       than adding to them, so the list repeats that one and goes further. -->
+  <keywords>
+    <keyword>video</keyword>
+    <keyword>movie</keyword>
+    <keyword>audio</keyword>
+    <keyword>music</keyword>
+    <keyword>player</keyword>
+    <keyword>mpv</keyword>
+    <keyword>IINA</keyword>
+    <keyword>subtitles</keyword>
+    <keyword>playlist</keyword>
+    <keyword>streaming</keyword>
+  </keywords>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <!-- Nothing is laid out for a phone, and the preferences window is at
+       least 680 pixels wide. -->
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <!-- A store draws the icon on these. They stay verdigris, as the icon is,
+       but outside the tile's own range: a pale verdigris lighter than all of
+       it for light, a deep copper green darker than its far corner for dark. -->
+  <branding>
+    <color type="primary" scheme_preference="light">#d2f0e7</color>
+    <color type="primary" scheme_preference="dark">#123b33</color>
+  </branding>
+
+  <!-- Rated as other players are: Patina has no content of its own and plays
+       what the user opens. What leaves the machine is what the user asks
+       for: a stream or a page goes to mpv or yt-dlp, and only with the user's
+       own OpenSubtitles API key does a subtitle search send a file's hash and
+       name, as the search itself. There is no chat, no sharing of contacts or
+       location, no purchasing and no telemetry, so no attribute applies. -->
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <!-- None yet. The release step adds <release version="X.Y.Z" date="...">
+         here, dated the day of the tag, before tagging: release.yml's version
+         job refuses a tag that has no release here. -->
+  </releases>
+</component>

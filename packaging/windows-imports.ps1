@@ -8,7 +8,7 @@
 # still passes on a binary that would not start on a clean install. Reading the
 # import table is what notices.
 #
-# ci.yml runs this on the debug build it tests and bundle.yml on the exe it
+# ci.yml runs this on the debug build it tests and release.yml on the exe it
 # ships, so the check cannot drift between the two.
 #
 #   pwsh packaging/windows-imports.ps1 target\release\patina.exe

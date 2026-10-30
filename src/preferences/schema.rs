@@ -1143,7 +1143,7 @@ pub const ITEMS: &[Item] = &[
         "files-remove",
         "Remove Patina's File Types",
         if cfg!(windows) {
-            "Do this before deleting Patina's folder."
+            "Uninstalling Patina does this too; do it yourself before deleting a portable copy's folder."
         } else {
             "Removes the desktop entry Patina added."
         },
@@ -1191,12 +1191,15 @@ pub const ITEMS: &[Item] = &[
     ),
 ];
 
-/// Whether this system has the row: the file type buttons differ.
+/// Whether this system has the row: the file type buttons differ, and a
+/// Flatpak has none, since the system's settings choose a sandboxed app.
 pub fn available(item: &Item) -> bool {
     match item.key {
-        "files-video" | "files-audio" | "files-playlists" => !cfg!(windows),
+        "files-video" | "files-audio" | "files-playlists" => {
+            !cfg!(windows) && !crate::platform::flatpak()
+        }
         "files-register" | "files-defaults" => cfg!(windows),
-        "files-remove" => !cfg!(target_os = "macos"),
+        "files-remove" => !cfg!(target_os = "macos") && !crate::platform::flatpak(),
         _ => true,
     }
 }

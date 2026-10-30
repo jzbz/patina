@@ -262,7 +262,7 @@ jobs:
         run: cargo build --locked
 
       # .cargo/config.toml links the C runtime in; this checks the exe that
-      # was built, on the debug build here as bundle.yml does on the one it
+      # was built, on the debug build here as release.yml does on the one it
       # packs.
       - name: No Visual C++ runtime imports
         if: runner.os == 'Windows'

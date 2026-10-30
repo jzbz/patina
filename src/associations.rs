@@ -119,7 +119,7 @@ mod linux {
 
     /// Makes Patina the default app for files of `kind`, and for links.
     pub fn set_default(kind: Kind) -> Result<String, String> {
-        if Path::new("/.flatpak-info").exists() {
+        if crate::platform::flatpak() {
             return Err("Choose Patina in the system's default applications settings.".into());
         }
         set_default_in(&Dirs::system()?, kind, &executable()?)

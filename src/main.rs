@@ -66,6 +66,7 @@ fn main() -> ExitCode {
                 }
             };
         }
+        Ok(cli::Command::RemoveFileTypes) => return remove_file_types(),
         Err(error) => {
             eprintln!("patina: {error}\n\n{}", cli::HELP);
             return ExitCode::from(2);
@@ -205,6 +206,24 @@ impl slint::winit_030::CustomApplicationHandler for CloseOnExit {
         app::App::with_current(|app| app.quit());
         slint::winit_030::EventResult::Propagate
     }
+}
+
+/// Removes what Preferences › Utilities registered for this user's file
+/// types, as its Remove button does, without a window or a word with a
+/// running Patina. The Windows uninstaller runs it, so that nothing is left
+/// pointing at the deleted executable. On macOS there is nothing to remove:
+/// the defaults name the app by its bundle ID, not by a path, and the
+/// system passes over an app that is gone.
+fn remove_file_types() -> ExitCode {
+    #[cfg(not(target_os = "macos"))]
+    match associations::remove() {
+        Ok(done) => println!("{done}"),
+        Err(error) => {
+            eprintln!("patina: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// macOS: whether LaunchServices started this Patina, as `open -n` does, or

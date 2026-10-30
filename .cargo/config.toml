@@ -8,7 +8,7 @@
 # should run as it is unpacked, so the runtime goes inside the exe.
 #
 # Here rather than in a workflow so that CI tests the exe the way it ships.
-# packaging/windows-imports.ps1 checks the result, in ci.yml and bundle.yml.
+# packaging/windows-imports.ps1 checks the result, in ci.yml and release.yml.
 #
 # Nothing else belongs in this file: anything naming a path on one machine
 # (build.target-dir above all) breaks every other contributor.

@@ -76,6 +76,27 @@ fn micros(seconds: f64) -> i64 {
     (seconds.max(0.0) * 1_000_000.0) as i64
 }
 
+/// `org.mpris.MediaPlayer2.video.patina.Patina.instance<pid>_<token>`.
+/// Several Patina processes may run, and MPRIS allows an instance suffix; no
+/// part of a bus name may start with a digit, hence `instance` in front. The
+/// process ID alone doesn't tell them apart in a Flatpak, where every launch
+/// has a PID namespace of its own and is process 2 to itself, so a token
+/// drawn for this process follows it. The application ID comes first
+/// because a Flatpak sandbox lets an app own `org.mpris.MediaPlayer2.<app id>`
+/// and every name below it without being granted them, and refuses other
+/// names. Shells label the player by its Identity and DesktopEntry, not by
+/// this name.
+fn bus_name() -> String {
+    use std::hash::{BuildHasher, RandomState};
+    let pid = std::process::id();
+    // RandomState is seeded afresh in every process.
+    let token = RandomState::new().hash_one(pid) as u32;
+    format!(
+        "org.mpris.MediaPlayer2.{}.instance{pid}_{token:x}",
+        crate::APP_ID
+    )
+}
+
 fn track_path(now: &NowPlaying) -> String {
     if now.status == Status::Stopped && now.title.is_empty() {
         NO_TRACK.into()
@@ -89,13 +110,8 @@ async fn serve(
     shared: SharedState,
     handler: Handler,
 ) -> zbus::Result<()> {
-    // Several Patina processes may run; MPRIS allows an instance suffix.
-    let name = format!(
-        "org.mpris.MediaPlayer2.patina.instance{}",
-        std::process::id()
-    );
     let connection = zbus::connection::Builder::session()
-        .name(name)
+        .name(bus_name())
         .serve_at(
             PATH,
             Root {
@@ -436,5 +452,21 @@ impl Player {
     #[zbus(property(emits_changed_signal = "const"))]
     fn can_control(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A name outside the application ID's would work run directly and be
+    /// refused only inside the Flatpak, so this is where it is caught.
+    #[test]
+    fn the_bus_name_sits_under_the_application_id() {
+        let name = super::bus_name();
+        let granted = format!("org.mpris.MediaPlayer2.{}.", crate::APP_ID);
+        assert!(name.starts_with(&granted), "{name} is not under {granted}");
+        assert!(
+            zbus::names::WellKnownName::try_from(name.as_str()).is_ok(),
+            "{name} is not a valid bus name"
+        );
     }
 }

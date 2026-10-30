@@ -2,7 +2,7 @@
 name = "patina"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.98"
 description = "A modern media player for Linux, macOS and Windows, powered by mpv"
 license = "MIT"
 homepage = "https://patina.video/"

@@ -55,8 +55,9 @@ and its state in Patina.
   go to the running Patina, which comes to the front
 - File associations: Preferences › Utilities makes Patina the default for
   videos, music or playlists (on Windows it adds Patina to Open With and
-  Default apps); the macOS bundle declares its file types, and
-  `packaging/linux` has the desktop entry
+  Default apps, and uninstalling takes that out again); the macOS bundle
+  declares its file types, and `packaging/linux` has the desktop entry,
+  which the Flatpak installs for the system's own default-app settings
 - `patina://open?url=…` links for browser extensions and web pages, as
   IINA's `iina://` scheme, limited to streams and to mpv options that are
   safe for a web page to set
@@ -80,6 +81,33 @@ and its state in Patina.
 
 Written but not yet tested: drag and drop, playing from standard input,
 saving playlists, and pausing when minimized.
+
+## Installing
+
+There is no release yet. From the first one on, each release on GitHub
+carries:
+
+- `patina-vX.Y.Z-x86_64.flatpak` and `patina-vX.Y.Z-aarch64.flatpak`:
+  Flatpak bundles with libmpv, yt-dlp and Deno inside, installed with
+  `flatpak install --user patina-vX.Y.Z-x86_64.flatpak` (the runtime comes
+  from Flathub; Patina itself is not on Flathub). In the sandbox Patina reads
+  any file, but on its own writes only to Downloads and Pictures/Patina (and
+  to whatever file is chosen in a Save dialog), so it can move to the trash
+  only what is there.
+- `patina-vX.Y.Z-macos-universal.zip`: Patina.app for macOS 11 and later,
+  signed and notarised. With Homebrew, `brew install --cask jzbz/tap/patina`
+  installs it and a `patina` command.
+- `patina-vX.Y.Z-x86_64-setup.exe`: an installer for Windows 10 and 11 that
+  installs for the current user, without administrator rights; and
+  `patina-vX.Y.Z-windows-x86_64.zip`, the same files to run from any folder.
+  `winget install Patina.Patina` will install it once winget has the package.
+- `SHA256SUMS` and `SHA256SUMS.asc`: the checksums of all of these, signed
+  with the PGP key `252B 901C 8885 3CF9 F939  2559 2497 38C8 641C 3359`.
+  Get the key with `gpg --locate-keys jz@jz.bz` (or
+  `curl -sL https://github.com/jzbz.gpg | gpg --import`) and compare
+  `gpg --fingerprint jz@jz.bz` with the fingerprint above; then
+  `gpg --verify SHA256SUMS.asc SHA256SUMS` and
+  `sha256sum --check --ignore-missing SHA256SUMS` check a download.
 
 ## Requirements
 
@@ -117,9 +145,8 @@ example from an `mpv-dev`
 archive of [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild/releases)
 or [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake/releases).
 Those builds also need `vulkan-1.dll`, which mpv's own Windows release ships
-beside `mpv.exe`. The `bundle` workflow builds both as self-contained
-packages: a universal Patina.app with IINA's libmpv inside, and a Windows
-folder with the DLLs beside the exe.
+beside `mpv.exe`. The release packages are self-contained: Patina.app carries
+IINA's libmpv, and the Windows folder has the DLLs beside the exe.
 
 ## Building and running
 

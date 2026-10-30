@@ -1,0 +1,164 @@
+name: Release checksums
+
+# One SHA256SUMS over every artifact in a release, written after they are all
+# there. It is separate from release.yml because they cannot all be there when
+# release.yml runs: the macOS bundle detours through the machine holding the
+# Developer ID key to be signed and notarised, and only then is it uploaded. A
+# checksum file written before that names fewer files than the release ships,
+# which is worse than none — it looks complete.
+#
+# A hash served from the same release as the artifact it describes catches a
+# truncated download and nothing else. It becomes a real check only once signed,
+# and that signature is made by hand, so this workflow deliberately stops at the
+# unsigned file: it does not publish the release and it cannot sign anything.
+#
+#   1. tag        -> release.yml builds everything and attaches what CI can,
+#                    as a draft
+#   2. by hand    -> packaging/macos-sign.sh signs and notarises the macOS
+#                    bundle from release.yml's macos-universal artifact, on
+#                    the Mac holding the Developer ID key; upload the signed
+#                    patina-<tag>-macos-universal.zip to the draft
+#   3. this       -> hash everything attached, upload SHA256SUMS
+#                    (gh workflow run checksums.yml --repo jzbz/patina -f tag=<tag>)
+#   4. by hand    -> gpg --detach-sign --armor SHA256SUMS, upload the .asc
+#                    without --clobber
+#   5. by hand    -> publish the draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag whose release assets to hash (e.g. v0.1.0)"
+        required: true
+
+# The group release.yml runs in for the same tag, so a hash waits for an
+# upload in flight to finish instead of reading the draft halfway through it,
+# and never cancels that upload. The reverse can happen, and is right: a
+# release run for this tag cancels a hash in progress, because what it was
+# hashing is about to be replaced.
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checksums:
+    name: Hash every attached artifact
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      # The one job that writes to the release, as in release.yml.
+      contents: write
+    steps:
+      - name: Collect, hash and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Bytewise order, for the glob below and the comparison with the
+          # expected names, whatever locale the runner image sets.
+          export LC_ALL=C
+
+          # One read, into a variable, and any failure of it stops the run.
+          # Piped from gh straight into the condition of the `if` below, a gh
+          # error read as "no signature attached", and the run went on to
+          # replace SHA256SUMS beside a signature over the old one.
+          #
+          # gh's own message is no guide to which failure it was. It looks the
+          # release up two ways at once, as a published release and as a
+          # draft, and one of the two always finds nothing; when the other
+          # fails, gh reports "release not found". So a draft that is there,
+          # read during a passing API error, looks exactly like a missing one,
+          # and the error below says to run this again before believing it.
+          assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name') || {
+            echo "::error::could not read the release for $TAG. gh reports"
+            echo "::error::a failed lookup as \"release not found\" too, so run"
+            echo "::error::this again before concluding that it is missing."
+            exit 1
+          }
+
+          # A signature over the previous SHA256SUMS does not describe the new
+          # one, and leaving it in place would leave a release carrying a
+          # signature that fails against the file beside it — which reads as
+          # tampering rather than as staleness. Refuse, and make the operator
+          # decide.
+          if grep -qx 'SHA256SUMS.asc' <<<"$assets"; then
+            echo "::error::$TAG already has SHA256SUMS.asc. Re-hashing would"
+            echo "::error::invalidate it. Delete the signature first if the"
+            echo "::error::asset list has genuinely changed:"
+            echo "::error::  gh release delete-asset $TAG SHA256SUMS.asc --repo $GITHUB_REPOSITORY"
+            exit 1
+          fi
+
+          # Every file a Patina release ships, and nothing else: the four
+          # release.yml attaches and the signed macOS zip uploaded by hand.
+          # The likeliest slip is running this before that upload, and a list
+          # of four would look as complete as a list of five. An -unsigned
+          # zip attached by mistake stops here too. A release that ships a
+          # new file names it here as well as in release.yml.
+          expected=(
+            "patina-$TAG-aarch64.flatpak"
+            "patina-$TAG-macos-universal.zip"
+            "patina-$TAG-windows-x86_64.zip"
+            "patina-$TAG-x86_64-setup.exe"
+            "patina-$TAG-x86_64.flatpak"
+          )
+          attached=$(grep -vx -e 'SHA256SUMS' -e '' <<<"$assets" | sort || true)
+          if [ "$attached" != "$(printf '%s\n' "${expected[@]}" | sort)" ]; then
+            echo "::error::$TAG carries:"
+            echo "${attached:-  nothing}"
+            echo "::error::but a release ships exactly: ${expected[*]}"
+            exit 1
+          fi
+
+          mkdir -p dist && cd dist
+          # Everything except the checksum file itself; hashing SHA256SUMS into
+          # SHA256SUMS is both impossible and a sign the pattern is wrong.
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*' --clobber
+          rm -f SHA256SUMS SHA256SUMS.asc
+
+          shopt -s nullglob
+          files=(*)
+          if [ "$(printf '%s\n' "${files[@]}")" != "$(printf '%s\n' "${expected[@]}" | sort)" ]; then
+            echo "::error::the download holds ${files[*]:-nothing}, not ${expected[*]}"
+            exit 1
+          fi
+
+          # Bare filenames, not paths, so `sha256sum -c SHA256SUMS` works in
+          # whatever directory someone downloaded them to.
+          ls -lh
+          sha256sum "${files[@]}" > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+          # Replaces an unsigned SHA256SUMS from an earlier run, if there is
+          # one; a signed one has already been refused above.
+          gh release upload "$TAG" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          # No --clobber in what follows: a signature goes onto a release that
+          # has none, and one already there means something changed after it
+          # was made, which is for a person to look at.
+          {
+            echo "## SHA256SUMS written for $TAG"
+            echo
+            echo "Covering ${#files[@]} artifact(s):"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo "Not finished. Still by hand, on the machine with the key, in an empty directory:"
+            echo
+            echo '```bash'
+            echo "gh release download $TAG --repo $GITHUB_REPOSITORY --pattern SHA256SUMS"
+            echo "gpg --detach-sign --armor SHA256SUMS"
+            echo "gh release upload $TAG SHA256SUMS.asc --repo $GITHUB_REPOSITORY"
+            echo "gh release edit $TAG --repo $GITHUB_REPOSITORY --draft=false"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

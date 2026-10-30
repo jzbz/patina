@@ -1,0 +1,1362 @@
+# Builds every artifact a Patina release ships, and attaches the ones CI can
+# vouch for to a draft release for the tag that triggered the run:
+#
+#   patina-<tag>-x86_64.flatpak       Flatpak bundles, one per architecture
+#   patina-<tag>-aarch64.flatpak
+#   patina-<tag>-x86_64-setup.exe     per-user installer; what winget installs
+#   patina-<tag>-windows-x86_64.zip   the same folder, to unpack and run
+#
+# and, as a workflow artifact only, an unsigned universal Patina.app,
+# patina-<tag>-macos-universal-unsigned.zip, for signing by hand.
+#
+# A release, start to finish (checksums.yml carries the same list):
+#
+#   1. tag        -> this workflow builds everything and attaches what CI
+#                    can, as a draft
+#   2. by hand    -> on the Mac holding the Developer ID key, fetch the
+#                    macos-universal artifact of the run
+#                    (gh run download <run> --repo jzbz/patina --name macos-universal),
+#                    run packaging/macos-sign.sh on the unsigned zip, which
+#                    signs, notarises and staples the bundle and writes
+#                    patina-<tag>-macos-universal.zip beside it, and upload
+#                    that to the draft
+#                    (gh release upload <tag> patina-<tag>-macos-universal.zip --repo jzbz/patina)
+#   3. checksums.yml -> hash everything attached, upload SHA256SUMS
+#   4. by hand    -> gpg --detach-sign --armor SHA256SUMS, upload the .asc
+#   5. by hand    -> publish the draft
+#
+# Bundles, not a repository. A .flatpak bundle is one architecture and does
+# not update itself: whoever installs one stays on it until they reinstall by
+# hand. Flathub is the channel that solves both. The manifest in packaging/
+# exists to build these bundles; a Flathub submission, when there is one, is
+# a manifest of its own, written by hand.
+#
+# Only GitHub's own actions, and each pinned to a full commit, its version in
+# the comment beside it, rather than to a tag its owner can move. This
+# workflow makes the files people download, and the signature over
+# SHA256SUMS covers whatever CI produced, so signing cannot catch an action
+# that changed under its tag: whatever upload-artifact carries out of a
+# build, download-artifact hands to the one job here holding a token that
+# can write to a release. Dependabot proposes newer versions
+# (.github/dependabot.yml); by hand, moving to one means resolving its tag to
+# the commit it names (`gh api repos/actions/<name>/git/ref/tags/<tag>`,
+# following an annotated tag through git/tags/) and changing the SHA and the
+# comment together. flatpak-builder comes from apt rather than from an action
+# for the same reason.
+#
+# What is deliberately NOT published here is a bare Linux binary. One built
+# on a current distribution needs a glibc newer than Debian, Ubuntu LTS or
+# Fedora ship, and plays with whatever libmpv the host has, whose version and
+# build options differ from one distribution to the next. The Flatpak carries
+# its own runtime and its own libmpv, and is the portable artifact.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # So the workflow can be exercised without cutting a tag.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or commit to build"
+        required: true
+
+# One run per tag at a time. A tag moved and pushed again while its first run
+# is still building starts a second run under the same name, and both would
+# otherwise reach `release` and --clobber the same draft, whichever finished
+# last deciding file by file what it holds. The older run is cancelled
+# instead: what it was building is no longer what the tag names. checksums.yml
+# queues in the same group, so it never hashes a draft while an upload for
+# that tag is under way.
+#
+# The group is named for whatever the ref is, so a second dispatch of the
+# same commit or branch cancels the first as well, and the newer run is the
+# one to wait for. A re-run of an older run joins the group like a new run
+# and cancels a newer one in progress; if the tag has moved, the re-run's
+# Upload then refuses, and the newer run has to be started again.
+concurrency:
+  group: release-${{ inputs.ref || github.ref_name }}
+  cancel-in-progress: true
+
+# Read by default; only the job that publishes gets write. The build jobs
+# compile the build scripts of 600-odd crates, which run as ordinary code on
+# the runner, so no checkout here leaves its credential on disk for them to
+# find: nothing after a checkout needs git credentials. flatpak-builder
+# clones the public URL, and gh is handed its token explicitly.
+#
+# For the same reason no job here restores a cache, unlike ci.yml. A manual
+# run is dispatched on master whatever commit it builds, so it would save
+# into master's cache scope, which every later run can restore, a tag build
+# included. Cargo trusts what it finds there: it links a cached rlib whose
+# fingerprint looks fresh, and unpacks a cached .crate without checking it
+# against Cargo.lock, whose checksums it verifies only on download. A cache
+# would let whatever one manual run compiled decide what a release links.
+# What ships is compiled here, from nothing.
+#
+# The libmpv downloads are not cached either, though their scripts check
+# every file's digest even on a hit. packaging/macos-bundle.sh copies every
+# dylib in the folder it is given, not only the pinned ones, so a restored
+# folder holding one more file would ship it unchecked; and the Windows
+# attestation check below is worth running on every release, not only when
+# a cache misses. The price is that a release needs live pins: zhongfly
+# deletes its libmpv builds after about a month and IINA replaces its files
+# in place, and when either has happened the download step fails and names
+# the pin to refresh (packaging/windows-deps.env, packaging/macos-libmpv.txt).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUNTIME_VERSION: "26.08"
+  # The tag being released. A tag push carries it in github.ref_name; a manual
+  # run names it explicitly, which is the only way to build a tag cut before
+  # this workflow existed — workflow_dispatch reads the workflow file from the
+  # ref it is given, so such a tag can never dispatch itself.
+  TAG: ${{ inputs.ref || github.ref_name }}
+
+jobs:
+  # The commit every job below builds, resolved once. The build jobs start on
+  # separate runners, sometimes minutes apart, and if each checked out the ref
+  # by name, a tag moved during the run could put Flatpaks from one commit and
+  # an installer from another into the same release. Each checks out this SHA
+  # instead, and the Upload step refuses if the tag has since moved off it.
+  #
+  # actions/checkout still does the resolving, so a branch, a tag and a full
+  # SHA mean here what they meant when every job checked out inputs.ref. A tag
+  # push gives it no ref at all: it then fetches the pushed tag and fails
+  # unless that still names the commit the push event carried. Whether this is
+  # a tag build is read from the checkout rather than from the name:
+  # actions/checkout fetches the tag's ref when it was given a tag, and only
+  # then.
+  #
+  # `label` is what the file names carry: the tag on a tag build, and the
+  # commit's short SHA on any other, so a test build of a branch or a commit
+  # is named for what it built rather than for the name it was asked for.
+  resolve:
+    name: Resolve the commit to build
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      label: ${{ steps.resolve.outputs.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Resolve
+        id: resolve
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD)
+          tag=
+          if tagged=$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}"); then
+            if [ "$tagged" != "$head" ]; then
+              echo "::error::$TAG names $tagged, but the checkout is $head"
+              exit 1
+            fi
+            tag=$TAG
+          fi
+          label=${tag:-$(git rev-parse --short=12 HEAD)}
+          {
+            echo "sha=$head"
+            echo "tag=$tag"
+            echo "label=$label"
+          } >> "$GITHUB_OUTPUT"
+          echo "building $head${tag:+ as $tag}; files are named patina-$label-…"
+
+  # Before any of the long builds, because nothing after them would notice. A
+  # tag that disagrees with the version it builds publishes a release whose
+  # name, `patina --version` and software-centre entry each say something
+  # different, and the metainfo is what software centres show as the
+  # changelog.
+  version:
+    name: Tag matches the version
+    needs: resolve
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      - name: Compare the tag with Cargo.toml and the metainfo
+        run: |
+          set -euo pipefail
+          # The same test the release job uses to decide whether to publish, so
+          # everything that would be published is checked and nothing else is.
+          case "$TAG" in
+            v*) ;;
+            *)
+              echo "$TAG is not a release tag; there is no version to compare"
+              exit 0
+              ;;
+          esac
+          python3 - "${TAG#v}" <<'PY'
+          import sys, tomllib
+          import xml.etree.ElementTree as ET
+
+          want = sys.argv[1]
+          with open("Cargo.toml", "rb") as f:
+              cargo = tomllib.load(f)["package"]["version"]
+          metainfo = "packaging/linux/video.patina.Patina.metainfo.xml"
+          releases = [r.get("version") for r in ET.parse(metainfo).getroot().iter("release")]
+
+          ok = True
+          if cargo != want:
+              print(f"::error::the tag says {want} but Cargo.toml's version is {cargo}")
+              ok = False
+          if want not in releases:
+              print(f"::error::{metainfo} has no <release version=\"{want}\">; "
+                    f"it lists {', '.join(releases) or 'none'}")
+              ok = False
+          if not ok:
+              sys.exit(1)
+          print(f"{want}: Cargo.toml and the metainfo agree")
+          PY
+
+  flatpak:
+    name: Flatpak (${{ matrix.arch }})
+    needs: [resolve, version]
+    # Longer than the siblings' 90: this manifest builds libmpv and the
+    # libraries the runtime lacks before Patina itself, and Patina's release
+    # profile (thin LTO, one codegen unit) is slow to link. A run still going
+    # at this point is wedged, not busy.
+    timeout-minutes: 180
+    strategy:
+      # Off so that one architecture failing does not cancel the other: that
+      # leg still finishes, and its bundle and log stay on the run. It does
+      # not make a release with one architecture. `release` needs every leg
+      # to have succeeded and attaches nothing otherwise, so after a failure
+      # "Re-run failed jobs" rebuilds only the broken leg, from the commit
+      # `resolve` already named, and then attaches the full set.
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      LABEL: ${{ needs.resolve.outputs.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      # Generated rather than committed: it is large, derived entirely from
+      # Cargo.lock, and stale the moment a dependency moves. Generated first,
+      # because it needs only python3 and the lockfile, and it refuses a
+      # package the offline build could not fetch, which is better known now
+      # than after the runtime install.
+      - name: Generate the offline cargo sources
+        run: python3 packaging/cargo-sources.py > packaging/cargo-sources.json
+
+      - name: Install flatpak-builder
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          # Same apt shape as ci.yml, and for the same reason: apt has no
+          # wall-clock bound of its own, and a wedged Ubuntu mirror otherwise
+          # hangs the step until the job ceiling.
+          opts=(
+            -o Acquire::Retries=2
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            -o Acquire::Languages=none
+          )
+          attempts=2
+          for attempt in $(seq 1 $attempts); do
+            rc=0
+            sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
+              apt-get "${opts[@]}" update || rc=$?
+            if [ "$rc" -eq 0 ] || [ "$attempt" -eq "$attempts" ]; then
+              rc=0
+              sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 300s \
+                apt-get "${opts[@]}" install -y flatpak flatpak-builder || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=10s 60s \
+                  dpkg --configure -a || true
+              fi
+            fi
+            if [ "$rc" -eq 0 ]; then
+              flatpak --version
+              flatpak-builder --version
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed with $rc"
+            if [ "$attempt" -lt "$attempts" ]; then sleep 5; fi
+          done
+          echo "::error::apt failed twice; the Ubuntu mirrors are not answering"
+          exit 1
+
+      # The runtime is a large download and the bulk of this job's wall clock.
+      #
+      # Retried, because the failure seen here was Flathub advertising a commit
+      # its CDN then 404s on — a repository mid-publish, not a missing ref. The
+      # ref resolves; only the pull fails, and it succeeds once propagation
+      # catches up. Nothing local can fix that, so the loop simply waits.
+      - name: Install the freedesktop runtime and the Rust SDK extension
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          flatpak remote-add --if-not-exists --user \
+            flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+          attempts=3
+          for attempt in $(seq 1 $attempts); do
+            rc=0
+            flatpak install --user --noninteractive --arch=${{ matrix.arch }} flathub \
+              "org.freedesktop.Platform//$RUNTIME_VERSION" \
+              "org.freedesktop.Sdk//$RUNTIME_VERSION" \
+              "org.freedesktop.Sdk.Extension.rust-stable//$RUNTIME_VERSION" || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+            echo "::warning::flatpak install attempt $attempt failed with $rc"
+            if [ "$attempt" -lt "$attempts" ]; then
+              # Long enough for a publish to finish propagating, short enough
+              # to stay inside the step ceiling with three attempts.
+              sleep 120
+            fi
+          done
+          echo "::error::could not install the runtime after $attempts attempts."
+          echo "::error::If this is a 404 while pulling, Flathub is advertising a commit"
+          echo "::error::it cannot serve yet; the run needs retrying later, not fixing."
+          exit 1
+
+      # The manifest in the tree names the released tag. Building the exact
+      # commit that was checked out keeps the artifact honest even when the two
+      # disagree — a tag moved after the fact cannot change what shipped.
+      #
+      # `git rev-parse HEAD`, not GITHUB_SHA. On a manual run GITHUB_SHA is the
+      # tip of the ref the workflow was *dispatched on* — master — while the
+      # checkout above is the commit `resolve` found for inputs.ref. HEAD is
+      # the commit being built by construction, on a tag push and a manual run
+      # alike, and it has to be the one `resolve` named.
+      #
+      # `tag:` is rewritten with it, because flatpak-builder checks the two
+      # against each other and refuses a source where they disagree ("Git
+      # commit for branch (null) is <tag>, but expected <commit>"). On a tag
+      # build it becomes the tag being built. On anything else — a dispatch
+      # naming a commit or a branch, which is how this workflow is tested — the
+      # line is removed, since no tag names that commit and leaving the
+      # manifest's old one would contradict it.
+      #
+      # Only in the source that clones jzbz/patina. The libraries the manifest
+      # builds from git are pinned by tag and commit as well; nested under
+      # libmpv they sit deeper today, but the whole-file pattern rPGP and
+      # Azzurro use on their one git source would catch one moved to the top
+      # level. The rewrite finds the one source with Patina's URL and
+      # changes lines inside it alone, and each of its three finds is counted:
+      # a manifest that grew a second Patina source, or lost the pin or the
+      # tag, stops here instead of building from whichever line matched first.
+      #
+      # Whether this is a tag build is `resolve`'s answer. This checkout is of
+      # a bare commit and carries no tag to ask.
+      - name: Point the manifest at this commit
+        env:
+          BUILD_SHA: ${{ needs.resolve.outputs.sha }}
+          BUILD_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$BUILD_SHA" ]; then
+            echo "::error::the checkout is $head, but resolve named $BUILD_SHA"
+            exit 1
+          fi
+          python3 - "$head" "$BUILD_TAG" <<'PY'
+          import pathlib, re, sys
+          sha, tag = sys.argv[1], sys.argv[2]
+          p = pathlib.Path("packaging/video.patina.Patina.yml")
+          lines = p.read_text().splitlines(keepends=True)
+          urls = [i for i, line in enumerate(lines)
+                  if re.fullmatch(r" *(- )?url: https://github\.com/jzbz/patina(\.git)?\n?", line)]
+          assert len(urls) == 1, f"expected one source cloning jzbz/patina, found {len(urls)}"
+          # The source's keys sit in the URL's column. It begins at the line
+          # holding its "- " two columns to the left, and ends before the
+          # first line indented less than its keys.
+          col = lines[urls[0]].index("url:")
+          opener = " " * (col - 2) + "- "
+          key = (" " * col, opener)
+          def indent(line):
+              return len(line) - len(line.lstrip(" "))
+          start = urls[0]
+          while not lines[start].startswith(opener):
+              start -= 1
+              assert start >= 0 and lines[start].strip() and (
+                  indent(lines[start]) >= col or lines[start].startswith(opener)
+              ), "could not find the start of the source cloning jzbz/patina"
+          end = urls[0] + 1
+          while end < len(lines) and lines[end].strip() and indent(lines[end]) >= col:
+              end += 1
+          def find(name, value):
+              hits = [i for i in range(start, end) if lines[i].startswith(key)
+                      and re.fullmatch(rf"{name}: {value}\n?", lines[i][col:])]
+              assert len(hits) == 1, f"expected one {name}: line in Patina's source, found {len(hits)}"
+              return hits[0]
+          i = find("commit", "[0-9a-f]{40}")
+          lines[i] = f"{lines[i][:col]}commit: {sha}\n"
+          i = find("tag", r"\S+")
+          if tag:
+              lines[i] = f"{lines[i][:col]}tag: {tag}\n"
+          else:
+              assert not lines[i].startswith(opener), "tag: opens Patina's source, so it cannot be removed"
+              del lines[i]
+          p.write_text("".join(lines))
+          print(f"building {sha} as {tag}" if tag else f"building {sha}, untagged")
+          PY
+
+      - name: Build
+        timeout-minutes: 120
+        run: |
+          flatpak-builder --force-clean --disable-rofiles-fuse \
+            --arch=${{ matrix.arch }} --repo=repo build \
+            packaging/video.patina.Patina.yml
+
+      # --runtime-repo so the bundle says where its runtime comes from. Without
+      # it, installing the bundle on a machine that has never added Flathub
+      # fails for want of org.freedesktop.Platform, with nothing telling the
+      # user where to get it; with it, flatpak offers to add the remote.
+      - name: Bundle
+        run: |
+          set -euo pipefail
+          NAME="patina-${LABEL}-${{ matrix.arch }}.flatpak"
+          flatpak build-bundle --arch=${{ matrix.arch }} \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            repo "$NAME" video.patina.Patina master
+          sha256sum "$NAME"
+          ls -lh "$NAME"
+
+      # The bundle the way a user gets it: installed from the file into this
+      # runner's user installation, beside the runtime installed above, and
+      # run. `--version` needs no display and no session bus, and it starts a
+      # core of the libmpv the manifest built, so a library missing from
+      # /app/lib, or an mpv built without the Lua that Patina's scripts and
+      # yt-dlp support need, fails the release here rather than on someone's
+      # desktop. The runner is discarded afterwards, installation and all.
+      - name: Install and run the bundle
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          flatpak install --user --noninteractive --bundle "patina-${LABEL}-${{ matrix.arch }}.flatpak"
+          want=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          if ! out=$(flatpak run --command=patina video.patina.Patina --version); then
+            echo "$out"
+            echo "::error::patina --version failed inside the Flatpak"
+            exit 1
+          fi
+          echo "$out"
+          if [ "$(head -n 1 <<<"$out")" != "patina $want" ]; then
+            echo "::error::the Flatpak reports itself as '$(head -n 1 <<<"$out")', not 'patina $want'"
+            exit 1
+          fi
+          if ! grep -q '^mpv ' <<<"$out" || grep -q 'without Lua' <<<"$out"; then
+            echo "::error::the Flatpak's libmpv did not start, or was built without Lua"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: patina-${{ env.LABEL }}-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+
+  # Wired into `release` below, which needs this job and uploads its files:
+  # the winget manifests point at the installer produced here.
+  #
+  # Two files come out of it, holding the same folder: patina.exe with the
+  # libmpv-2.dll and vulkan-1.dll it loads from beside itself, and the
+  # licences. patina-<tag>-windows-x86_64.zip is that folder, for whoever
+  # wants to unpack it and run it from anywhere. patina-<tag>-x86_64-setup.exe
+  # is the same folder inside a per-user Inno Setup installer
+  # (packaging/windows/patina.iss), which is what winget installs: a portable
+  # package gets no Start Menu entry, and no winget manifest field can give it
+  # one, so the entry has to come from an installer, along with an
+  # uninstaller that takes it away again. Neither is signed, for the reasons
+  # given in `release`, and SHA256SUMS covers both like any other asset.
+  #
+  # Dispatching this workflow with a ref that does not start with `v` builds
+  # every job here and skips the publish step, which is how to exercise this
+  # without cutting a release.
+  windows:
+    name: Windows (x86_64)
+    needs: [resolve, version]
+    # A cold release build with thin LTO and one codegen unit, then two
+    # installer compiles and an install and uninstall.
+    timeout-minutes: 75
+    runs-on: windows-latest
+    env:
+      LABEL: ${{ needs.resolve.outputs.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the compiler, as in ci.yml, so a release is
+      # built with the same rustc CI tests with.
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --no-self-update
+          rustc -Vv
+
+      - name: Windows dependency pins
+        shell: bash
+        # The checkout has CRLF line endings on Windows.
+        run: grep -E '^[A-Z0-9_]+=' packaging/windows-deps.env | tr -d '\r' >> "$GITHUB_ENV"
+
+      # Fetched afresh and checked against the digests pinned in
+      # packaging/windows-deps.env (see the comment above `permissions`).
+      - name: Download libmpv and vulkan-1.dll
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads')
+
+      # The digest proves these are the bytes that were pinned; this proves
+      # they came from zhongfly's own workflow on a GitHub-hosted runner.
+      - name: Check libmpv's build provenance
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $file = Join-Path $env:RUNNER_TEMP ('downloads\' + [IO.Path]::GetFileName($env:WIN_LIBMPV_URL))
+          gh attestation verify $file --repo zhongfly/mpv-winbuild `
+            --signer-workflow zhongfly/mpv-winbuild/.github/workflows/mpv.yml `
+            --deny-self-hosted-runners
+          if ($LASTEXITCODE -ne 0) { throw "libmpv's attestation did not verify" }
+
+      # The statically linked CRT is not set here. `.cargo/config.toml` asks
+      # for it per Windows target, and RUSTFLAGS in the environment *replaces*
+      # the config's rustflags rather than adding to them, so setting it here
+      # would silently drop anything that file gains later.
+      - name: Build
+        run: cargo build --release --locked
+
+      # patina.exe with libmpv-2.dll beside it, where Patina looks first, and
+      # the vulkan-1.dll libmpv imports, which Windows finds in the exe's
+      # folder; then the licences. This folder is the zip's content and what
+      # the installer puts in {app}, so it is checked to hold exactly these
+      # six files, and each one's hash is kept as well as printed: Inno
+      # Setup's installer, its compiler and the setup exe all run in this
+      # workspace after this, and the last step checks against these hashes
+      # rather than against the files as they are by then.
+      - name: Stage the folder
+        id: stage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = 'dist\Patina'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item target\release\patina.exe $dir
+          ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads') -Lib $dir
+          Copy-Item LICENSE (Join-Path $dir 'LICENSE.txt')
+          Copy-Item ui\icons\LICENSE (Join-Path $dir 'LICENSE-lucide.txt')
+          Copy-Item packaging\THIRD-PARTY.md (Join-Path $dir 'THIRD-PARTY.md')
+          $expected = 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY.md', 'libmpv-2.dll', 'patina.exe', 'vulkan-1.dll'
+          $found = @(Get-ChildItem -LiteralPath $dir -Force | ForEach-Object Name)
+          if (Compare-Object $expected $found) {
+            throw "$dir holds $($found -join ', '), not $($expected -join ', ')"
+          }
+          $files = [ordered]@{}
+          foreach ($name in $expected) {
+            $files[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dir $name)).Hash
+          }
+          $files.GetEnumerator() | ForEach-Object { '{0}  {1}' -f $_.Value, $_.Key }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "files=$($files | ConvertTo-Json -Compress)"
+
+      # .cargo/config.toml explains the failure; this proves it did not happen
+      # to the exe that ships. ci.yml runs the same script on its debug build.
+      - name: No Visual C++ runtime imports
+        shell: pwsh
+        run: ./packaging/windows-imports.ps1 dist\Patina\patina.exe
+
+      # Run from the folder with nothing else on PATH that could stand in for
+      # its DLLs. A GUI-subsystem exe has no console, but it does write to
+      # the handles it is given.
+      - name: Check the folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'version.txt'
+          $p = Start-Process -FilePath dist\Patina\patina.exe -ArgumentList '--version' `
+            -RedirectStandardOutput $out -NoNewWindow -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(60000)) { throw 'patina --version was still running after a minute' }
+          $text = Get-Content -Raw -LiteralPath $out
+          $text
+          if ($p.ExitCode -ne 0) { throw ('patina --version exited 0x{0:X8}' -f $p.ExitCode) }
+          if ($text -notmatch 'Patina\\libmpv-2\.dll') { throw 'Patina did not load the bundled libmpv-2.dll' }
+
+      # The folder under a top-level Patina\, so it unpacks into one folder
+      # rather than over whatever sits beside the zip. Read back once written:
+      # every entry has to be one of the staged files under Patina/, with the
+      # bytes 'Stage the folder' hashed, and nothing else.
+      - name: Zip
+        id: zip
+        shell: pwsh
+        env:
+          STAGED_FILES: ${{ steps.stage.outputs.files }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "patina-$env:LABEL-windows-x86_64.zip"
+          Compress-Archive -Path dist\Patina -DestinationPath $name
+          $staged = $env:STAGED_FILES | ConvertFrom-Json
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $name).Path)
+          try {
+            $entries = @{}
+            foreach ($entry in $zip.Entries) {
+              $path = $entry.FullName -replace '\\', '/'
+              if ($path.EndsWith('/')) { continue }
+              $stream = $entry.Open()
+              try { $entries[$path] = (Get-FileHash -Algorithm SHA256 -InputStream $stream).Hash } finally { $stream.Dispose() }
+            }
+          } finally {
+            $zip.Dispose()
+          }
+          $want = @($staged.PSObject.Properties | ForEach-Object { "Patina/$($_.Name)" })
+          if (Compare-Object $want @($entries.Keys)) {
+            throw "$name holds $(@($entries.Keys) -join ', '), not $($want -join ', ')"
+          }
+          foreach ($file in $staged.PSObject.Properties) {
+            if ($entries["Patina/$($file.Name)"] -ne $file.Value) { throw "Patina/$($file.Name) in $name is not the staged file" }
+          }
+          Get-Item -LiteralPath $name | Select-Object Name, Length
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $name).Hash
+          $hash
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sha256=$hash"
+
+      # Inno Setup from its authors' own GitHub release, pinned like the
+      # actions above: by content rather than by name, so the hash is the pin
+      # and the URL only says where to look. Not the copy on the image, which
+      # Chocolatey installs with no version pin, so it moves whenever the image
+      # is rebuilt, and which vanished outright for a while when windows-latest
+      # moved to Server 2025. The compiler's version is part of what decides the
+      # installer's bytes, and the next step requires those to be repeatable.
+      #
+      # Moving to a newer Inno Setup means reading the asset's digest from the
+      # API (`gh api repos/jrsoftware/issrc/releases/tags/<tag> --jq '.assets[]
+      # | select(.name | endswith("-x64.exe")) | .digest'`) and confirming it
+      # against a download of your own; checking that download's Authenticode
+      # signature, which names Pyrsys B.V. (Get-AuthenticodeSignature), its
+      # .issig, which ISSigTool or anything doing ECDSA P-256 can verify with
+      # jrsoftware's def02.ispublickey, and its release attestation (`gh
+      # release verify-asset <tag> <file> --repo jrsoftware/issrc`); then
+      # changing the URL, the hash and this comment together, and reading that
+      # version's revision history for anything patina.iss uses. 7.1.0 was
+      # checked all four ways on 2026-10-02, for rPGP and Azzurro, whose
+      # release workflows pin the same file. 7.1.1 (2026-10-28) was read for
+      # this file: besides fixes to the Compiler IDE, archive extraction,
+      # Pascal Script, the preprocessor and some wizard details, it stops
+      # [Run] postinstall programs inheriting RedirectionGuard, but only for an
+      # elevated Setup; patina.iss turns the mitigation off instead
+      # (RedirectionGuard=no, explained there). So the pin stays on the file
+      # already checked until a reason to move appears, and the next one is
+      # checked the same four ways.
+      #
+      # Installed under RUNNER_TEMP and never in the workspace, which holds
+      # the files this job uploads. /PORTABLE=1 is an option of Inno Setup's
+      # own installer that writes no uninstall entry, shortcut or file
+      # association, and /CURRENTUSER keeps it from asking for an
+      # administrator's rights.
+      #
+      # The download is retried, as apt and flatpak are above: a failed
+      # request to GitHub is usually gone a few seconds later, and failing a
+      # tag build over one would leave only a re-run. Three attempts, each
+      # given a minute to answer, ten seconds apart, and timeout-minutes still
+      # bounds the step as a whole. The hash is checked once, on the file that
+      # finally arrived, and a mismatch is not retried: it means the pin and
+      # the asset disagree.
+      - name: Install Inno Setup
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe
+          INNO_SHA256: 0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+          $inno = Join-Path $env:RUNNER_TEMP 'inno'
+          $log = Join-Path $env:RUNNER_TEMP 'innosetup.log'
+          $attempts = 3
+          foreach ($attempt in 1..$attempts) {
+            try {
+              Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri $env:INNO_URL -OutFile $installer
+              break
+            } catch {
+              if ($attempt -eq $attempts) {
+                throw "could not download $env:INNO_URL in $attempts attempts; the last error was: $($_.Exception.Message)"
+              }
+              "::warning::Inno Setup download attempt $attempt failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds 10
+            }
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash
+          if ($hash -ne $env:INNO_SHA256) {
+            throw "$env:INNO_URL has SHA-256 $hash, not the pinned $env:INNO_SHA256"
+          }
+          $p = Start-Process -FilePath $installer -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+            '/CURRENTUSER', '/PORTABLE=1', "/DIR=`"$inno`"", "/LOG=`"$log`"")
+          $null = $p.Handle
+          if (-not $p.WaitForExit(240000)) { throw 'the Inno Setup installer was still running after 4 minutes' }
+          if ($p.ExitCode -ne 0) {
+            Get-Content -LiteralPath $log -ErrorAction SilentlyContinue
+            throw "the Inno Setup installer exited $($p.ExitCode)"
+          }
+          & (Join-Path $inno 'ISCC.exe') --version
+
+      # The version is patina.exe's own ProductVersion, which winresource
+      # fills from the crate's version: it is what winget will read back from
+      # the uninstall entry, and a dispatch naming a commit has no tag to take
+      # one from. A tag build whose tag disagrees with it stops here rather
+      # than shipping an installer that reports a different version from its
+      # name; `version` has compared the tag with Cargo.toml already, so this
+      # is the same promise checked against the binary itself. So does a
+      # pre-release such as 0.2.0-rc.1: the setup's file version is numeric,
+      # and shipping one would mean passing the script a numeric version
+      # beside the full one.
+      #
+      # Compiled twice, the second time from a copy of the folder at another
+      # path and under another name, into RUNNER_TEMP. Two identical hashes
+      # are the cheap evidence that the installer is a function of the
+      # folder's bytes, the script and the pinned compiler, and not of when it
+      # was compiled or of where the folder and the output sit, which is what
+      # lets someone holding the portable zip, which the signed SHA256SUMS
+      # covers too, and the tagged script rebuild the setup exe it lists and
+      # compare the bytes
+      # (packaging/windows/README.md). A difference fails the build, as a
+      # broken compile would: what gets signed should be something that can be
+      # rebuilt.
+      - name: Build the installer
+        id: setup
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          BUILD_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          $folder = (Resolve-Path -LiteralPath 'dist\Patina').Path
+          $version = (Get-Item -LiteralPath (Join-Path $folder 'patina.exe')).VersionInfo.ProductVersion
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw "patina.exe's ProductVersion is '$version', not X.Y.Z"
+          }
+          if ($env:BUILD_TAG -and "v$version" -ne $env:BUILD_TAG) {
+            throw "patina.exe is version $version, but this is a build of $env:BUILD_TAG"
+          }
+          $iscc = Join-Path $env:RUNNER_TEMP 'inno\ISCC.exe'
+          $name = "patina-$env:LABEL-x86_64-setup"
+          $again = Join-Path $env:RUNNER_TEMP 'setup-again'
+          $copy = Join-Path $again 'source'
+          New-Item -ItemType Directory -Force -Path $again | Out-Null
+          Copy-Item -LiteralPath $folder -Destination $copy -Recurse
+          function Compile([string] $source, [string] $dir) {
+            & $iscc --quiet "--define=AppVersion=$version" "--define=SourceDir=$source" `
+              "--output-dir=$dir" "--output-filename=$name" packaging\windows\patina.iss
+            if ($LASTEXITCODE -ne 0) { throw "ISCC exited $LASTEXITCODE" }
+          }
+          Compile $folder $PWD.Path
+          Compile $copy $again
+          $first = (Get-FileHash -Algorithm SHA256 -LiteralPath "$name.exe").Hash
+          $second = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $again "$name.exe")).Hash
+          if ($first -ne $second) {
+            throw "two compiles of the same folder and script differ: $first and $second"
+          }
+          Get-Item -LiteralPath "$name.exe" | Select-Object Name, Length
+          $first
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version=$version", "sha256=$first"
+
+      # The runner is discarded after the job, so installing on it costs
+      # nothing and leaves nothing on a machine anyone keeps. Silent, with the
+      # switches winget passes an Inno installer under --silent; then what the
+      # install should have made, and an uninstall that should take all of it
+      # away again. Inno's uninstaller hands the work to a copy of itself in
+      # %TEMP% and some of it may still be going when the first one exits, so
+      # the step waits for the result rather than trusting the exit.
+      #
+      # The files placed in %APPDATA%\Patina and %LOCALAPPDATA%\Patina before
+      # the install stand in for Patina's own, and are as much the point of
+      # this step as the shortcut is: the first holds the preferences, key
+      # bindings, mpv configuration, history and watch-later positions, the
+      # second the single instance's directory, and an uninstaller that
+      # removed either would take them from every copy of Patina on the
+      # account, the portable one included. One sits at the top of each, and
+      # the rest under the names src/settings.rs gives Patina's files and
+      # folders, so an [UninstallDelete] naming any one of them fails the step
+      # too; a new one belongs in that list. Neither directory is
+      # %LOCALAPPDATA%\Programs\Patina, where the installer puts Patina.
+      #
+      # Patina registers its file types and patina:// links itself, from
+      # Preferences > Utilities, under HKCU\Software, and the uninstaller runs
+      # `patina.exe --remove-file-types` so those keys do not outlive the exe
+      # they point at. Registering takes Patina's own window, so the step
+      # writes what src/associations.rs writes for one file type of each kind
+      # (mkv, mp3 and m3u in packaging/media-types.tsv) and the link, pointed
+      # at the installed exe, and requires all of it gone after the
+      # uninstall. Inno Setup itself knows nothing of those keys, so their
+      # going is the evidence that the removal ran.
+      #
+      # The step refuses to start where Patina, its files or its keys are
+      # already present, since that is a machine someone uses. Last of all it
+      # checks the setup exe and the zip against the hashes their own steps
+      # recorded.
+      - name: Exercise the installer
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          PATINA_VERSION: ${{ steps.setup.outputs.version }}
+          STAGED_FILES: ${{ steps.stage.outputs.files }}
+          ZIP_SHA256: ${{ steps.zip.outputs.sha256 }}
+          SETUP_SHA256: ${{ steps.setup.outputs.sha256 }}
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $setup = (Resolve-Path -LiteralPath "patina-$env:LABEL-x86_64-setup.exe").Path
+          $zip = (Resolve-Path -LiteralPath "patina-$env:LABEL-windows-x86_64.zip").Path
+          $staged = $env:STAGED_FILES | ConvertFrom-Json
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\Patina'
+          $installed = Join-Path $app 'patina.exe'
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs', 'DoNotVerify')) 'Patina.lnk'
+          $desktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop', 'DoNotVerify')) 'Patina.lnk'
+          $arp = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Patina.Patina_is1'
+          $appPaths = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\patina.exe'
+          $roaming = Join-Path $env:APPDATA 'Patina'
+          $local = Join-Path $env:LOCALAPPDATA 'Patina'
+          $classes = 'HKCU:\Software\Classes'
+          $types = 'mkv', 'mp3', 'm3u'
+          $logs = (Join-Path $env:RUNNER_TEMP 'setup.log'), (Join-Path $env:RUNNER_TEMP 'uninstall.log')
+
+          # What src/associations.rs writes, as far as it is found here.
+          function Get-Registration {
+            $found = @(Get-ChildItem -LiteralPath $classes | Where-Object { $_.PSChildName -like 'Patina.*' } | ForEach-Object Name)
+            foreach ($key in "$classes\Applications\patina.exe", "$classes\patina", 'HKCU:\Software\Patina') {
+              if (Test-Path -LiteralPath $key) { $found += $key }
+            }
+            $registered = Get-ItemProperty -LiteralPath 'HKCU:\Software\RegisteredApplications' -ErrorAction SilentlyContinue
+            if ($registered -and $registered.PSObject.Properties['Patina']) { $found += 'RegisteredApplications\Patina' }
+            foreach ($type in $types) {
+              $list = Get-ItemProperty -LiteralPath "$classes\.$type\OpenWithProgids" -ErrorAction SilentlyContinue
+              if ($list -and $list.PSObject.Properties["Patina.$type"]) { $found += ".$type\OpenWithProgids\Patina.$type" }
+            }
+            $found
+          }
+          # Never New-Item -Force on a key that exists: that empties it.
+          function Set-Key([string] $key, [string] $name, [string] $value) {
+            if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null }
+            if ($name) {
+              New-ItemProperty -LiteralPath $key -Name $name -Value $value -PropertyType String -Force | Out-Null
+            } else {
+              Set-Item -LiteralPath $key -Value $value
+            }
+          }
+
+          foreach ($path in $app, $lnk, $arp, $appPaths, $roaming, $local) {
+            if (Test-Path -LiteralPath $path) {
+              throw "$path already exists. This step installs and uninstalls Patina, and belongs on a throwaway runner."
+            }
+          }
+          $before = @(Get-Registration)
+          if ($before) {
+            throw "Patina's file types are registered here already ($($before -join ', ')). This step belongs on a throwaway runner."
+          }
+          $files = @(
+            (Join-Path $roaming 'sentinel'),
+            (Join-Path $roaming 'config\settings.json'),
+            (Join-Path $roaming 'config\input_conf\sentinel.conf'),
+            (Join-Path $roaming 'config\mpv\mpv.conf'),
+            (Join-Path $roaming 'data\history.json'),
+            (Join-Path $roaming 'data\watch-later\sentinel'),
+            (Join-Path $roaming 'data\thumbnails\sentinel'),
+            (Join-Path $roaming 'data\online-subtitles\sentinel'),
+            (Join-Path $local 'sentinel'),
+            (Join-Path $local 'instance\sentinel')
+          )
+          $sentinels = foreach ($file in $files) {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
+            Set-Content -LiteralPath $file -Value "stands in for Patina's own files: $([guid]::NewGuid())"
+            [pscustomobject]@{ Path = $file; Hash = (Get-FileHash -LiteralPath $file).Hash }
+          }
+
+          function Invoke-Bounded([string] $file, [string[]] $arguments) {
+            $p = Start-Process -FilePath $file -ArgumentList $arguments -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit(300000)) { throw "$file was still running after 5 minutes" }
+            $p.ExitCode
+          }
+
+          try {
+            $code = Invoke-Bounded $setup @('/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$($logs[0])`"")
+            if ($code -ne 0) { throw "the installer exited $code" }
+
+            foreach ($file in $staged.PSObject.Properties) {
+              $path = Join-Path $app $file.Name
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "the install has no $path" }
+              if ((Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ne $file.Value) {
+                throw "$path is not the file 'Stage the folder' hashed"
+              }
+            }
+            $names = @($staged.PSObject.Properties | ForEach-Object Name)
+            $extra = @(Get-ChildItem -LiteralPath $app -Force | Where-Object {
+                $_.Name -notin $names -and $_.Name -notmatch '^unins[0-9]{3}\.(dat|exe|msg)$'
+              } | ForEach-Object Name)
+            if ($extra) { throw "the install put more in $app than the folder holds: $($extra -join ', ')" }
+            if (-not (Test-Path -LiteralPath $lnk)) { throw "no Start Menu shortcut at $lnk" }
+            $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+            if ($shortcut.TargetPath -ne $installed) { throw "the shortcut points at $($shortcut.TargetPath)" }
+            if ($shortcut.WorkingDirectory -ne $app) { throw "the shortcut starts in $($shortcut.WorkingDirectory)" }
+            if (Test-Path -LiteralPath $desktopLnk) { throw 'the installer put a shortcut on the desktop' }
+            $command = (Get-Item -LiteralPath $appPaths).GetValue('')
+            if ($command -ne $installed) { throw "App Paths\patina.exe names $command" }
+            $entry = Get-ItemProperty -LiteralPath $arp
+            if ($entry.DisplayName -cne 'Patina') { throw "the uninstall entry is named $($entry.DisplayName)" }
+            if ($entry.DisplayVersion -cne $env:PATINA_VERSION) { throw "the uninstall entry says version $($entry.DisplayVersion)" }
+            if ($entry.Publisher -cne 'Jonathan Zeppettini') { throw "the uninstall entry's publisher is $($entry.Publisher)" }
+            if (-not $entry.QuietUninstallString) { throw 'the uninstall entry has no QuietUninstallString' }
+
+            # The installed copy finds the libmpv installed beside it.
+            $out = Join-Path $env:RUNNER_TEMP 'installed-version.txt'
+            $p = Start-Process -FilePath $installed -ArgumentList '--version' `
+              -RedirectStandardOutput $out -NoNewWindow -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit(60000)) { throw 'the installed patina --version was still running after a minute' }
+            $text = Get-Content -Raw -LiteralPath $out
+            $text
+            if ($p.ExitCode -ne 0) { throw ('the installed patina --version exited 0x{0:X8}' -f $p.ExitCode) }
+            if ($text -notmatch ([regex]::Escape((Join-Path $app 'libmpv-2.dll')))) {
+              throw 'the installed Patina did not load the libmpv-2.dll installed beside it'
+            }
+            "installed $($env:PATINA_VERSION): payload, shortcut, App Paths and uninstall entry as expected"
+
+            $exe = "`"$installed`""
+            foreach ($type in $types) {
+              Set-Key "$classes\Patina.$type" '' "$($type.ToUpperInvariant()) file"
+              Set-Key "$classes\Patina.$type\DefaultIcon" '' "$exe,0"
+              Set-Key "$classes\Patina.$type\shell\open\command" '' "$exe -- `"%1`""
+              Set-Key "$classes\.$type\OpenWithProgids" "Patina.$type" ''
+              Set-Key "$classes\Applications\patina.exe\SupportedTypes" ".$type" ''
+              Set-Key 'HKCU:\Software\Patina\Capabilities\FileAssociations' ".$type" "Patina.$type"
+            }
+            Set-Key "$classes\Applications\patina.exe" 'FriendlyAppName' 'Patina'
+            Set-Key "$classes\Applications\patina.exe\shell\open\command" '' "$exe -- `"%1`""
+            Set-Key "$classes\patina" '' 'URL:Patina link'
+            Set-Key "$classes\patina" 'URL Protocol' ''
+            Set-Key "$classes\patina\shell\open\command" '' "$exe --open-link -- `"%1`""
+            Set-Key 'HKCU:\Software\Patina\Capabilities' 'ApplicationName' 'Patina'
+            Set-Key 'HKCU:\Software\Patina\Capabilities\URLAssociations' 'patina' 'patina'
+            Set-Key 'HKCU:\Software\RegisteredApplications' 'Patina' 'Software\Patina\Capabilities'
+            $seeded = @(Get-Registration)
+            "registered for the uninstall to remove: $($seeded -join ', ')"
+
+            $uninstaller = $entry.UninstallString -replace '^"([^"]+)".*$', '$1'
+            if ((Split-Path -Parent $uninstaller) -ne $app) { throw "the uninstaller is $uninstaller" }
+            $code = Invoke-Bounded $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$($logs[1])`"")
+            if ($code -ne 0) { throw "the uninstaller exited $code" }
+            $deadline = (Get-Date).AddSeconds(60)
+            while ($left = @($app, $lnk, $arp, $appPaths | Where-Object { Test-Path -LiteralPath $_ })) {
+              if ((Get-Date) -gt $deadline) { throw "the uninstall left behind: $($left -join ', ')" }
+              Start-Sleep -Seconds 1
+            }
+            $left = @(Get-Registration)
+            if ($left) {
+              throw "the uninstall left Patina's file types registered, so patina.exe --remove-file-types did not run or did not finish: $($left -join ', ')"
+            }
+            foreach ($s in $sentinels) {
+              if (-not (Test-Path -LiteralPath $s.Path) -or (Get-FileHash -LiteralPath $s.Path).Hash -ne $s.Hash) {
+                throw "the uninstall touched $($s.Path)"
+              }
+            }
+            "uninstalled: the folder, shortcut, App Paths, uninstall entry and file types are gone, and Patina's own files are as they were"
+          } catch {
+            foreach ($log in $logs) {
+              if (Test-Path -LiteralPath $log) { "--- $log"; Get-Content -LiteralPath $log }
+            }
+            throw
+          }
+
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash -ne $env:ZIP_SHA256) {
+            throw "$zip is no longer the zip 'Zip' hashed as $env:ZIP_SHA256"
+          }
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $setup).Hash -ne $env:SETUP_SHA256) {
+            throw "$setup is no longer the setup 'Build the installer' hashed as $env:SETUP_SHA256"
+          }
+          'the zip and the setup exe are the bytes their steps hashed'
+
+      # The two files by name, not a pattern: nothing else that landed in the
+      # workspace can ride along.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-x86_64
+          path: |
+            patina-${{ env.LABEL }}-x86_64-setup.exe
+            patina-${{ env.LABEL }}-windows-x86_64.zip
+          if-no-files-found: error
+
+  # Not published from here, and unlike the Windows job that is not a matter
+  # of confidence. What it cannot do is reach a user: Gatekeeper refuses an
+  # unsigned .app downloaded from the web outright, offering to move it to
+  # the Bin and nothing else. So this artifact is an input to
+  # packaging/macos-sign.sh, which signs every library in the bundle and then
+  # the bundle with the Developer ID, notarises it and staples the ticket, on
+  # the machine holding that key. The key is not here for the same reason no
+  # signing key is. The bundle is signed ad hoc by packaging/macos-bundle.sh,
+  # which gives it a code identity and proves nothing about who built it.
+  #
+  # Universal: macos-latest is Apple Silicon, and the Intel half is
+  # cross-compiled beside it and joined with lipo. macOS is the only platform
+  # here where one file serves both architectures — Flatpak and Windows each
+  # need one per arch.
+  macos:
+    name: macOS (universal, signed by hand)
+    needs: [resolve, version]
+    # Two cold release builds, one per architecture.
+    timeout-minutes: 90
+    runs-on: macos-latest
+    env:
+      LABEL: ${{ needs.resolve.outputs.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install --no-self-update
+          rustup target add x86_64-apple-darwin
+          rustc -Vv
+
+      # IINA's libmpv and the libraries it links, fetched afresh and checked
+      # against packaging/macos-libmpv.txt (see the comment above
+      # `permissions`). packaging/macos-bundle.sh copies every dylib in this
+      # folder into the bundle, so the folder has to hold exactly the pinned
+      # files and nothing else.
+      - name: Download the libraries
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/macos-libmpv"
+          packaging/macos-libmpv.sh "$dir"
+          expected=$(grep -vE '^(#|$)' packaging/macos-libmpv.txt | awk '{print $2}' | LC_ALL=C sort)
+          found=$(cd "$dir" && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||' | LC_ALL=C sort)
+          if [ "$expected" != "$found" ]; then
+            echo "::error::$dir does not hold exactly the libraries pinned in packaging/macos-libmpv.txt"
+            diff <(echo "$expected") <(echo "$found") || true
+            exit 1
+          fi
+
+      # Both halves of the universal binary.
+      #
+      # Both pinned to 11.0. Left alone, rustc defaults the Intel slice to
+      # 10.12 and the Apple Silicon slice to 11.0, which puts a version in the
+      # binary that LSMinimumSystemVersion then contradicts — and IINA builds
+      # the libraries in Contents/Frameworks for 11.0 and later, so no older
+      # macOS could load them anyway.
+      - name: Build both architectures
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      # Laid out by the script in this repository rather than here. It is the
+      # same one used to build a bundle by hand on a Mac, so what CI produces
+      # and what a developer produces cannot drift.
+      - name: Bundle
+        run: packaging/macos-bundle.sh "$RUNNER_TEMP/macos-libmpv"
+
+      # The bundle on its own: a valid plist, both halves of the binary, each
+      # demanding the macOS the plist promises, nothing outside it linked but
+      # the system, and its libmpv starting a core from Contents/Frameworks.
+      # (The runner is arm64; the x86_64 half runs on a test Mac.)
+      - name: Check the bundle
+        run: |
+          set -euo pipefail
+          app=dist/Patina.app
+          bin="$app/Contents/MacOS/patina"
+          plutil -lint "$app/Contents/Info.plist"
+          lipo -archs "$bin"
+          for arch in arm64 x86_64; do
+            lipo "$bin" -verify_arch "$arch"
+            minos=$(otool -l -arch "$arch" "$bin" \
+              | awk '/LC_BUILD_VERSION/ { b = 1 } b && /minos/ && !m { m = $2 } END { print m }')
+            echo "$arch: minimum macOS $minos"
+            if [ "$minos" != 11.0 ]; then
+              echo "::error::the $arch slice demands macOS $minos, but Info.plist says 11.0"
+              exit 1
+            fi
+          done
+          if otool -L "$bin" "$app"/Contents/Frameworks/*.dylib \
+              | grep -E '^\s+/' | grep -vE '^\s+/(System|usr/lib)/'; then
+            echo "::error::the bundle links libraries from outside it"
+            exit 1
+          fi
+          codesign --verify --strict "$app"
+          out=$("$bin" --version)
+          echo "$out"
+          grep -qE 'Patina\.app/Contents/(MacOS/\.\./)?Frameworks/libmpv\.2\.dylib' <<< "$out" || {
+            echo "::error::Patina did not load the bundled libmpv"
+            exit 1
+          }
+
+      # ditto rather than zip: it preserves the bundle's metadata, and it is
+      # what notarisation expects to be handed later. `-unsigned` in the name
+      # because that is exactly what this is: packaging/macos-sign.sh takes
+      # this file and writes the signed one, the name the release and the
+      # Homebrew cask expect, beside it.
+      - name: Zip
+        run: |
+          set -euo pipefail
+          NAME="patina-${LABEL}-macos-universal-unsigned.zip"
+          ditto -c -k --keepParent dist/Patina.app "$NAME"
+          ls -lh "$NAME"
+          shasum -a 256 "$NAME"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-universal
+          path: patina-${{ env.LABEL }}-macos-universal-unsigned.zip
+          if-no-files-found: error
+
+  release:
+    name: Attach to the release
+    needs: [resolve, flatpak, windows]
+    if: startsWith(inputs.ref || github.ref_name, 'v')
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Named patterns rather than everything the run produced, and `needs`
+      # lists exactly the jobs those patterns come from, besides `resolve`,
+      # which says what commit they were built from. (`version` is behind
+      # every build job, so a release whose tag disagrees with Cargo.toml
+      # never gets here.) Which jobs publish is a decision, not a function of
+      # which finished first: collecting `*` while waiting on a subset made
+      # publication a race. Adding a platform means naming it three times, in
+      # `needs`, here and in the Upload step's list, and that is the point.
+      #
+      # Windows ships unsigned, and that is a decision rather than a gap.
+      # SmartScreen warns on first run — an unsigned exe with no download
+      # history is what it exists to flag — but it warns and then lets the user
+      # through, so the artifact is usable.
+      #
+      # Signing would not change that. Microsoft's own comparison marks every
+      # non-Store option as "flagged as unrecognized until reputation
+      # accumulates": an OV certificate, an EV certificate and an Azure Artifact
+      # Signing subscription all leave the same warning in place, and EV's
+      # instant-reputation bypass was removed in 2024. What a certificate buys
+      # immediately is the publisher's name in the dialog instead of "Unknown
+      # publisher" — real, but not the problem. Reputation accrues per file
+      # hash, so a project at this size would wait months either way, and
+      # Microsoft has reset established publisher reputation as recently as 2026
+      # by migrating intermediate CAs.
+      #
+      # winget is the answer instead, and it is free. It does mark what it
+      # downloads, Internet zone at first like a browser, but once the file
+      # matches the manifest's hash and the source is a trusted one, as the
+      # default community repository is, it rewrites the mark to the Trusted
+      # zone before running it, so the installer starts without a SmartScreen
+      # prompt and for users who install that way the warning never happens.
+      # Smart App Control is the exception: on a Windows 11 machine where it is
+      # enforcing, unsigned code from an unknown publisher is blocked whatever
+      # the mark says, winget or not. The portable zip is unsigned like the
+      # setup exe, for the same reasons. See packaging/winget/. A Microsoft
+      # developer account is for Store submission and signs nothing that is
+      # downloaded directly.
+      #
+      # macOS is deliberately absent, because there the same shortcut does not
+      # exist: Gatekeeper refuses an unsigned .app outright. That bundle
+      # detours through the machine holding the Developer ID key and is
+      # uploaded to this draft by hand. See packaging/macos-sign.sh.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: flatpak-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: windows-*
+          merge-multiple: true
+
+      # No SHA256SUMS here. It covers every artifact in the release, and one
+      # of them — the signed macOS bundle — does not exist yet at this point,
+      # so anything written now would be missing a file by the time the
+      # release is complete. checksums.yml writes it once everything is
+      # attached, which is also the only moment at which signing it by hand
+      # means anything.
+      #
+      # Which is why the release is created as a draft. A draft is invisible
+      # to anyone but this repository's maintainers, so there is no window in
+      # which a half-assembled release — no checksums, no macOS build, no
+      # signature over either — is something a stranger can download.
+      # Publishing is the last step and a person does it.
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+
+          # Exactly the four files CI attaches, under the names the cask, the
+          # winget manifests and checksums.yml expect: a build that produced
+          # one more or one fewer is something to look at, not to publish.
+          expected=(
+            "patina-$TAG-aarch64.flatpak"
+            "patina-$TAG-windows-x86_64.zip"
+            "patina-$TAG-x86_64-setup.exe"
+            "patina-$TAG-x86_64.flatpak"
+          )
+          mapfile -t files < <(find . -maxdepth 1 -type f -printf '%P\n' | sort)
+          if [ "$(printf '%s\n' "${files[@]}")" != "$(printf '%s\n' "${expected[@]}" | sort)" ]; then
+            echo "::error::the artifacts are ${files[*]:-nothing}, not ${expected[*]}"
+            exit 1
+          fi
+          ls -lh "${files[@]}"
+
+          # The tag has to name the commit these files were built from. Every
+          # build job checked out the one commit `resolve` found, so they agree
+          # with each other; this ties them to the tag. It matters most on a
+          # re-run: "Re-run failed jobs" keeps the first attempt's builds and
+          # the commit it resolved, and the tag may have moved since. Asked
+          # for the bare SHA, which peels an annotated tag to its commit
+          # without GitHub also computing that commit's diff.
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" \
+            -H 'Accept: application/vnd.github.sha') || {
+            echo "::error::could not find the commit the tag $TAG names"
+            exit 1
+          }
+          if [ "$tagged" != "$BUILD_SHA" ]; then
+            echo "::error::$TAG names $tagged, but these files were built from $BUILD_SHA."
+            echo "::error::Run the workflow again for the tag as it now stands."
+            exit 1
+          fi
+
+          # Whether there is a release for the tag, whether it is a draft and
+          # what it carries, read so that any gh failure stops the step: taken
+          # for "no release" it would create a second draft beside the first,
+          # and taken for "no signature" it would --clobber assets under one.
+          # From the REST listing, which shows drafts to a token that can push,
+          # rather than from `gh release view`. That looks a release up two
+          # ways at once and answers "release not found" when one lookup says
+          # so and the other fails; for a draft the published-release lookup
+          # always says so, so a passing error in the draft lookup reads
+          # exactly like no release at all.
+          ids=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.tag_name == env.TAG) | .id') || {
+            echo "::error::could not list the releases of $GITHUB_REPOSITORY"
+            exit 1
+          }
+          # The commit the draft's files were built from rides in its notes as
+          # an HTML comment, which the release page doesn't show, so that a
+          # later run can tell when it is attaching builds of another commit.
+          marker="<!-- built from $BUILD_SHA -->"
+          count=$(grep -c . <<<"$ids" || true)
+          case $count in
+          0)
+            # A tag push creates no release on its own, so make one.
+            # --verify-tag refuses to invent a tag that does not exist, which
+            # would otherwise turn a typo into a published release.
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft \
+              --title "Patina $TAG" \
+              --notes "$marker" \
+              --generate-notes
+            # Just made, so a draft with nothing attached, from this commit.
+            state=$(printf 'true\n%s' "$BUILD_SHA")
+            ;;
+          1)
+            state=$(gh api "repos/$GITHUB_REPOSITORY/releases/$ids" \
+              --jq '(.draft | tostring),
+                ((.body // "" | capture("<!-- built from (?<sha>[0-9a-f]{40}) -->") | .sha) // ""),
+                .assets[].name') || {
+              echo "::error::could not read the release for $TAG"
+              exit 1
+            }
+            ;;
+          *)
+            echo "::error::$TAG has $count releases. Which one these files belong"
+            echo "::error::to is not for this workflow to guess; delete the extra"
+            echo "::error::drafts and run it again."
+            exit 1
+            ;;
+          esac
+          draft=$(sed -n 1p <<<"$state")
+          built=$(sed -n 2p <<<"$state")
+          assets=$(tail -n +3 <<<"$state")
+
+          # Only ever onto a draft, and never under a signature. A re-run, or a
+          # dispatch naming a tag released long ago, would otherwise --clobber
+          # files that people have downloaded and that SHA256SUMS.asc and the
+          # winget manifest already vouch for — leaving a signature that fails
+          # against the file beside it, which reads as tampering rather than as
+          # a rebuild. The same refusal checksums.yml makes, for the same
+          # reason: the operator decides, not the workflow. A release someone
+          # made by hand and left public is refused too, since a half-attached
+          # release is exactly what the draft exists to keep from strangers.
+          if [ "$draft" != true ]; then
+            echo "::error::$TAG is already published. Its assets are not replaced"
+            echo "::error::after the fact; a changed build needs a new tag."
+            exit 1
+          fi
+          if grep -qx 'SHA256SUMS.asc' <<<"$assets"; then
+            echo "::error::$TAG already has SHA256SUMS.asc. Replacing assets would"
+            echo "::error::invalidate it. Delete the signature first if the"
+            echo "::error::artifacts genuinely need rebuilding:"
+            echo "::error::  gh release delete-asset $TAG SHA256SUMS.asc --repo $GITHUB_REPOSITORY"
+            exit 1
+          fi
+          # An unsigned SHA256SUMS from an earlier run describes the builds
+          # this upload is about to replace, and neither the installer nor the
+          # Flatpaks are reproducible, so its lines for them are about to be
+          # wrong. Left in place it is the file the earlier checksums.yml
+          # summary tells the maintainer to download and sign, and a warning in
+          # a green run's log would not stop that. Deleted, there is nothing
+          # stale to sign: checksums.yml writes it again over what is attached.
+          if grep -qx 'SHA256SUMS' <<<"$assets"; then
+            gh release delete-asset "$TAG" SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --yes
+            echo "::warning::$TAG had an unsigned SHA256SUMS from an earlier run,"
+            echo "::warning::which would not have matched these builds, so it was"
+            echo "::warning::deleted. Run checksums.yml again once every asset is attached."
+          fi
+          # A signed macOS zip comes from one run's macos-universal artifact.
+          # Builds of another commit (the tag was moved) would otherwise sit
+          # beside it, and the SHA256SUMS signed next would vouch for the two
+          # commits mixed. A rebuild of the same commit keeps it.
+          macos="patina-$TAG-macos-universal.zip"
+          if grep -qx "$macos" <<<"$assets" && [ "$built" != "$BUILD_SHA" ]; then
+            gh release delete-asset "$TAG" "$macos" \
+              --repo "$GITHUB_REPOSITORY" --yes
+            echo "::warning::$TAG carried $macos built from ${built:-an unrecorded commit},"
+            echo "::warning::not $BUILD_SHA, so it was deleted. Sign this run's macos-universal"
+            echo "::warning::artifact with packaging/macos-sign.sh and upload that instead."
+          fi
+
+          # --clobber, so a re-run replaces its own earlier uploads. It only
+          # ever touches a draft with no signature, which the checks above
+          # have just established.
+          gh release upload "$TAG" \
+            "${files[@]}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          # Now that its files are this commit's, the draft says so.
+          if [ "$built" != "$BUILD_SHA" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/$ids" --jq '.body // ""' > notes.md || {
+              echo "::error::could not read the notes of $TAG to record $BUILD_SHA"
+              exit 1
+            }
+            if grep -q '<!-- built from [0-9a-f]\{40\} -->' notes.md; then
+              sed -i "s/<!-- built from [0-9a-f]\{40\} -->/$marker/" notes.md
+            else
+              printf '%s\n\n%s\n' "$marker" "$(cat notes.md)" > notes.new && mv notes.new notes.md
+            fi
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          fi
