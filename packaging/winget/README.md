@@ -143,28 +143,32 @@ first installer manifest went in this way: written by hand, validated, and
 committed, signed, on a branch of a fork of winget-pkgs, as
 `manifests/j/jzbz/rPGP/0.1.4/`; the same for Patina means the three files in
 `manifests/p/Patina/Patina/0.1.0/` and a pull request titled "New package:
-Patina.Patina version 0.1.0". `komac submit <dir>`, which submits manifests as
-they stand and analyzes no installer, is the other way to send them. The
+Patina.Patina version 0.1.0". `komac submit <dir>`, which analyzes no
+installer and keeps every value (though it writes the files out again in its
+own layout, without their comments), is the other way to send them. The
 Microsoft CLA is a one-time checkbox on that PR. A new package waits for a
 moderator's manual review: rPGP's first took four weeks, Azzurro's five.
 
 Once a version is merged, later ones can go through Komac, with one URL, the
-setup exe's, writing the manifests to a folder rather than sending them:
+setup exe's, writing the manifests to a folder:
 
     komac update Patina.Patina --version 0.1.1 \
       --urls https://github.com/jzbz/patina/releases/download/v0.1.1/patina-v0.1.1-x86_64-setup.exe \
       --output <dir>
 
 Komac downloads the installer, reads what it needs from it, computes the hash
-and fills the schema. That needs Komac 2.17.0 or newer, for Inno Setup 7. For
-rPGP's and Azzurro's identical settings, `inno` 0.6.0 read the privileges as
-lowest, which Komac turns into `Scope: user`, and the ProductCode as
-`<AppId>_is1`. Check what it wrote against the list above, and its
-`InstallerSha256` against the setup exe's line in the verified `SHA256SUMS`;
-correct anything by hand, then send exactly those files with
-`komac submit <dir>`. Not `komac update … --submit`: that downloads the
-installer again and sends whatever hash it computes then, which nobody has
-compared with the signed one. Keep every field the published version has:
+and fills the schema, then stops at a Submit / Edit / Exit menu with Submit
+chosen: **choose Exit**. The manifests are in `<dir>` by then. That needs
+Komac 2.17.0 or newer (its `inno` 0.7.0), for Inno Setup 7; on Komac's main
+branch before that, `inno` 0.6.0 read rPGP's and Azzurro's identical settings
+as lowest privileges, which Komac turns into `Scope: user`, and their
+ProductCode as `<AppId>_is1`. Check what it wrote against the list above, and
+its `InstallerSha256` against the setup exe's line in the verified
+`SHA256SUMS`; correct anything by hand, then send them with
+`komac submit <dir>`, which keeps every value, InstallerSha256 included, and
+asks once more before sending. Not Submit in `komac update`, nor its
+`--submit`: that sends the hash Komac computed from its own download, which
+nobody has compared with the signed one. Keep every field the published version has:
 winget-pkgs' bot labels a pull request `Manifest-Metadata-Consistency` and
 lists what the new version lacks.
 

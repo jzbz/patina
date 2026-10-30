@@ -104,6 +104,11 @@ modules:
   - name: libmpv
     buildsystem: meson
     config-opts:
+      # Into /app/lib, where Patina's lookup and the sandbox's loader find it.
+      # Meson and CMake choose lib64 themselves under some flatpak-builder
+      # versions (Ubuntu's, which release.yml uses, among them), where
+      # pkg-config in the build doesn't look, so every module here says lib.
+      - --libdir=lib
       - -Dlibmpv=true
       # Only the library: Patina is the player, so no mpv executable, and none
       # of the desktop entry, icons and shell completions that come with it.
@@ -161,6 +166,8 @@ modules:
 
       - name: libdisplay-info
         buildsystem: meson
+        config-opts:
+          - --libdir=lib
         sources:
           - type: archive
             url: https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/0.2.0/libdisplay-info-0.2.0.tar.gz
@@ -197,6 +204,7 @@ modules:
       - name: uchardet
         buildsystem: cmake-ninja
         config-opts:
+          - -DCMAKE_INSTALL_LIBDIR=lib
           - -DCMAKE_BUILD_TYPE=Release
           - -DBUILD_STATIC=0
           - -DBUILD_BINARY=OFF
@@ -224,6 +232,7 @@ modules:
       - name: libplacebo
         buildsystem: meson
         config-opts:
+          - --libdir=lib
           - -Dopengl=enabled
           - -Ddemos=false
         sources:
