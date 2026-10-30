@@ -6,24 +6,13 @@
 //! episode 2 and not to episode 3, and a subtitle only goes to the video it
 //! matches best. Subtitles in the preferred languages come first.
 
+use crate::formats::{Kind, SUBTITLE_EXTENSIONS, kind_of};
 use crate::mpv::{Mpv, Value};
 use crate::player::state::language_name;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-const SUBTITLE_EXTENSIONS: &[&str] = &[
-    "ass", "idx", "lrc", "mks", "smi", "srt", "ssa", "sub", "sup", "vtt", "utf", "utf8", "utf-8",
-    "rt", "aqt", "jss", "scc",
-];
-const VIDEO_EXTENSIONS: &[&str] = &[
-    "3gp", "asf", "avi", "divx", "f4v", "flv", "m2ts", "m4v", "mk3d", "mkv", "mov", "mp4", "mpeg",
-    "mpg", "mts", "mxf", "ogm", "ogv", "rm", "rmvb", "ts", "vob", "webm", "wmv",
-];
-const AUDIO_EXTENSIONS: &[&str] = &[
-    "aac", "ac3", "aiff", "alac", "ape", "dsf", "dts", "flac", "m4a", "mka", "mp2", "mp3", "oga",
-    "ogg", "opus", "tak", "tta", "wav", "wma", "wv",
-];
 const IMAGE_EXTENSIONS: &[&str] = &[
     "avif", "bmp", "gif", "heic", "jpeg", "jpg", "jxl", "png", "tif", "tiff", "webp",
 ];
@@ -69,6 +58,15 @@ pub fn load_for_current_file(mpv: &Mpv, matching: Option<&[String]>, choices: &C
     let Some(path) = path.as_str().filter(|path| !crate::util::is_url(path)) else {
         return;
     };
+    // A path a playlist from the network names is not the user's to read.
+    if mpv
+        .get_property("playlist-path")
+        .ok()
+        .and_then(|playlist| playlist.as_str().map(crate::util::is_remote))
+        .unwrap_or(false)
+    {
+        return;
+    }
     let choice = choices
         .lock()
         .ok()
@@ -84,9 +82,7 @@ pub fn load_for_current_file(mpv: &Mpv, matching: Option<&[String]>, choices: &C
         Some(_) if choice.wrong => Vec::new(),
         Some(_) if has_extension(&video, IMAGE_EXTENSIONS) => Vec::new(),
         // Lyrics for a song, only by its exact name.
-        Some(languages) if has_extension(&video, AUDIO_EXTENSIONS) => {
-            find(&video, languages, false)
-        }
+        Some(languages) if kind_of(&video) == Some(Kind::Audio) => find(&video, languages, false),
         Some(languages) => find(&video, languages, true),
         None => Vec::new(),
     };
@@ -119,7 +115,7 @@ pub fn load_for_current_file(mpv: &Mpv, matching: Option<&[String]>, choices: &C
 pub fn takes_subtitles(path: &str) -> bool {
     let path = Path::new(path);
     !crate::util::is_url(&path.to_string_lossy())
-        && !has_extension(path, AUDIO_EXTENSIONS)
+        && kind_of(path) != Some(Kind::Audio)
         && !has_extension(path, IMAGE_EXTENSIONS)
 }
 
@@ -148,7 +144,7 @@ fn find(video: &Path, languages: &[String], lone_video: bool) -> Vec<PathBuf> {
     let entries = list(dir);
     let mut videos: Vec<PathBuf> = entries
         .iter()
-        .filter(|path| has_extension(path, VIDEO_EXTENSIONS))
+        .filter(|path| kind_of(path) == Some(Kind::Video))
         .cloned()
         .collect();
     if !videos.iter().any(|path| path == video) {

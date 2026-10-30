@@ -1,0 +1,71 @@
+# The files Patina opens: its file dialogs, subtitle matching and the
+# system media controls read this table, the macOS bundle's document types
+# are made from it, and a test keeps the Linux desktop entry's MimeType
+# line in step with it.
+#
+# extension<TAB>kind (video, audio or playlist)<TAB>MIME types, the
+# freedesktop.org name first, then older aliases; none for files that have
+# no registered type.
+3g2	video	video/3gpp2
+3gp	video	video/3gpp;video/3gp
+asf	video	application/vnd.ms-asf;video/x-ms-asf
+avi	video	video/vnd.avi;video/x-msvideo;video/avi;video/msvideo;video/x-avi
+divx	video	video/vnd.avi;video/divx;video/vnd.divx
+dv	video	video/dv
+f4v	video	video/mp4
+flv	video	video/x-flv;video/flv
+h264	video
+hevc	video
+m2ts	video	video/mp2t
+m2v	video	video/mpeg
+m4v	video	video/mp4;video/x-m4v
+mk3d	video	video/matroska-3d
+mkv	video	video/matroska;video/x-matroska
+mov	video	video/quicktime
+mp4	video	video/mp4;video/mp4v-es
+mpeg	video	video/mpeg
+mpg	video	video/mpeg
+mts	video	video/mp2t
+mxf	video	application/mxf
+ogm	video	video/x-ogm+ogg;video/x-ogm
+ogv	video	video/ogg;video/x-theora+ogg
+qt	video	video/quicktime
+rm	video	application/vnd.rn-realmedia
+rmvb	video	application/vnd.rn-realmedia;application/vnd.rn-realmedia-vbr
+ts	video	video/mp2t
+vob	video	video/mpeg
+webm	video	video/webm
+wmv	video	video/x-ms-wmv
+wtv	video
+y4m	video
+aac	audio	audio/aac;audio/x-aac
+ac3	audio	audio/ac3
+aif	audio	audio/x-aiff;audio/aiff
+aiff	audio	audio/x-aiff;audio/aiff
+ape	audio	audio/x-ape
+caf	audio
+dff	audio	audio/x-dff
+dsf	audio	audio/x-dsf
+dts	audio	audio/vnd.dts
+eac3	audio	audio/eac3
+flac	audio	audio/flac;audio/x-flac
+m4a	audio	audio/mp4;audio/m4a;audio/x-m4a
+m4b	audio	audio/x-m4b
+mka	audio	audio/matroska;audio/x-matroska
+mp2	audio	audio/mp2;audio/x-mp2
+mp3	audio	audio/mpeg;audio/mp3;audio/x-mp3
+mpc	audio	audio/x-musepack
+oga	audio	audio/ogg;audio/x-vorbis+ogg;audio/x-flac+ogg;audio/x-speex+ogg
+ogg	audio	audio/ogg;audio/x-vorbis+ogg;audio/x-flac+ogg;audio/x-speex+ogg
+opus	audio	audio/x-opus+ogg;audio/opus
+ra	audio	audio/vnd.rn-realaudio;audio/x-pn-realaudio
+tak	audio	audio/x-tak
+tta	audio	audio/x-tta
+wav	audio	audio/vnd.wave;audio/wav;audio/x-wav
+weba	audio	audio/webm
+wma	audio	audio/x-ms-wma
+wv	audio	audio/x-wavpack
+cue	playlist	application/x-cue
+m3u	playlist	audio/x-mpegurl;audio/mpegurl;application/x-mpegurl
+m3u8	playlist	application/vnd.apple.mpegurl;audio/x-mpegurl;application/x-mpegurl
+pls	playlist	audio/x-scpls;audio/scpls

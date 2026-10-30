@@ -26,6 +26,10 @@ explains the design.
   in `ui/globals.slint`, which `open-menu` in `ui/app.slint` fills in from
   `Playback` and `Media` when the menu opens: state a menu item needs goes
   in all three.
+- `packaging/media-types.tsv` is the one list of file types. After
+  changing it, update the MimeType line of
+  `packaging/linux/video.patina.Patina.desktop`; a test fails with the line
+  it expects until then.
 - CI (`.github/workflows/ci.yml`) runs formatting, clippy, a build and the
   tests on Ubuntu 26.04, macOS and Windows. Its header comments explain each
   choice, including how to bump the Windows libmpv pin.
@@ -43,7 +47,10 @@ inside `kwin_wayland --virtual` (in its own `dbus-run-session`, so it cannot
 touch a running desktop session) with `PATINA_FRAME_DUMP=frame.ppm`, which
 writes what mpv rendered.
 
-Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs,
+Use `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` for isolated runs (a run
+with its own settings folder is also its own instance, so it neither hands
+its files to the Patina you use nor receives that one's; `--new-instance`
+skips the single instance altogether),
 `--mpv-ao=null` to keep test runs silent, and `--verbose` or
 `RUST_LOG=patina=trace` for diagnostics. `PATINA_OPENSUBTITLES_API` points
 online subtitles at a stand-in for the OpenSubtitles API (the URL that
@@ -53,7 +60,16 @@ password out of your own keyring.
 
 ## Source map
 
-- `src/main.rs`: command line, backend selection, startup.
+- `src/main.rs`: command line, the single instance, backend selection,
+  startup.
+- `src/instance.rs`: one Patina at a time: the lock, the socket or pipe,
+  and requests from later launches.
+- `src/scheme.rs`: patina:// links and the mpv options they may set.
+- `src/formats.rs`: the file types, from `packaging/media-types.tsv`.
+- `src/associations.rs`: registering for file types and links on each
+  system.
+- `src/wayland.rs`: bringing a window to the front with an activation
+  token.
 - `src/app.rs`: preferences, history, key bindings, windows, file dialogs.
 - `src/window.rs`: one player window: events into state, state into the
   UI, Patina actions, OSD, window sizing, picture-in-picture.
@@ -64,7 +80,8 @@ password out of your own keyring.
   nodes, render context.
 - `src/video/`: mpv-to-texture rendering inside Slint's rendering notifier,
   the GL function resolver, and the software fallback (`software.rs`).
-- `src/macos.rs`: the transparent title bar and its window buttons.
+- `src/macos.rs`: the transparent title bar and its window buttons, and
+  the Apple events that Finder's opens and links arrive as.
 - `src/input.rs`: input.conf parsing and writing, key normalization,
   default bindings.
 - `src/settings.rs`: preferences, their mpv options, history, directories.

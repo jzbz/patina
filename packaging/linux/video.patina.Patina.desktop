@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Patina
+GenericName=Media Player
+Comment=Play videos and music
+Icon=video.patina.Patina
+TryExec=patina
+Exec=patina -- %U
+Terminal=false
+StartupNotify=true
+StartupWMClass=video.patina.Patina
+Categories=AudioVideo;Video;Audio;Player;TV;
+Keywords=video;movie;audio;music;player;mpv;
+MimeType=video/3gpp2;video/3gpp;video/3gp;application/vnd.ms-asf;video/x-ms-asf;video/vnd.avi;video/x-msvideo;video/avi;video/msvideo;video/x-avi;video/divx;video/vnd.divx;video/dv;video/mp4;video/x-flv;video/flv;video/mp2t;video/mpeg;video/x-m4v;video/matroska-3d;video/matroska;video/x-matroska;video/quicktime;video/mp4v-es;application/mxf;video/x-ogm+ogg;video/x-ogm;video/ogg;video/x-theora+ogg;application/vnd.rn-realmedia;application/vnd.rn-realmedia-vbr;video/webm;video/x-ms-wmv;audio/aac;audio/x-aac;audio/ac3;audio/x-aiff;audio/aiff;audio/x-ape;audio/x-dff;audio/x-dsf;audio/vnd.dts;audio/eac3;audio/flac;audio/x-flac;audio/mp4;audio/m4a;audio/x-m4a;audio/x-m4b;audio/matroska;audio/x-matroska;audio/mp2;audio/x-mp2;audio/mpeg;audio/mp3;audio/x-mp3;audio/x-musepack;audio/ogg;audio/x-vorbis+ogg;audio/x-flac+ogg;audio/x-speex+ogg;audio/x-opus+ogg;audio/opus;audio/vnd.rn-realaudio;audio/x-pn-realaudio;audio/x-tak;audio/x-tta;audio/vnd.wave;audio/wav;audio/x-wav;audio/webm;audio/x-ms-wma;audio/x-wavpack;application/x-cue;audio/x-mpegurl;audio/mpegurl;application/x-mpegurl;application/vnd.apple.mpegurl;audio/x-scpls;audio/scpls;x-scheme-handler/patina;

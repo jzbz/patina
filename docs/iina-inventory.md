@@ -812,7 +812,7 @@ Non-modal floating panel (`NSPanel`, hides when the app is inactive; Cmd+I) with
 
 ### 17.1 `iina-cli` (separate small executable inside the app bundle, `iina-cli/main.swift`)
 
-- **CLI-01** Usage: `iina-cli [arguments] [files] [-- mpv_option [...]]`. Resolves relative paths against the current directory, passes URLs through, launches the main binary as a child and exits immediately (unless `--keep-running`/stdin).
+- **CLI-01** Usage: `iina-cli [arguments] [files] [-- mpv_option [...]]`. Resolves relative paths against the current directory, passes URLs through, launches the main binary as a child (a separate IINA, which never reaches one already running) and exits immediately (unless `--keep-running`/stdin).
 - **CLI-02** `--mpv-*` options: any mpv option as `--mpv-volume=20 --mpv-resume-playback=no` (a bare `--mpv-flag` means `yes`; options starting with `--no-` are not supported in this form; special-case `--mpv-shuffle` installs a one-shot `on_before_start_file` hook that shuffles the playlist). After a literal `--`, plain mpv syntax is accepted (`--volume=20 --no-resume-playback` is rewritten to the `--mpv-` form).
 - **CLI-03** `--separate-windows` / `-w`: one window per file; default groups files in one playlist.
 - **CLI-04** `--stdin` / `--no-stdin` / `-`: play from standard input; auto-detected when data is piped (fragile, hence explicit flags recommended); output is wired through only in stdin mode.
@@ -824,7 +824,7 @@ Non-modal floating panel (`NSPanel`, hides when the app is inactive; Cmd+I) with
 
 ### 17.2 `iina://` URL scheme (`iina/AppDelegate.swift` `parsePendingURL`)
 
-- **CLI-10** `iina://open?url=<url-or-path>` (host `open` or `weblink`). Params: `url` (required), `new_window=1` (default is the active window), `enqueue=1` (append to the last active player's playlist if it has one), `full_screen=1`, `pip=1`, and `mpv_<option>=<value>` for any option on a **whitelist** (`AppData.safeMPVOptions`, 209 options covering track selection, start/end/speed/loop, A-B loop, video geometry/colour, audio, subtitles, window flags, network headers, cache; excludes anything that could read/write local files). Non-`iina` schemes (plain http etc.) are opened directly.
+- **CLI-10** `iina://open?url=<url-or-path>` (host `open` or `weblink`). Params: `url` (required), `new_window=1` (otherwise the active window, or an idle or new one while "Allow multiple player windows" is on, the default), `enqueue=1` (append to the last active player's playlist if it has one), `full_screen=1`, `pip=1`, and `mpv_<option>=<value>` for any option on a **whitelist** (`AppData.safeMPVOptions`, 209 options covering track selection, start/end/speed/loop, A-B loop, video geometry/colour, audio, subtitles, window flags, network headers, cache; excludes anything that could read/write local files). Non-`iina` schemes (plain http etc.) are opened directly.
 - **CLI-11** Plugins and the browser extensions are the primary producers of these URLs.
 
 ### 17.3 File associations, document types, drag to Dock

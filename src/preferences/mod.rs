@@ -113,6 +113,11 @@ pub struct PreferencesController {
     editor_combo: RefCell<Option<KeyCombo>>,
     /// What became of the last password saved, shown under its field.
     password_note: RefCell<Option<String>>,
+    /// What a button's action came to, shown in place of its description.
+    notes: RefCell<std::collections::HashMap<&'static str, String>>,
+    /// A file type action is running; xdg-mime runs at once would overwrite
+    /// each other's defaults.
+    associating: Cell<bool>,
 }
 
 impl PreferencesController {
@@ -138,6 +143,8 @@ impl PreferencesController {
             editing: RefCell::new(None),
             editor_combo: RefCell::new(None),
             password_note: RefCell::new(None),
+            notes: RefCell::new(std::collections::HashMap::new()),
+            associating: Cell::new(false),
         });
         controller.wire();
         controller.show_page(Page::General);
@@ -273,7 +280,9 @@ impl PreferencesController {
         let prefs = self.app().prefs();
         let json = serde_json::to_value(&*prefs).unwrap_or(Value::Null);
         let items = schema::ITEMS.iter().filter(|item| {
-            if searching {
+            if !schema::available(item) {
+                false
+            } else if searching {
                 [item.label, item.detail, item.section, item.page.title()]
                     .iter()
                     .any(|text| text.to_lowercase().contains(&query))
@@ -387,7 +396,9 @@ impl PreferencesController {
             }
             Control::Button => {
                 row.kind = "button".into();
-                if item.key == "clear-thumbnails" {
+                if let Some(note) = self.notes.borrow().get(item.key) {
+                    row.detail = note.clone().into();
+                } else if item.key == "clear-thumbnails" {
                     let size =
                         crate::thumbnails::cache_size(&self.app().paths().thumbnail_cache_dir());
                     row.detail = format!("Using {:.1} MB.", size as f64 / 1e6).into();
@@ -552,7 +563,7 @@ impl PreferencesController {
         }
     }
 
-    fn run(&self, key: &str) {
+    fn run(self: &Rc<Self>, key: &str) {
         let app = self.app();
         let paths = app.paths().clone();
         let clear = |dir: std::path::PathBuf| {
@@ -575,6 +586,24 @@ impl PreferencesController {
                 let _ = std::fs::create_dir_all(dir.join("scripts"));
                 crate::platform::open_path(&dir);
             }
+            #[cfg(not(windows))]
+            "files-video" => self.associate("files-video", || {
+                crate::associations::set_default(crate::formats::Kind::Video)
+            }),
+            #[cfg(not(windows))]
+            "files-audio" => self.associate("files-audio", || {
+                crate::associations::set_default(crate::formats::Kind::Audio)
+            }),
+            #[cfg(not(windows))]
+            "files-playlists" => self.associate("files-playlists", || {
+                crate::associations::set_default(crate::formats::Kind::Playlist)
+            }),
+            #[cfg(windows)]
+            "files-register" => self.associate("files-register", crate::associations::register),
+            #[cfg(windows)]
+            "files-defaults" => crate::associations::open_default_apps(),
+            #[cfg(not(target_os = "macos"))]
+            "files-remove" => self.associate("files-remove", crate::associations::remove),
             "restore-defaults" => {
                 let keep = app.prefs().key_bindings.clone();
                 app.update_prefs(|prefs| {
@@ -587,6 +616,49 @@ impl PreferencesController {
             other => log::warn!("unknown preferences action {other}"),
         }
         self.refresh();
+    }
+
+    /// Runs a file type action on a thread, since it runs programs or
+    /// writes the registry, and shows how it went under its button.
+    fn associate(
+        self: &Rc<Self>,
+        key: &'static str,
+        action: impl FnOnce() -> Result<String, String> + Send + 'static,
+    ) {
+        if self.associating.replace(true) {
+            return;
+        }
+        let (sender, receiver) = async_channel::bounded(1);
+        let spawned = std::thread::Builder::new()
+            .name("file-types".into())
+            .spawn(move || {
+                let _ = sender.send_blocking(action());
+            });
+        if let Err(error) = spawned {
+            log::warn!("could not register the file types: {error}");
+            self.associating.set(false);
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let spawned = slint::spawn_local(async move {
+            let result = receiver.recv().await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.associating.set(false);
+            let Ok(result) = result else {
+                return;
+            };
+            let note = result.unwrap_or_else(|error| {
+                log::warn!("{error}");
+                error
+            });
+            this.notes.borrow_mut().insert(key, note);
+            this.refresh();
+        });
+        if let Err(error) = spawned {
+            log::warn!("{error}");
+        }
     }
 
     // ---- Key bindings ---------------------------------------------------

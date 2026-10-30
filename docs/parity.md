@@ -18,7 +18,7 @@ have been run for playback (see M5).
 | --- | --- | --- |
 | M1 Foundation | libmpv core, video output, IINA window, OSC, OSD, sidebars, menus, key bindings, welcome view, history and resume | done (the macOS menu bar and title bar tried on an Intel macOS VM) |
 | M2 Everyday parity | media keys (MPRIS, SMTC, Now Playing), preferences window, key binding editor, seek thumbnails, playlist durations and drag reordering, subtitle auto-matching, history window, inspector | done; tried on Linux and on a Windows 11 VM (media keys and the media panel, sleep prevention, preferences, thumbnails, history, inspector); on macOS only sleep prevention so far |
-| M3 Advanced parity | yt-dlp quality switching and downloads (as IINA's Online Media plugin), music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | in progress: yt-dlp quality switching and downloads, and online subtitles, done |
+| M3 Advanced parity | yt-dlp quality switching and downloads (as IINA's Online Media plugin), music mode, filter windows and saved filters, interactive crop, online subtitles, HDR, URL scheme, file associations, single-instance CLI, log viewer | in progress: yt-dlp quality switching and downloads, online subtitles, the single instance, the URL scheme and file associations done (the last two not yet tried on macOS or Windows) |
 | M4 Plugins | JavaScript plugin runtime with IINA's `iina.*` API, web-view overlays, sidebars and windows, plugin manager | not planned (see section 18) |
 | M5 Distribution | self-contained packages for all three platforms with libmpv, CI builds, updates | in progress: `bundle.yml` builds a universal Patina.app and a Windows folder, each carrying libmpv. Both play video and subtitles on machines that never had mpv or a build tool: a Windows 11 VM and an Intel macOS 26 VM, neither with a GPU, so both draw in software. Releases, signing, Flatpak, Homebrew and winget planned |
 
@@ -28,7 +28,7 @@ have been run for playback (see M5).
 | --- | --- | --- |
 | WIN-01 | Full-size-content window, transparent title bar | done. Linux/Windows: frameless window with Patina's own overlay title bar and window buttons. macOS: a transparent title bar with the video under it, Patina's title over the video and macOS's own window buttons fading with the controls (tried on an Intel macOS VM) |
 | WIN-02 | Multiple player windows, idle cores reused | done: each window has its own mpv core; idle windows are reused; "open in new window" preference |
-| WIN-03 | One window per file or grouped | partial: multi-file opens go into one playlist |
+| WIN-03 | One window per file or grouped | partial: multi-file opens go into one playlist, and so do opens that arrive within 0.2 s of each other (a file manager that starts Patina once per file); `-w` opens a window for each. IINA's preference for grouping planned |
 | WIN-04 | Welcome window with resume, open, open URL, recents | partial: shown inside the idle player window; no keyboard navigation of the list yet |
 | WIN-05 | Action after launch | done: welcome screen or an Open dialog |
 | WIN-06 | Fit window to video on open | done: fit the screen, 0.5×, 1×, 1.5× or 2×; always, on open or never (physical-resolution option planned) |
@@ -147,7 +147,7 @@ once and applied to running players, as IINA's option observers do
 | PREF-CTL | done: click and scroll actions, seek mode, scroll steps, media keys. Planned: pinch and Force Touch where available |
 | PREF-KEY | done: see INP-06..08 |
 | PREF-ADV | done: load mpv.conf and scripts from the mpv folder, extra mpv options. Planned: log level and log files |
-| PREF-UTL | done: clear history, saved positions and thumbnails; open the settings folder; restore defaults. Planned: default-app registration |
+| PREF-UTL | done: clear history, saved positions and thumbnails; open the settings folder; restore defaults; default-app registration, as Linux, macOS and Windows each allow (see CLI-12..15) |
 
 ## 8. Input
 
@@ -205,11 +205,11 @@ once and applied to running players, as IINA's option observers do
 | NET-03 | Buffering display | partial |
 | NET-04 | Cache and network preferences | done |
 | NET-05 | yt-dlp | done: mpv's `ytdl_hook`, with what IINA's Online Media plugin adds. A quality preference (the best, or up to a height, or a yt-dlp format); Video Quality and Audio Quality menus for each video, offering its resolutions and frame rates rather than yt-dlp's raw list, which load it again where it was; Download Video (Ctrl/Command+D) in the quality playing, with a Downloads window that shows progress, speed and time left and can cancel, retry and show the file. Tested with an HLS stream with separate audio. Adapted: Patina uses the yt-dlp that is installed, where the plugin downloads and updates its own copy and Deno |
-| NET-07 | Browser extensions | planned with the URL scheme |
-| CLI-01..02 | Command line with `--mpv-*` options | done |
-| CLI-03..06 | Separate windows, stdin, keep running, music mode / PiP flags | partial: `-` is passed to mpv for standard input (not yet tested) |
-| CLI-10 | URL scheme | planned |
-| CLI-12..15 | File associations | planned with packaging |
+| NET-07 | Browser extensions | partial: patina:// links work (CLI-10); there is no Patina extension yet, and IINA's would need its scheme changed |
+| CLI-01..02 | Command line with `--mpv-*` options | done. Beyond IINA, whose `iina-cli` starts another IINA each time: while Patina runs, a launch hands it what to open and exits (in 0.02 s), the window comes to the front (on Wayland with the launcher's activation token), and the first launch to start is the one that serves. `--mpv-*` options from such a launch apply to a new window of their own; `--new-instance` starts a separate Patina. Tested on Linux (X11, and Wayland in a virtual KWin), including two launches at once, quitting while one launches, and a crash |
+| CLI-03..06 | Separate windows, stdin, keep running, music mode / PiP flags | partial: `-w` and `--pip` done; `-` is passed to mpv for standard input, in a Patina of its own (not yet tested); keep running and music mode planned |
+| CLI-10 | URL scheme | done: `patina://open` (or `weblink`) with `url`, `new_window`, `enqueue`, `full_screen`, `pip` and `mpv_` options, decoded as IINA does. Stricter than IINA: `url` must be a network stream (no local files, mpv protocols, or srt:// and rtp://, which can listen), IINA's safe mpv options lose those that turn off certificate checks, raise the volume limit or use up memory and threads, a playlist a link opens may only list such streams, and the files a playlist from the network names are not read. Tested on Linux through the desktop entry |
+| CLI-12..15 | File associations | done: one table of 63 extensions for every platform. Linux: a desktop entry (`packaging/linux`), and Preferences › Utilities makes Patina the default for videos, music or playlists with `xdg-mime`, writing an entry for the running executable when none is installed. macOS: the bundle declares the types, folders and the scheme, and Apple event handlers take Finder's opens and links (not yet tried on a Mac); the same preferences make Patina the default through LaunchServices. Windows: the preferences add Patina to Open With and Default apps under the user's own registry classes, and remove it again (a test writes and removes the keys; not yet tried in Explorer). Opens 0.2 s apart are batched (CLI-14); IINA's "nothing to open" alert is not shown |
 
 ## 18. Plugins
 
@@ -241,5 +241,8 @@ than it brings.
   a crop can blank the picture; mpv drops the `video-crop` rectangle when
   the filter chain reinitializes. Cropping through a labelled `crop` filter,
   as IINA does, would avoid it.
+- On X11, a launch that hands its files to the running Patina doesn't end
+  the desktop's startup notice, so a busy cursor can linger until the
+  desktop gives up on it (Wayland passes the activation token on instead).
 - On the X virtual framebuffer used for automated tests (software OpenGL),
   hardware decoding shows black frames; real GPUs are unaffected.

@@ -52,6 +52,35 @@ cp "$root/ui/icons/LICENSE" "$app/Contents/Resources/LICENSE-lucide"
 cp "$root/packaging/THIRD-PARTY.md" "$app/Contents/Resources/THIRD-PARTY.md"
 
 version="$(grep -m1 '^version' "$root/Cargo.toml" | cut -d'"' -f2)"
+
+# The files Finder may open with Patina, one document type per kind, from
+# the table Patina itself reads; and folders, for Open With only.
+document_types() {
+    local kind name
+    for kind in video audio playlist; do
+        case $kind in
+            video) name=Video ;;
+            audio) name=Audio ;;
+            playlist) name=Playlist ;;
+        esac
+        printf '    <dict>\n'
+        printf '      <key>CFBundleTypeName</key><string>%s</string>\n' "$name"
+        printf '      <key>CFBundleTypeRole</key><string>Viewer</string>\n'
+        printf '      <key>LSHandlerRank</key><string>Default</string>\n'
+        printf '      <key>CFBundleTypeExtensions</key>\n      <array>\n'
+        awk -F'\t' -v kind="$kind" \
+            '!/^#/ && $2 == kind { printf "        <string>%s</string>\n", $1 }' \
+            "$root/packaging/media-types.tsv"
+        printf '      </array>\n    </dict>\n'
+    done
+    printf '    <dict>\n'
+    printf '      <key>CFBundleTypeName</key><string>Folder</string>\n'
+    printf '      <key>CFBundleTypeRole</key><string>Viewer</string>\n'
+    printf '      <key>LSHandlerRank</key><string>Alternate</string>\n'
+    printf '      <key>LSItemContentTypes</key><array><string>public.folder</string></array>\n'
+    printf '    </dict>\n'
+}
+
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -72,6 +101,19 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <!-- Video plays on the integrated GPU of a two-GPU Mac, as IINA's does. -->
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+$(document_types)
+  </array>
+  <!-- patina:// links, from browser extensions and web pages. -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>video.patina.Patina</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>CFBundleURLSchemes</key><array><string>patina</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

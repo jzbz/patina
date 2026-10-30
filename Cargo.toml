@@ -37,20 +37,38 @@ slint = { version = "1.18.1", default-features = false, features = [
 trash = "5.2.9"
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+wayland-backend = { version = "0.3.17", features = ["client_system"] }
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 zbus = { version = "6.1.0", default-features = false, features = ["default-rt", "service"] }
 zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-async-io-crypto-rust"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Media", "Foundation", "Win32_Foundation", "Win32_System_WinRT"] }
-windows-sys = { version = "0.61.2", features = ["Win32_System_Power"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 windows-native-keyring-store = { version = "1.1.0", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 block2 = "0.6.2"
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSResponder", "NSView", "NSControl", "NSButton", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSControl", "NSButton", "NSWindow"] }
 objc2-foundation = "0.3.2"
 objc2-media-player = "0.3.2"
 

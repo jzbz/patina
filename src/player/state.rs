@@ -138,9 +138,43 @@ pub struct PlaylistEntry {
     pub title: String,
     pub current: bool,
     pub id: i64,
+    /// The playlist that listed it, as mpv opened it; empty if none did.
+    pub playlist: String,
+    /// Listed by a playlist that came from the network. Such an entry may
+    /// name any local path or network share, which mpv refuses to open
+    /// from there, and neither may Patina.
+    pub from_network: bool,
 }
 
 impl PlaylistEntry {
+    /// A file of the user's own: not a stream, nor a path that a playlist
+    /// from the network named.
+    pub fn is_local(&self) -> bool {
+        !self.from_network && !crate::util::is_url(&self.filename)
+    }
+
+    /// Whether opening it again elsewhere (another window, a paste) is
+    /// safe. Reopened, an entry loads as if the user had opened it, so of
+    /// what any playlist named, only what mpv would open from it: a network
+    /// stream, or from a playlist on disk also a file; never one of mpv's
+    /// own protocols (av://, edl:// and the rest), which it refuses from a
+    /// playlist. Of a link's playlist, only a stream a link could open.
+    pub fn may_reopen(&self, links: &crate::scheme::LinkSources) -> bool {
+        // Opened directly, by the user.
+        if self.playlist.is_empty() {
+            return true;
+        }
+        if crate::scheme::from_link(links, &self.playlist) {
+            return crate::scheme::is_stream(&self.filename);
+        }
+        if crate::util::is_url(&self.filename) {
+            let file = !crate::util::is_remote(&self.filename) && self.filename.contains("://");
+            crate::scheme::is_network_stream(&self.filename) || (file && !self.from_network)
+        } else {
+            !self.from_network
+        }
+    }
+
     /// Local files are listed by file name, like IINA; streams by title.
     pub fn label(&self) -> String {
         if self.title.is_empty() || !crate::util::is_url(&self.filename) {
@@ -508,6 +542,10 @@ impl PlaybackState {
                         title: entry.str_or_default("title"),
                         current: entry.bool_or("current", false),
                         id: entry.get("id").and_then(Node::as_i64).unwrap_or(0),
+                        playlist: entry.str_or_default("playlist-path"),
+                        from_network: crate::util::is_remote(
+                            &entry.str_or_default("playlist-path"),
+                        ),
                     })
                     .collect(),
             ),

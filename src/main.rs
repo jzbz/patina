@@ -2,13 +2,16 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod associations;
 mod cli;
 mod credentials;
 mod downloads;
+mod formats;
 mod history;
 mod inhibit;
 mod input;
 mod inspector;
+mod instance;
 #[cfg(target_os = "macos")]
 mod macos;
 mod media_controls;
@@ -19,17 +22,18 @@ mod player;
 mod playlist;
 mod preferences;
 mod probe;
+mod scheme;
 mod settings;
 mod subtitle_match;
 mod thumbnails;
 mod util;
 mod video;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod wayland;
 mod window;
 mod ytdl;
 
-use slint::winit_030::WinitWindowAccessor;
 use std::process::ExitCode;
-use std::rc::Rc;
 
 slint::include_modules!();
 
@@ -72,11 +76,33 @@ fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level))
         .init();
 
+    // A Patina already running opens what this one was asked to, and this
+    // one is done. Standard input can't be handed over.
+    let paths = settings::Paths::discover();
+    let mut request = options.request();
+    let primary = if options.new_instance || options.reads_stdin() {
+        None
+    } else {
+        match instance::claim(&paths.config, &request, !started_by_launch_services()) {
+            instance::Claim::Primary(primary) => Some(primary),
+            instance::Claim::Forwarded => return ExitCode::SUCCESS,
+            instance::Claim::Standalone(reason) => {
+                log::warn!("{reason}; starting a separate Patina");
+                None
+            }
+        }
+    };
+
     // Ended by a signal (Ctrl+C, the terminal closing, the session ending),
-    // Patina still closes its windows, which saves where each file was: the
-    // event loop ends, and the shutdown after it runs.
+    // Patina still closes its windows, which saves where each file was. It
+    // quits from inside the event loop, as the Quit menu item does, so that
+    // a request from another launch already waiting there is refused rather
+    // than opened in a window about to close.
     if let Err(error) = ctrlc::set_handler(|| {
-        let _ = slint::quit_event_loop();
+        let quit = slint::invoke_from_event_loop(|| app::App::with_current(|app| app.quit()));
+        if quit.is_err() {
+            let _ = slint::quit_event_loop();
+        }
     }) {
         log::warn!("could not handle termination signals: {error}");
     }
@@ -93,53 +119,44 @@ fn main() -> ExitCode {
         eprintln!("patina: could not start the user interface: {error}");
         return ExitCode::FAILURE;
     }
+    // Names the windows after the desktop entry, which is how Linux desktops
+    // give them its icon and name.
+    if let Err(error) = slint::set_xdg_app_id(APP_ID) {
+        log::debug!("no application ID: {error}");
+    }
+    #[cfg(target_os = "macos")]
+    macos::listen_for_opens();
+    // Requests from later launches go to the interface's thread.
+    let server = primary.map(|primary| {
+        primary.serve(|request, reply| {
+            slint::invoke_from_event_loop(move || {
+                app::App::with_current(|app| {
+                    if reply.take() {
+                        reply.send(app.open_request(request));
+                    }
+                });
+            })
+            .is_ok()
+        })
+    });
 
     if let Err(error) = mpv::ffi::api() {
         eprintln!("patina: {error}");
         return ExitCode::FAILURE;
     }
 
+    // This Patina's own mpv options apply to every window it opens.
     let app = app::App::new(
-        settings::Paths::discover(),
+        paths,
         options.verbose,
-        options.mpv_options,
+        std::mem::take(&mut request.mpv_options),
     );
+    if let Some(server) = server {
+        app.set_instance(server);
+    }
     {
         let app = app.clone();
-        let sources = options.sources;
-        let (enqueue, fullscreen) = (options.enqueue, options.fullscreen);
-        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-            let window = if sources.is_empty() {
-                let window = app.new_window();
-                if let Some(window) = &window
-                    && app.prefs().launch_action == "open-dialog"
-                {
-                    window.run_action("open-file");
-                }
-                window
-            } else {
-                app.open_sources(sources, enqueue)
-            };
-            // Slint makes a shown window's native window when the event loop
-            // is next idle. When it can't (OpenGL failed), it keeps the error
-            // for when the loop ends but doesn't end it, so the window never
-            // appears and nothing says why. End the loop for it.
-            if let Some(window) = &window {
-                let window = Rc::downgrade(window);
-                slint::Timer::single_shot(std::time::Duration::from_secs(3), move || {
-                    let missing = window.upgrade().is_some_and(|window| {
-                        let window = window.window().window();
-                        window.is_visible() && window.with_winit_window(|_| ()).is_none()
-                    });
-                    if missing {
-                        video::software::restart("the window never appeared".into());
-                    }
-                });
-            }
-            if fullscreen && let Some(window) = window {
-                window.run_action("toggle-fullscreen");
-            }
-        });
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || app.launch(request));
     }
 
     let mut result = slint::run_event_loop_until_quit();
@@ -156,7 +173,17 @@ fn main() -> ExitCode {
         // renderer once per process, so start again with the software one.
         Err(error) if !software => {
             log::warn!("OpenGL failed ({error}); starting again without it");
-            relaunch_without_opengl(&error.to_string())
+            let status = relaunch_without_opengl(&error.to_string());
+            // What other launches and the system sent this Patina goes to
+            // the one starting in its place.
+            let accepted = app.accepted_requests();
+            if status == ExitCode::SUCCESS
+                && !accepted.is_empty()
+                && let Err(error) = instance::hand_over(&app.paths().config, &accepted)
+            {
+                log::warn!("could not hand over what was opened: {error}");
+            }
+            status
         }
         Err(error) => {
             eprintln!("patina: {error}");
@@ -180,12 +207,24 @@ impl slint::winit_030::CustomApplicationHandler for CloseOnExit {
     }
 }
 
+/// macOS: whether LaunchServices started this Patina, as `open -n` does, or
+/// a Finder open while another copy of Patina runs. What it is to open then
+/// arrives as Apple events after startup, too late to hand to the running
+/// Patina, so it opens here.
+fn started_by_launch_services() -> bool {
+    cfg!(target_os = "macos")
+        && std::env::var_os("__CFBundleIdentifier").is_some_and(|id| id == APP_ID)
+}
+
 /// Runs Patina again, with the same arguments, in software rendering.
 fn relaunch_without_opengl(error: &str) -> ExitCode {
     let spawned = std::env::current_exe().and_then(|exe| {
         std::process::Command::new(exe)
             .args(std::env::args_os().skip(1))
             .env("PATINA_RENDERER", "software")
+            // Started by this Patina, not by LaunchServices: it takes what
+            // this one hands over.
+            .env_remove("__CFBundleIdentifier")
             .spawn()
     });
     match spawned {

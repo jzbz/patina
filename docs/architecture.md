@@ -52,6 +52,13 @@ receives batches, folds property changes into `PlaybackState`
 playlist entries and video parameters), and `PlayerController::sync` copies
 only what changed into the Slint globals.
 
+Patina's `on_load` hook (subtitle matching, the yt-dlp format chosen from
+the quality menus) holds mpv until a thread of Patina's continues it. Shutting
+a core down lets go of a hook it is waiting in first, and the event thread
+lets any later one go at once: mpv can't quit from inside a hook, and the
+thread that would continue it waits for the UI thread, which may be the one
+shutting the core down.
+
 Commands that concern the window rather than playback are handled in Rust:
 `quit` closes the window, `show-progress` and `show-text` become Patina OSD
 messages, and mpv's `fullscreen`, `ontop` and `window-scale` properties are
@@ -275,6 +282,127 @@ history whenever it changes, and checks for missing files on another thread.
 The inspector follows the active player; while open, it reads the current
 tab's properties once a second with `mpv_get_property_async`, and the
 player's event pump hands the replies back to it.
+
+## Opening, one Patina at a time
+
+`instance.rs` makes the first Patina to start the one that runs, the
+primary, as soon as `main` has read the command line and before anything is
+shown or libmpv is loaded. It locks a file in a folder only the user can
+reach (`$XDG_RUNTIME_DIR/patina` on Linux, the app's own part of it in a
+Flatpak, a private folder in the temporary folder on macOS, the user's
+local application data on Windows), writes a random
+id beside it, and listens there on a Unix socket, or on Windows on a named
+pipe named after the id, whose security lets only the user open it. The
+file names are a hash of the settings folder's canonical path, so a test run
+with `PATINA_CONFIG_DIR` has an instance of its own. The system releases
+the lock however a process ends: a lock that can be taken means no Patina
+runs, and a socket left by a crash is replaced. A lock file removed under a
+running Patina (by a cleaner of old files) is noticed by the next launch,
+which becomes a primary of its own, and the first one, quitting, leaves the
+new one's files alone.
+
+A later launch finds the lock taken, reads the id and connects instead,
+reads the primary's greeting (its protocol version and id), checks the id,
+sends one line of JSON (the sources, made absolute in its own folder with
+file:// URIs turned into paths, the flags, any `--mpv-*` options and the
+desktop's activation token) and exits once the primary has opened them. On
+Windows the pipe's name can't be guessed or taken first, the launch checks
+that the process serving it runs as the same user, and it connects at the
+identification level, so that a pipe's server can't act as the user. A primary that is still starting, busy or already quitting makes
+the launch try again for five seconds; another protocol version, no
+greeting within ten seconds, `--new-instance` or standard input (which
+can't be handed over) start a separate Patina that serves no one. On macOS
+a Patina that LaunchServices started (`open -n`, or a Finder open while
+another copy runs) doesn't forward either: what it is to open arrives as
+Apple events after startup.
+
+The listener hands each request to the UI thread with
+`slint::invoke_from_event_loop` and waits for `App::open_request`'s verdict.
+The interface takes a request before opening it, and the listener withdraws
+one not taken within five seconds, or once Patina starts quitting, and sends
+the launch elsewhere; once taken, the launch is told so and waits however
+long opening takes. A launch that stops waiting before its request has gone
+never sends it. So a request is opened once, and a launch is only told it
+was taken if it opened (or waits for startup to finish). Startup itself
+waits for the event loop to deliver what is already queued: requests that
+come before the launch's own sources are open follow them, and when there
+were none of its own (Finder starting Patina with a file on macOS), the
+welcome window and the Open dialog are skipped. Quitting (a signal quits
+from inside the event loop too) refuses requests at once but keeps the lock
+until the windows have saved the history and settings; then the server is
+dropped: it stops accepting, removes the socket and id and gives up the
+lock, so the next launch becomes the primary. If OpenGL fails while it
+starts (the only time it starts again in software), it hands what it took
+meanwhile to the new Patina.
+
+The request then opens as IINA would: plain opens go through
+`App::open_sources` (an idle window, a new one or the newest, as the
+multiple-windows preference says), and those within 0.2 s of the last one
+join its playlist, as IINA batches Finder's opens (Explorer starts one
+process per selected file). `-e` appends, `-w` gives each source an idle or
+new window (a window counts as busy from the moment a load is asked of it),
+`--mpv-*` options from a launch (and a link's `mpv_` options) are set as a
+new window's core starts, and that window is kept from other opens, which
+would inherit them. `-f` applies to the window that opened, `--pip` once its
+video shows, and a launch with nothing to open brings the active window
+forward. Coming to the front needs the desktop's consent: on Wayland the
+launch passes on `XDG_ACTIVATION_TOKEN` and `wayland.rs` hands it to
+xdg_activation_v1 on winit's connection (winit 0.30's `focus_window` does
+nothing there; a new window is raised once it first draws); on Windows the
+launch lets the primary take the foreground with `AllowSetForegroundWindow`;
+on macOS winit activates the app.
+
+### patina:// links
+
+`scheme.rs` reads IINA's iina:// form under Patina's name:
+`patina://open?url=…` (or `weblink`) with `new_window`, `enqueue`,
+`full_screen`, `pip` and `mpv_<option>`. Values are decoded once and `+`
+stays a `+`, as Foundation's URLComponents leaves them, so a stream's own
+escapes survive; a repeated parameter counts once. Links come from web
+pages, so Patina trusts them less than IINA does: `url` must be a network
+stream, never a local file, standard input or one of mpv's own protocols,
+and mpv options come only from IINA's list of safe ones, less those that
+turn off certificate checks, raise the volume limit, or use up memory and
+threads. srt:// and rtp:// are refused too, since their URLs can make
+Patina listen for connections. A playlist a link opens may only list such
+streams too: the load hook refuses anything else, a local file, a share or
+a listening address, and screens playlists it names in turn. Entries of any
+playlist from the network may name local paths and shares, which mpv won't
+open from there; Patina doesn't read them either (no probing, subtitle
+matching, revealing or trashing). Copied or played in a new window, an
+entry of any playlist opens as the user's own, so only what mpv would open
+from that playlist may go: a network stream, or from a playlist on disk a
+file, never one of mpv's own protocols (av://, edl:// and the rest). Entries
+of a link's playlist reopened that way stay screened, and Open in Browser
+opens only web pages. Messages show a link's text escaped. Links arrive as an argument
+after `--` from the desktop entry and, after `--open-link`, from Windows'
+protocol key, which makes whatever follows one link even if a quote split
+it; on macOS they arrive as a get-URL Apple event.
+
+### File types
+
+`packaging/media-types.tsv` lists the extensions Patina opens, with their
+kind and MIME types. `formats.rs` reads it for the file dialogs, subtitle
+matching and MPRIS; a test keeps the MimeType line of
+`packaging/linux/video.patina.Patina.desktop` in step with it; and
+`packaging/macos-bundle.sh` makes the bundle's document types from it.
+`associations.rs` does what IINA's "Set IINA as the default application"
+does, as far as each system allows. On Linux, Preferences › Utilities runs
+`xdg-mime default` for videos, music or playlists and patina:// links,
+after writing a desktop entry for the running executable when no package
+installed one. On macOS it asks LaunchServices to make Patina the default
+for the media types each extension maps to (not another app's type that
+shares it, such as TypeScript's .ts), and for patina:// links with videos. On Windows, a folder without an
+installer, where no app may make itself the default, it writes ProgIDs,
+Open With entries, the `patina` protocol and Default apps capabilities
+under the user's own classes, opens Default apps for the user to choose
+Patina, and takes it all out again on request.
+
+winit's macOS application delegate handles no opens, so `macos.rs`
+installs Apple event handlers for open-documents and get-URL as the app
+finishes launching (after AppKit's own, before any event is delivered) and
+turns them into requests. `NSTreatUnknownArgumentsAsOpen` is off, so files
+named on the command line don't arrive a second time as an event.
 
 ## System media controls
 

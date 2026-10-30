@@ -1,8 +1,6 @@
 # Patina
 
-[patina.video](https://patina.video/)
-
-Patina is a media player for Linux, macOS and Windows, written in Rust with a
+[Patina](https://patina.video/) is a media player for Linux, macOS and Windows, written in Rust with a
 [Slint](https://slint.dev) interface on top of [mpv](https://mpv.io). It
 follows [IINA](https://iina.io)'s design and behaviour, and its goal is
 feature parity with IINA on all three platforms.
@@ -52,7 +50,16 @@ and its state in Patina.
 - Mouse actions: click, double click, right and middle click, and the
   scroll wheel for volume, seeking or speed, as in IINA's control
   preferences
-- Several windows at once, each with its own player
+- Several windows at once, each with its own player, and one Patina at a
+  time: files opened from a terminal, a file manager or a `patina://` link
+  go to the running Patina, which comes to the front
+- File associations: Preferences › Utilities makes Patina the default for
+  videos, music or playlists (on Windows it adds Patina to Open With and
+  Default apps); the macOS bundle declares its file types, and
+  `packaging/linux` has the desktop entry
+- `patina://open?url=…` links for browser extensions and web pages, as
+  IINA's `iina://` scheme, limited to streams and to mpv options that are
+  safe for a web page to set
 - Keeping the screen awake during playback
 - A playback history window, grouped by day or folder and searchable, and
   an inspector with the file, its tracks, live playback statistics and any
@@ -119,11 +126,17 @@ cargo run --release -- movie.mkv
 ```text
 Usage: patina [OPTIONS] [FILE | URL | -] ...
 
-  -e, --enqueue          Add the inputs to the playlist of the newest window
-  -f, --fullscreen       Start in fullscreen
-      --mpv-NAME=VALUE   Set an mpv option (e.g. --mpv-hwdec=no)
-  -v, --verbose          Log mpv and Patina diagnostics to stderr
+  -e, --enqueue           Add the inputs to the playlist of the newest window
+  -w, --separate-windows  Open each input in a window of its own
+  -f, --fullscreen        Play in full screen
+      --pip               Play in picture-in-picture
+      --mpv-NAME=VALUE    Set an mpv option (e.g. --mpv-hwdec=no)
+      --new-instance      Start another Patina rather than use the running one
+  -v, --verbose           Log mpv and Patina diagnostics to stderr
 ```
+
+While Patina is running, the inputs open in it, and the command returns at
+once.
 
 ## Controls
 

@@ -1057,7 +1057,60 @@ pub const ITEMS: &[Item] = &[
         "One name=value per line; applies to new windows.",
         Lines,
     ),
-    // Utilities.
+    // Utilities. Each system has some of the file type buttons (see
+    // available).
+    item(
+        Utilities,
+        "File types",
+        "files-video",
+        "Open Videos with Patina",
+        "Makes Patina the default for video files and patina:// links.",
+        Button,
+    ),
+    item(
+        Utilities,
+        "File types",
+        "files-audio",
+        "Open Music with Patina",
+        "Makes Patina the default for audio files.",
+        Button,
+    ),
+    item(
+        Utilities,
+        "File types",
+        "files-playlists",
+        "Open Playlists with Patina",
+        "Makes Patina the default for M3U, PLS and CUE files.",
+        Button,
+    ),
+    item(
+        Utilities,
+        "File types",
+        "files-register",
+        "Add Patina to Open With",
+        "For video, audio and playlist files, and patina:// links.",
+        Button,
+    ),
+    item(
+        Utilities,
+        "File types",
+        "files-defaults",
+        "Choose Default Apps…",
+        "Windows has you choose Patina there yourself.",
+        Button,
+    ),
+    item(
+        Utilities,
+        "File types",
+        "files-remove",
+        "Remove Patina's File Types",
+        if cfg!(windows) {
+            "Do this before deleting Patina's folder."
+        } else {
+            "Removes the desktop entry Patina added."
+        },
+        Button,
+    ),
     item(
         Utilities,
         "Data",
@@ -1099,6 +1152,16 @@ pub const ITEMS: &[Item] = &[
         Button,
     ),
 ];
+
+/// Whether this system has the row: the file type buttons differ.
+pub fn available(item: &Item) -> bool {
+    match item.key {
+        "files-video" | "files-audio" | "files-playlists" => !cfg!(windows),
+        "files-register" | "files-defaults" => cfg!(windows),
+        "files-remove" => !cfg!(target_os = "macos"),
+        _ => true,
+    }
+}
 
 /// The toolbar buttons, in the order they appear.
 pub const TOOLBAR: &[&str] = &[

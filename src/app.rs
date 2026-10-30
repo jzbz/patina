@@ -2,6 +2,7 @@
 //! bindings, and the list of open player windows.
 
 use crate::input::Bindings;
+use crate::instance::Request;
 use crate::media_controls::{self, MediaControls, NowPlaying};
 use crate::player::CoreOptions;
 use crate::player::state::{TrackKind, file_name};
@@ -9,8 +10,9 @@ use crate::settings::{self, History, HistoryEntry, Paths, Preferences};
 use crate::window::PlayerController;
 use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+use std::time::{Duration, Instant};
 
 thread_local! {
     /// The app, for callbacks that arrive from other threads through
@@ -18,15 +20,10 @@ thread_local! {
     static CURRENT: RefCell<Weak<App>> = const { RefCell::new(Weak::new()) };
 }
 
-pub const MEDIA_EXTENSIONS: &[&str] = &[
-    "3g2", "3gp", "aac", "ac3", "aif", "aiff", "alac", "ape", "asf", "avi", "dts", "eac3", "f4v",
-    "flac", "flv", "h264", "hevc", "m2ts", "m3u", "m3u8", "m4a", "m4v", "mk3d", "mka", "mkv",
-    "mov", "mp2", "mp3", "mp4", "mpeg", "mpg", "mts", "mxf", "oga", "ogg", "ogm", "ogv", "opus",
-    "pls", "rm", "rmvb", "ts", "vob", "wav", "webm", "wma", "wmv", "wv", "y4m",
-];
-pub const SUBTITLE_EXTENSIONS: &[&str] = &[
-    "ass", "idx", "lrc", "mks", "smi", "srt", "ssa", "sub", "sup", "vtt",
-];
+/// Opens this close together share a window, as when a file manager starts
+/// Patina once for each selected file; IINA batches Finder's opens the same
+/// way.
+const BATCH_WITHIN: Duration = Duration::from_millis(200);
 
 pub struct App {
     paths: Paths,
@@ -50,11 +47,30 @@ pub struct App {
     inspector: RefCell<Option<Rc<crate::inspector::InspectorController>>>,
     /// Subtitle choices made from the playlist menu, by file.
     subtitle_choices: crate::subtitle_match::Choices,
+    /// What patina:// links opened, and what their playlists name, which
+    /// the load hook allows only streams from.
+    link_sources: crate::scheme::LinkSources,
     clipboard: RefCell<Option<arboard::Clipboard>>,
     prober: RefCell<Option<crate::probe::Prober>>,
     /// Durations and tags of local files; None for files that can't be read.
     probes: RefCell<std::collections::HashMap<String, Option<crate::probe::Probe>>>,
     probing: RefCell<std::collections::HashSet<String>>,
+    /// Answers later launches while this is the Patina that runs.
+    instance: RefCell<Option<crate::instance::Server>>,
+    /// Set once the launch's own sources are open; requests that come
+    /// sooner wait in `early`.
+    started: Cell<bool>,
+    /// With when each came.
+    early: RefCell<Vec<(Instant, Request)>>,
+    /// When this Patina started, which is when its own request came.
+    started_at: Instant,
+    quitting: Cell<bool>,
+    /// The window the last plain open went to, and when.
+    last_open: RefCell<Option<(Instant, Weak<PlayerController>)>>,
+    /// Requests taken from other launches and the system while starting,
+    /// when a failure to draw makes Patina start again in software; None
+    /// once the first window has shown.
+    accepted: RefCell<Option<Vec<Request>>>,
 }
 
 impl App {
@@ -80,10 +96,18 @@ impl App {
             downloads: RefCell::new(None),
             inspector: RefCell::new(None),
             subtitle_choices: Default::default(),
+            link_sources: Default::default(),
             clipboard: RefCell::new(None),
             prober: RefCell::new(None),
             probes: RefCell::new(std::collections::HashMap::new()),
             probing: RefCell::new(std::collections::HashSet::new()),
+            instance: RefCell::new(None),
+            started: Cell::new(false),
+            early: RefCell::new(Vec::new()),
+            started_at: Instant::now(),
+            quitting: Cell::new(false),
+            last_open: RefCell::new(None),
+            accepted: RefCell::new(Some(Vec::new())),
         });
         CURRENT.with(|current| *current.borrow_mut() = Rc::downgrade(&app));
         app
@@ -223,8 +247,20 @@ impl App {
     // ---- Windows --------------------------------------------------------
 
     pub fn new_window(self: &Rc<Self>) -> Option<Rc<PlayerController>> {
-        match PlayerController::new(self) {
+        self.new_window_with(&[])
+    }
+
+    /// A new window whose mpv core also gets `mpv_options`. Such a window
+    /// keeps them, so it isn't reused for opens that didn't ask for them.
+    fn new_window_with(
+        self: &Rc<Self>,
+        mpv_options: &[(String, String)],
+    ) -> Option<Rc<PlayerController>> {
+        let mut options = self.core_options();
+        options.options.extend(mpv_options.iter().cloned());
+        match PlayerController::new(self, &options) {
             Ok(controller) => {
+                controller.set_own_options(!mpv_options.is_empty());
                 self.windows.borrow_mut().push(controller.clone());
                 self.set_active(&controller);
                 self.start_media_controls(&controller);
@@ -234,11 +270,23 @@ impl App {
                 log::error!("could not open a player window: {error}");
                 if self.windows.borrow().is_empty() {
                     eprintln!("patina: {error}");
+                    self.stop_serving();
                     let _ = slint::quit_event_loop();
                 }
                 None
             }
         }
+    }
+
+    /// Windows any open may go to: not those started with a request's own
+    /// mpv options.
+    fn shared_windows(&self) -> Vec<Rc<PlayerController>> {
+        self.windows
+            .borrow()
+            .iter()
+            .filter(|window| !window.has_own_options())
+            .cloned()
+            .collect()
     }
 
     /// Opens sources the way IINA does: in an idle window if there is one,
@@ -252,7 +300,7 @@ impl App {
         if sources.is_empty() {
             return None;
         }
-        let windows = self.windows.borrow().clone();
+        let windows = self.shared_windows();
         let target = windows
             .iter()
             .rev()
@@ -269,6 +317,231 @@ impl App {
         };
         target.open(sources, append);
         Some(target)
+    }
+
+    // ---- Requests -------------------------------------------------------
+
+    /// Serves later launches from now on.
+    pub fn set_instance(&self, server: crate::instance::Server) {
+        *self.instance.borrow_mut() = Some(server);
+    }
+
+    /// Stops serving other launches, so that the next one becomes the
+    /// running Patina; from now on requests are refused.
+    fn stop_serving(&self) {
+        self.quitting.set(true);
+        drop(self.instance.borrow_mut().take());
+    }
+
+    /// Opens what Patina was started with, then what came from other
+    /// launches or the system meanwhile. It waits for the event loop to
+    /// deliver what is already queued: on macOS, a file Finder opened
+    /// Patina with arrives as an event, and then takes the welcome
+    /// window's place.
+    pub fn launch(self: &Rc<Self>, request: Request) {
+        let queued = slint::invoke_from_event_loop(|| {
+            App::with_current(|app| app.start(request));
+        });
+        if let Err(error) = queued {
+            log::warn!("could not start: {error}");
+            let _ = slint::quit_event_loop();
+        }
+    }
+
+    fn start(self: &Rc<Self>, request: Request) {
+        self.started.set(true);
+        let early = std::mem::take(&mut *self.early.borrow_mut());
+        let mut first = None;
+        if !request.sources.is_empty() {
+            first = self.open_request_now(request);
+        } else if early.iter().all(|(_, early)| early.sources.is_empty()) {
+            first = self.new_window();
+            if let Some(window) = &first {
+                if self.prefs().launch_action == "open-dialog" {
+                    window.run_action("open-file");
+                }
+                if request.fullscreen {
+                    window.enter_fullscreen();
+                }
+                // The launcher's startup notice ends when the window shows.
+                window.raise_with(request.activation_token);
+            }
+        }
+        // Opens that waited for startup batch as they would have had they
+        // come later: only within BATCH_WITHIN of the one before.
+        let mut previous = self.started_at;
+        for (came, request) in early {
+            if came.saturating_duration_since(previous) >= BATCH_WITHIN {
+                *self.last_open.borrow_mut() = None;
+            }
+            previous = came;
+            let opened = self.open_request_now(request);
+            first = first.or(opened);
+        }
+        if let Some(window) = &first {
+            watch_first_window(window);
+        }
+    }
+
+    /// A request from another launch, a link or the system. Opened means it
+    /// is open, or will be once startup is done.
+    pub fn open_request(self: &Rc<Self>, request: Request) -> crate::instance::Verdict {
+        use crate::instance::Verdict;
+        if self.quitting.get() {
+            return Verdict::Quitting;
+        }
+        if let Some(accepted) = &mut *self.accepted.borrow_mut() {
+            accepted.push(request.clone());
+        }
+        if !self.started.get() {
+            self.early.borrow_mut().push((Instant::now(), request));
+            return Verdict::Opened;
+        }
+        match self.open_request_now(request) {
+            Some(_) => Verdict::Opened,
+            None => Verdict::Failed("Patina could not open a window".into()),
+        }
+    }
+
+    /// The requests this Patina took from other launches and the system
+    /// while it started, to hand on to a Patina starting in its place.
+    pub fn accepted_requests(&self) -> Vec<Request> {
+        self.accepted.borrow().clone().unwrap_or_default()
+    }
+
+    fn open_request_now(self: &Rc<Self>, request: Request) -> Option<Rc<PlayerController>> {
+        let (links, sources): (Vec<String>, Vec<String>) = request
+            .sources
+            .iter()
+            .cloned()
+            .partition(|source| crate::scheme::is_link(source));
+        let mut first = None;
+        for link in &links {
+            let opened = match crate::scheme::parse(link) {
+                Ok(linked) => {
+                    crate::scheme::note_link_sources(&self.link_sources, &linked.sources);
+                    self.open_one(Request {
+                        activation_token: request.activation_token.clone(),
+                        ..linked
+                    })
+                }
+                Err(error) => {
+                    // Shown escaped: a link's text is a web page's.
+                    log::warn!("{link:?}: {error}");
+                    let window = self.active_window().or_else(|| self.new_window());
+                    if let Some(window) = &window {
+                        window.show_osd("Can't Open the Link", &error, None);
+                        window.raise_with(request.activation_token.clone());
+                    }
+                    window
+                }
+            };
+            first = first.or(opened);
+        }
+        if !sources.is_empty() || links.is_empty() {
+            let request = Request { sources, ..request };
+            if request.separate_windows {
+                for source in &request.sources {
+                    let opened = self.open_one(Request {
+                        sources: vec![source.clone()],
+                        new_window: true,
+                        ..request.clone()
+                    });
+                    first = first.or(opened);
+                }
+            } else {
+                let opened = self.open_one(request);
+                first = first.or(opened);
+            }
+        }
+        first
+    }
+
+    fn open_one(self: &Rc<Self>, request: Request) -> Option<Rc<PlayerController>> {
+        let Request {
+            sources,
+            enqueue,
+            new_window,
+            fullscreen,
+            pip,
+            mpv_options,
+            activation_token,
+            ..
+        } = request;
+        // mpv options are set as a window's core starts, so they take a
+        // window of their own.
+        let own_window = new_window || !mpv_options.is_empty();
+        let plain = !sources.is_empty() && !own_window && !enqueue;
+        let opening = !sources.is_empty();
+        // Added to a playlist rather than opened in place.
+        let mut appended = enqueue;
+        let target = if sources.is_empty() {
+            // Nothing to open: Patina comes to the front, as IINA does when
+            // it is opened again.
+            if own_window {
+                self.idle_or_new_window(&mpv_options)
+            } else {
+                self.active_window().or_else(|| self.new_window())
+            }
+        } else if let Some(target) = self.batch_target().filter(|_| plain) {
+            target.open(sources, true);
+            appended = true;
+            Some(target)
+        } else if own_window {
+            let target = self.idle_or_new_window(&mpv_options);
+            if let Some(target) = &target {
+                target.open(sources, false);
+            }
+            target
+        } else {
+            self.open_sources(sources, enqueue)
+        }?;
+        if plain {
+            *self.last_open.borrow_mut() = Some((Instant::now(), Rc::downgrade(&target)));
+        }
+        // Full screen wins over picture-in-picture, as in IINA's links.
+        // Picture-in-picture waits for the video that is opening, unless
+        // the files only joined a playlist whose video is showing.
+        if fullscreen {
+            target.enter_fullscreen();
+        } else if pip && opening && !(appended && target.has_video()) {
+            target.pip_when_video();
+        } else if pip {
+            target.enter_pip();
+        }
+        target.raise_with(activation_token);
+        Some(target)
+    }
+
+    fn idle_or_new_window(
+        self: &Rc<Self>,
+        mpv_options: &[(String, String)],
+    ) -> Option<Rc<PlayerController>> {
+        let idle = mpv_options
+            .is_empty()
+            .then(|| {
+                let windows = self.shared_windows();
+                windows
+                    .iter()
+                    .rev()
+                    .find(|window| window.is_idle())
+                    .cloned()
+            })
+            .flatten();
+        idle.or_else(|| self.new_window_with(mpv_options))
+    }
+
+    /// The window of a plain open moments ago, if it is still open.
+    fn batch_target(&self) -> Option<Rc<PlayerController>> {
+        let (at, window) = self.last_open.borrow().clone()?;
+        let window = window.upgrade().filter(|_| at.elapsed() < BATCH_WITHIN)?;
+        self.find(&window)
+    }
+
+    /// The window used most recently, or the newest.
+    fn active_window(&self) -> Option<Rc<PlayerController>> {
+        let active = self.active.borrow().upgrade();
+        active.or_else(|| self.windows.borrow().last().cloned())
     }
 
     /// Keeps the screen awake while any window is playing, as IINA does.
@@ -299,12 +572,19 @@ impl App {
                 None => self.publish_now_playing(NowPlaying::default()),
             }
         }
+        // The last window has saved its place by now, so the next launch
+        // may start afresh.
         if self.windows.borrow().is_empty() {
+            self.stop_serving();
             let _ = slint::quit_event_loop();
         }
     }
 
     pub fn quit(&self) {
+        // Refuse further requests at once, but keep the lock until the
+        // windows have saved the history and settings, which the next
+        // Patina reads.
+        self.quitting.set(true);
         if let Some(downloads) = self.existing_downloads() {
             downloads.stop_all();
         }
@@ -325,6 +605,7 @@ impl App {
         for window in windows {
             window.close();
         }
+        self.stop_serving();
         let _ = slint::quit_event_loop();
     }
 
@@ -506,7 +787,7 @@ impl App {
         let dialog = self
             .dialog_for(Some(owner))
             .set_title(format!("Subtitles for {}", file_name(path)))
-            .add_filter("Subtitle files", SUBTITLE_EXTENSIONS)
+            .add_filter("Subtitle files", crate::formats::SUBTITLE_EXTENSIONS)
             .add_filter("All files", &["*"]);
         let target = self.find(owner);
         let app = Rc::downgrade(self);
@@ -531,6 +812,11 @@ impl App {
                 }
             }
         });
+    }
+
+    /// What links opened, shared with the threads that load files.
+    pub fn link_sources(&self) -> crate::scheme::LinkSources {
+        self.link_sources.clone()
     }
 
     // ---- Clipboard --------------------------------------------------------
@@ -604,6 +890,7 @@ impl App {
     /// new one.
     pub fn play_from_history(self: &Rc<Self>, path: String, new_window: bool) {
         let active = self.active.borrow().upgrade();
+        let active = active.filter(|active| !active.has_own_options());
         let target = match active {
             Some(active) if !new_window => Some(active),
             _ => self.new_window(),
@@ -905,7 +1192,10 @@ impl App {
                 dialog.pick_folder().await.map(|folder| vec![folder])
             } else {
                 dialog
-                    .add_filter("Media files", MEDIA_EXTENSIONS)
+                    .add_filter(
+                        "Media files",
+                        &crate::formats::extensions(crate::formats::ALL),
+                    )
                     .add_filter("All files", &["*"])
                     .pick_files()
                     .await
@@ -931,15 +1221,20 @@ impl App {
             TrackKind::Sub => (
                 "Load Subtitles",
                 "Subtitle files",
-                SUBTITLE_EXTENSIONS,
+                crate::formats::SUBTITLE_EXTENSIONS.to_vec(),
                 "sub-add",
             ),
-            _ => ("Load Audio", "Audio files", MEDIA_EXTENSIONS, "audio-add"),
+            _ => (
+                "Load Audio",
+                "Audio files",
+                crate::formats::extensions(crate::formats::ALL),
+                "audio-add",
+            ),
         };
         let dialog = self
             .dialog_for(Some(owner))
             .set_title(title)
-            .add_filter(filter, extensions)
+            .add_filter(filter, &extensions)
             .add_filter("All files", &["*"]);
         let target = self.find(owner);
         spawn(async move {
@@ -1000,6 +1295,27 @@ fn binding_conf(paths: &Paths, name: &str) -> String {
         );
         crate::input::default_conf()
     })
+}
+
+/// Slint makes a shown window's native window when the event loop is next
+/// idle. When it can't (OpenGL failed), it keeps the error for when the
+/// loop ends but doesn't end it, so the window never appears and nothing
+/// says why. This ends the loop for it.
+fn watch_first_window(window: &Rc<PlayerController>) {
+    use slint::winit_030::WinitWindowAccessor;
+    let window = Rc::downgrade(window);
+    slint::Timer::single_shot(Duration::from_secs(3), move || {
+        let missing = window.upgrade().is_some_and(|window| {
+            let window = window.window().window();
+            window.is_visible() && window.with_winit_window(|_| ()).is_none()
+        });
+        if missing {
+            crate::video::software::restart("the window never appeared".into());
+        } else {
+            // Started: nothing to hand over from here on.
+            App::with_current(|app| *app.accepted.borrow_mut() = None);
+        }
+    });
 }
 
 fn spawn(future: impl std::future::Future<Output = ()> + 'static) {

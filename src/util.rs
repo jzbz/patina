@@ -13,6 +13,23 @@ pub fn is_url(source: &str) -> bool {
     }
 }
 
+/// True for URLs other than file:// ones: what comes over the network.
+pub fn is_remote(source: &str) -> bool {
+    is_url(source)
+        && !source
+            .get(..7)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("file://"))
+}
+
+/// True for web pages: http:// and https:// URLs.
+pub fn is_web(source: &str) -> bool {
+    ["http://", "https://"].iter().any(|scheme| {
+        source
+            .get(..scheme.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+    })
+}
+
 /// Seconds as `mm:ss` or `h:mm:ss`, matching the interface's clock.
 pub fn format_time(seconds: f64) -> String {
     if !seconds.is_finite() || seconds < 0.0 {

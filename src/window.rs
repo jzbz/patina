@@ -64,6 +64,16 @@ pub struct PlayerController {
     state: RefCell<PlaybackState>,
     ready: Cell<bool>,
     pending_open: RefCell<Vec<(Vec<String>, bool)>>,
+    /// Bring the window to the front once it exists, with the desktop's
+    /// activation token if a launch passed one on.
+    pending_raise: RefCell<Option<Option<String>>>,
+    /// Picture-in-picture asked for a file that is opening.
+    pip_pending: Cell<PipPending>,
+    /// A load asked of mpv that it hasn't started yet: the window is no
+    /// longer free for another open, though mpv still reports it idle.
+    load_asked: Cell<bool>,
+    /// The core started with a request's own mpv options.
+    own_options: Cell<bool>,
     closed: Cell<bool>,
     osd_timer: Timer,
     last_user_action: Cell<Option<Instant>>,
@@ -123,9 +133,9 @@ pub struct PlayerController {
 }
 
 impl PlayerController {
-    pub fn new(app: &Rc<App>) -> Result<Rc<Self>, String> {
+    pub fn new(app: &Rc<App>, options: &crate::player::CoreOptions) -> Result<Rc<Self>, String> {
         let window = PlayerWindow::new().map_err(|error| error.to_string())?;
-        let (player, events) = Player::start(&app.core_options())?;
+        let (player, events) = Player::start(options)?;
         let mpv = player.mpv().clone();
 
         let controller = Rc::new_cyclic(|this| Self {
@@ -155,6 +165,10 @@ impl PlayerController {
             state: RefCell::new(PlaybackState::default()),
             ready: Cell::new(false),
             pending_open: RefCell::new(Vec::new()),
+            pending_raise: RefCell::new(None),
+            pip_pending: Cell::new(PipPending::No),
+            load_asked: Cell::new(false),
+            own_options: Cell::new(false),
             closed: Cell::new(false),
             osd_timer: Timer::default(),
             last_user_action: Cell::new(None),
@@ -210,7 +224,17 @@ impl PlayerController {
     }
 
     pub fn is_idle(&self) -> bool {
-        self.state.borrow().idle && self.pending_open.borrow().is_empty()
+        self.state.borrow().idle && self.pending_open.borrow().is_empty() && !self.load_asked.get()
+    }
+
+    pub fn set_own_options(&self, own: bool) {
+        self.own_options.set(own);
+    }
+
+    /// Whether the core started with a request's own mpv options, which
+    /// other opens shouldn't inherit.
+    pub fn has_own_options(&self) -> bool {
+        self.own_options.get()
     }
 
     /// The file playing now, as mpv was given it.
@@ -258,9 +282,53 @@ impl PlayerController {
 
     /// Brings the window to the front.
     pub fn raise(&self) {
+        self.raise_with(None);
+    }
+
+    /// Brings the window to the front, now or once it exists. On Wayland
+    /// that takes an activation token from whatever started the request
+    /// (winit's focus_window does nothing there).
+    pub fn raise_with(&self, token: Option<String>) {
         let window = self.window.window();
+        if window.with_winit_window(|_| ()).is_none() {
+            // A raise without a token keeps the one already waiting.
+            let mut pending = self.pending_raise.borrow_mut();
+            if token.is_some() || pending.is_none() {
+                *pending = Some(token);
+            }
+            return;
+        }
         window.set_minimized(false);
         window.with_winit_window(|winit| winit.focus_window());
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(token) = token {
+            crate::wayland::activate(window, &token);
+        }
+    }
+
+    pub fn enter_fullscreen(&self) {
+        if !self.window.window().is_fullscreen() {
+            self.run_action("toggle-fullscreen");
+        }
+    }
+
+    /// Picture-in-picture for the video showing now, if there is one.
+    pub fn enter_pip(&self) {
+        if !self.window.get_pip() && self.has_video() {
+            self.toggle_pip();
+        }
+    }
+
+    /// Picture-in-picture once the file that is opening shows its video;
+    /// forgotten if it ends first (it had no video, or failed to open).
+    pub fn pip_when_video(&self) {
+        if !self.window.get_pip() {
+            self.pip_pending.set(PipPending::Asked);
+        }
+    }
+
+    pub fn has_video(&self) -> bool {
+        self.state.borrow().has_video()
     }
 
     pub fn window(&self) -> &PlayerWindow {
@@ -433,6 +501,7 @@ impl PlayerController {
 
     fn load(&self, sources: &[String], append: bool) {
         let player = self.player();
+        self.load_asked.set(true);
         if !append {
             player.command_quiet(&["write-watch-later-config"]);
             self.has_fitted.set(false);
@@ -469,9 +538,15 @@ impl PlayerController {
                         && self.state.borrow_mut().apply(prop, &value)
                     {
                         changed.insert(prop);
+                        if prop == Prop::Idle && !self.state.borrow().idle {
+                            self.load_asked.set(false);
+                        }
                     }
                 }
                 Event::StartFile { .. } => {
+                    if self.pip_pending.get() == PipPending::Asked {
+                        self.pip_pending.set(PipPending::Opening);
+                    }
                     self.track.set(self.track.get() + 1);
                     self.reset_thumbnails();
                     self.set_online(None);
@@ -518,6 +593,10 @@ impl PlayerController {
                 } => {}
                 Event::EndFile { reason, error, .. } => {
                     self.loading.set(false);
+                    self.load_asked.set(false);
+                    if self.pip_pending.get() == PipPending::Opening {
+                        self.pip_pending.set(PipPending::No);
+                    }
                     changed.insert(Prop::PausedForCache);
                     {
                         let state = self.state.borrow();
@@ -882,8 +961,28 @@ impl PlayerController {
                 other => other.parse().unwrap_or(1.0),
             };
             self.fit_to_video(scale, true);
-            if first && prefs.fullscreen_when_open && !self.window.window().is_fullscreen() {
+            // Picture-in-picture asked for wins over full screen on open.
+            if self.pip_pending.get() == PipPending::Opening {
+                self.pip_pending.set(PipPending::No);
+                if !self.window.get_pip() {
+                    self.toggle_pip();
+                }
+            } else if first && prefs.fullscreen_when_open && !self.window.window().is_fullscreen() {
                 self.player().set("fullscreen", true);
+            }
+            self.osd_for_changes(changed);
+            return;
+        }
+        // Without a fit to wait for (the window size preference is Never,
+        // or the window has fitted once already).
+        if any(&[Prop::VideoParams])
+            && state.video.is_some()
+            && self.pip_pending.get() == PipPending::Opening
+        {
+            drop(state);
+            self.pip_pending.set(PipPending::No);
+            if !self.window.get_pip() {
+                self.toggle_pip();
             }
             self.osd_for_changes(changed);
             return;
@@ -1270,6 +1369,19 @@ impl PlayerController {
             };
             this.style_titlebar();
             this.app().start_media_controls(&this);
+            // Once the window is first drawn, which is when the desktop
+            // shows it: after Slint draws for this event.
+            if matches!(event, winit::event::WindowEvent::RedrawRequested) {
+                let raise = this.pending_raise.borrow_mut().take();
+                if let Some(token) = raise {
+                    let weak = Rc::downgrade(&this);
+                    slint::Timer::single_shot(Duration::ZERO, move || {
+                        if let Some(this) = weak.upgrade() {
+                            this.raise_with(token);
+                        }
+                    });
+                }
+            }
             match event {
                 winit::event::WindowEvent::HoveredFile(_) => this.window.set_drop_active(true),
                 winit::event::WindowEvent::HoveredFileCancelled => {
@@ -1601,11 +1713,7 @@ impl PlayerController {
             }
             "playlist-play-next" => self.playlist_play_next(),
             "playlist-play-new-window" => {
-                let paths: Vec<String> = self
-                    .selected_entries()
-                    .into_iter()
-                    .map(|(_, entry)| entry.filename)
-                    .collect();
+                let paths = self.reopenable(&self.selected_entries());
                 if !paths.is_empty()
                     && let Some(window) = app.new_window()
                 {
@@ -1635,8 +1743,10 @@ impl PlayerController {
                 }
             }
             "playlist-open-in-browser" => {
+                // Web pages only: a playlist from the network may name any
+                // URL, and the system opens other kinds with other apps.
                 for (_, entry) in self.selected_entries() {
-                    if util::is_url(&entry.filename) {
+                    if util::is_web(&entry.filename) {
                         crate::platform::open_url(&entry.filename);
                     }
                 }
@@ -1645,7 +1755,7 @@ impl PlayerController {
                 let first = self
                     .selected_entries()
                     .into_iter()
-                    .find(|(_, entry)| !util::is_url(&entry.filename));
+                    .find(|(_, entry)| entry.is_local());
                 if let Some((_, entry)) = first {
                     crate::platform::reveal(std::path::Path::new(&entry.filename));
                 }
@@ -1654,7 +1764,7 @@ impl PlayerController {
                 let local: Vec<(usize, PlaylistEntry)> = self
                     .selected_entries()
                     .into_iter()
-                    .filter(|(_, entry)| !util::is_url(&entry.filename))
+                    .filter(|(_, entry)| entry.is_local())
                     .collect();
                 self.move_to_trash(&local);
             }
@@ -1663,7 +1773,7 @@ impl PlayerController {
                 let current = usize::try_from(state.playlist_pos)
                     .ok()
                     .and_then(|index| Some((index, state.playlist.get(index)?.clone())))
-                    .filter(|(_, entry)| !util::is_url(&entry.filename));
+                    .filter(|(_, entry)| entry.is_local());
                 drop(state);
                 if let Some(current) = current {
                     self.move_to_trash(&[current]);
@@ -2176,7 +2286,9 @@ impl PlayerController {
     /// length once probed, and how far it was watched.
     fn playlist_item(&self, index: usize, entry: &PlaylistEntry) -> PlaylistItem {
         let app = self.app();
-        let probe = app.probe(&entry.filename);
+        let probe = (!entry.from_network)
+            .then(|| app.probe(&entry.filename))
+            .flatten();
         let state = self.state.borrow();
         let duration = if entry.current && state.duration > 0.0 {
             Some(state.duration)
@@ -2235,6 +2347,8 @@ impl PlayerController {
             .map(|entry| {
                 if entry.current && state.duration > 0.0 {
                     Some(state.duration)
+                } else if entry.from_network {
+                    None
                 } else {
                     app.probe(&entry.filename).map(|probe| probe.duration)
                 }
@@ -2340,10 +2454,12 @@ impl PlayerController {
             .collect();
         let media = self.window.global::<Media>();
         media.set_playlist_selected(entries.len() as i32);
-        media.set_selection_local(entries.iter().any(|entry| !util::is_url(&entry.filename)));
+        media.set_selection_local(entries.iter().any(|entry| entry.is_local()));
         media.set_selection_urls(entries.iter().any(|entry| util::is_url(&entry.filename)));
         let single = match entries.as_slice() {
-            [entry] if subtitle_match::takes_subtitles(&entry.filename) => Some(*entry),
+            [entry] if entry.is_local() && subtitle_match::takes_subtitles(&entry.filename) => {
+                Some(*entry)
+            }
             _ => None,
         };
         media.set_selection_subtitles(single.is_some());
@@ -2414,14 +2530,32 @@ impl PlayerController {
         if entries.is_empty() {
             return;
         }
-        let text: Vec<&str> = entries
-            .iter()
-            .map(|(_, entry)| entry.filename.as_str())
-            .collect();
-        self.app().set_clipboard_text(text.join("\n"));
+        // Pasted, they open as the user's own.
+        let text = self.reopenable(&entries).join("\n");
+        self.app().set_clipboard_text(text);
         if cut {
             self.playlist_remove(&entries);
         }
+    }
+
+    /// The entries that may open again elsewhere (see
+    /// PlaylistEntry::may_reopen). Those of a link's playlist stay a link's
+    /// wherever they open, so that playlists they name are screened too.
+    fn reopenable(&self, entries: &[(usize, PlaylistEntry)]) -> Vec<String> {
+        let links = self.app().link_sources();
+        let paths: Vec<String> = entries
+            .iter()
+            .filter(|(_, entry)| entry.may_reopen(&links))
+            .map(|(_, entry)| entry.filename.clone())
+            .collect();
+        let linked: Vec<String> = entries
+            .iter()
+            .filter(|(_, entry)| crate::scheme::from_link(&links, &entry.playlist))
+            .map(|(_, entry)| entry.filename.clone())
+            .filter(|path| paths.contains(path))
+            .collect();
+        crate::scheme::note_link_sources(&links, &linked);
+        paths
     }
 
     /// Adds sources to the playlist right after the last selected row, or
@@ -2517,19 +2651,23 @@ impl PlayerController {
         let choices = self.app().subtitle_choices();
         let qualities = self.qualities.borrow().clone();
         let resume_at = self.resume_at.borrow_mut().take();
+        let links = self.app().link_sources();
         let mpv = self.mpv.clone();
-        let spawned = std::thread::Builder::new()
-            .name("subtitles".into())
-            .spawn(move || {
+        let Some(hook) = self.player.borrow().as_ref().map(Player::hook) else {
+            return;
+        };
+        let spawned = std::thread::Builder::new().name("subtitles".into()).spawn({
+            let hook = hook.clone();
+            move || {
+                crate::scheme::screen_playlist_entry(&mpv, &links);
                 apply_quality(&mpv, &qualities, resume_at);
                 subtitle_match::load_for_current_file(&mpv, languages.as_deref(), &choices);
-                if let Err(error) = mpv.hook_continue(id) {
-                    log::warn!("{error}");
-                }
-            });
+                hook.resume(&mpv, id);
+            }
+        });
         if let Err(error) = spawned {
             log::warn!("could not match subtitles: {error}");
-            let _ = self.mpv.hook_continue(id);
+            hook.resume(&self.mpv, id);
         }
     }
 
@@ -3150,6 +3288,16 @@ impl PlayerController {
         }
         self.app().window_closed(self);
     }
+}
+
+/// Where a picture-in-picture request for an opening file stands.
+#[derive(Clone, Copy, PartialEq)]
+enum PipPending {
+    No,
+    /// Asked for; the file hasn't started.
+    Asked,
+    /// Its file has started: enter on its video, forget at its end.
+    Opening,
 }
 
 /// Entry ids in playlist order, which the selection is kept by.

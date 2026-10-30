@@ -12,6 +12,7 @@ pub use props::Prop;
 use crate::mpv::{Event, Mpv, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 /// Startup options for an mpv core.
@@ -41,7 +42,44 @@ const HOOK_LOAD_PRIORITY: i32 = -50;
 
 pub struct Player {
     mpv: Arc<Mpv>,
+    hook: Arc<PendingHook>,
     events: Option<JoinHandle<()>>,
+}
+
+/// The load hook mpv is waiting in, so that shutting down can let it go:
+/// mpv can't quit while it waits for Patina, and the interface thread,
+/// which would let it go, may be the one shutting it down.
+#[derive(Default)]
+pub struct PendingHook {
+    closing: AtomicBool,
+    id: AtomicU64,
+}
+
+impl PendingHook {
+    /// Lets mpv go on from hook `id`, unless that has been done.
+    pub fn resume(&self, mpv: &Mpv, id: u64) {
+        if self
+            .id
+            .compare_exchange(id, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            && let Err(error) = mpv.hook_continue(id)
+        {
+            log::warn!("{error}");
+        }
+    }
+
+    /// Notes a hook mpv now waits in; false if the core is closing, and it
+    /// has been let go at once.
+    fn waiting(&self, mpv: &Mpv, id: u64) -> bool {
+        // Stored before closing is read, and closing set before the id is
+        // taken in shutdown, so one of the two lets it go.
+        self.id.store(id, Ordering::SeqCst);
+        if self.closing.load(Ordering::SeqCst) {
+            self.resume(mpv, id);
+            return false;
+        }
+        true
+    }
 }
 
 impl Player {
@@ -123,15 +161,17 @@ impl Player {
         }
 
         let (sender, receiver) = async_channel::unbounded();
-        let thread_mpv = mpv.clone();
+        let hook = Arc::new(PendingHook::default());
+        let (thread_mpv, thread_hook) = (mpv.clone(), hook.clone());
         let events = std::thread::Builder::new()
             .name("mpv-events".into())
-            .spawn(move || pump_events(&thread_mpv, &sender))
+            .spawn(move || pump_events(&thread_mpv, &thread_hook, &sender))
             .map_err(|error| format!("could not start the mpv event thread: {error}"))?;
 
         Ok((
             Player {
                 mpv,
+                hook,
                 events: Some(events),
             },
             receiver,
@@ -140,6 +180,11 @@ impl Player {
 
     pub fn mpv(&self) -> &Arc<Mpv> {
         &self.mpv
+    }
+
+    /// For letting mpv go on from the load hook.
+    pub fn hook(&self) -> Arc<PendingHook> {
+        self.hook.clone()
     }
 
     /// Queues an mpv command; failures are reported back as events.
@@ -172,6 +217,11 @@ impl Player {
     /// Stops playback, saves the resume position, and ends the event thread.
     pub fn shutdown(&mut self) {
         if let Some(events) = self.events.take() {
+            self.hook.closing.store(true, Ordering::SeqCst);
+            let waiting = self.hook.id.load(Ordering::SeqCst);
+            if waiting != 0 {
+                self.hook.resume(&self.mpv, waiting);
+            }
             if let Err(error) = self.mpv.command(&["quit"]) {
                 log::warn!("{error}");
             }
@@ -188,7 +238,7 @@ impl Drop for Player {
     }
 }
 
-fn pump_events(mpv: &Mpv, sender: &async_channel::Sender<Vec<Event>>) {
+fn pump_events(mpv: &Mpv, hook: &PendingHook, sender: &async_channel::Sender<Vec<Event>>) {
     loop {
         let Some(first) = mpv.wait_event(-1.0) else {
             continue;
@@ -207,6 +257,7 @@ fn pump_events(mpv: &Mpv, sender: &async_channel::Sender<Vec<Event>>) {
                 log_mpv_message(message);
                 false
             }
+            Event::Hook { id, .. } => hook.waiting(mpv, *id),
             _ => true,
         });
         coalesce_property_changes(&mut batch);

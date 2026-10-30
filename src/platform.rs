@@ -88,11 +88,39 @@ pub fn open_url(url: &str) {
     if cfg!(target_os = "macos") {
         spawn(Command::new("open").arg(url));
     } else if cfg!(target_os = "windows") {
-        spawn(Command::new("cmd").args(["/C", "start", "", url]));
+        open_url_windows(url);
     } else {
         spawn(Command::new("xdg-open").arg(url));
     }
 }
+
+/// Through the shell's own call, not cmd's `start`, which would read `&`
+/// and the like in a URL as more commands.
+#[cfg(windows)]
+fn open_url_windows(url: &str) {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
+    let (operation, file) = (wide("open"), wide(url));
+    // SAFETY: NUL-terminated strings that outlive the call.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Values up to 32 are errors.
+    if result as usize <= 32 {
+        log::warn!("could not open {url:?}: error {}", result as usize);
+    }
+}
+
+#[cfg(not(windows))]
+fn open_url_windows(_url: &str) {}
 
 /// Shows a file selected in the file manager.
 pub fn reveal(path: &Path) {

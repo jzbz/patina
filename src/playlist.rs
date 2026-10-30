@@ -190,7 +190,7 @@ pub fn pasted_sources(text: &str) -> Vec<String> {
 }
 
 /// The local path of a file:// URI, percent-decoded.
-fn file_uri_path(uri: &str) -> Option<String> {
+pub fn file_uri_path(uri: &str) -> Option<String> {
     let rest = uri.strip_prefix("file://")?;
     // file:///path, or file://localhost/path.
     let path = rest.strip_prefix("localhost").unwrap_or(rest);
