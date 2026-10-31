@@ -874,6 +874,12 @@ fn cache_files(dir: &Path) -> Vec<(SystemTime, u64, PathBuf)> {
 
 /// Deletes the least recently used of the cache's files until they come
 /// to at most `limit` bytes, and returns what they come to then.
+/// Empties a disk cache's folder as `Images::clear` does, without a cache:
+/// for signing out before any image was asked for. Blocks.
+pub fn clear_folder(dir: &Path) {
+    evict(dir, 0);
+}
+
 fn evict(dir: &Path, limit: u64) -> u64 {
     let mut files = cache_files(dir);
     let mut total: u64 = files.iter().map(|(_, size, _)| size).sum();
@@ -960,6 +966,17 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn a_folder_is_cleared_without_a_cache() {
+        let folder = Folder::new("clear-folder");
+        std::fs::create_dir_all(&folder.0).unwrap();
+        std::fs::write(folder.0.join("0123456789abcdef.img"), b"jpeg").unwrap();
+        std::fs::write(folder.0.join("notes.txt"), b"theirs").unwrap();
+        clear_folder(&folder.0);
+        assert!(!folder.0.join("0123456789abcdef.img").exists());
+        assert!(folder.0.join("notes.txt").exists());
     }
 
     /// What a receiver from `disk_usage` or `clear` gets.

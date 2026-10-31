@@ -614,7 +614,18 @@ impl Session {
     /// leave behind. The cache keeps every server's images together, by
     /// URL, so all of it goes; the other servers' come back as they show.
     fn clear_images(&self) {
-        drop(self.images().clear());
+        if let Some(images) = self.images.borrow().as_ref() {
+            drop(images.clear());
+            return;
+        }
+        // No cache yet: its folder is emptied without starting one.
+        let dir = self.images_dir.clone();
+        let spawned = std::thread::Builder::new()
+            .name("jellyfin-image-files".into())
+            .spawn(move || images::clear_folder(&dir));
+        if let Err(error) = spawned {
+            log::warn!("could not start a thread for the Jellyfin image cache: {error}");
+        }
     }
 
     pub fn subscribe(&self, listener: Weak<dyn Listener>) {
@@ -1653,6 +1664,9 @@ mod tests {
         session.remove_account("s2", false);
         assert!(!session.signed_in());
         assert!(!Store::load(&folder.0).server("s2").unwrap().signed_in());
+        // None of it started an image cache, whose results come back on an
+        // event loop (which macOS lets only the main thread make).
+        assert!(session.images.borrow().is_none());
     }
 
     #[test]
