@@ -39,7 +39,7 @@ have been run for playback (see M5).
 | WIN-11 | Dark / light / system theme | partial: dark only |
 | WIN-12 | Translucent materials | adapted: translucent panels without blur |
 | WIN-13 | Title shows file name, fades with controls | done (path menu planned) |
-| WIN-14 | Float on top | done: menu, title-bar pin, `ontop` sync, preference |
+| WIN-14 | Float on top | done: menu, title-bar pin, `ontop` sync, preference. Not on Wayland, which leaves keeping a window above the others to the compositor (winit ignores the request there): a Wayland window hides the pin, the menu item and the preference |
 | WIN-15 | Full screen | done: borderless full screen through the window system |
 | WIN-16 | Black out other monitors | planned |
 | WIN-17 | Full-screen auto play/pause | partial: full screen when media opens; play/pause on entering or leaving planned |

@@ -31,6 +31,18 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+/// Whether `window` is a Wayland window; false until winit has made it.
+pub fn is_wayland(window: &slint::Window) -> bool {
+    window
+        .with_winit_window(|winit| {
+            matches!(
+                winit.display_handle().map(|handle| handle.as_raw()),
+                Ok(RawDisplayHandle::Wayland(_))
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Activates `window` with `token`; does nothing off Wayland.
 pub fn activate(window: &slint::Window, token: &str) {
     let handles = window

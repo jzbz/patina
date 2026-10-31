@@ -64,6 +64,9 @@ export global Platform {
     // Patina's title bar is drawn over the video: its own (custom-titlebar),
     // or beside macOS's buttons in a transparent title bar.
     in property <bool> overlay-titlebar: true;
+    // Float on Top can work: not on Wayland, which leaves keeping a window
+    // above the others to the compositor.
+    in property <bool> can-float: true;
     in property <string> version;
 }
 

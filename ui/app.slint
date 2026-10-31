@@ -562,7 +562,7 @@ export component PlayerWindow inherits Window {
                     Actions.patina("toggle-fullscreen");
                 }
             }
-            MenuItem {
+            if Platform.can-float: MenuItem {
                 title: "Float on Top";
                 checked: Playback.on-top;
                 activated => {

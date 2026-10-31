@@ -51,6 +51,21 @@ pub fn flatpak() -> bool {
         && *FLATPAK.get_or_init(|| Path::new("/.flatpak-info").exists())
 }
 
+static WINDOWS_FLOAT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether a window can float on top of the others. A Wayland window can't:
+/// Wayland leaves that to the compositor alone, and winit ignores the
+/// request there. Assumed until a window shows otherwise.
+pub fn windows_float() -> bool {
+    WINDOWS_FLOAT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A window turned out to be a Wayland window.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn windows_cannot_float() {
+    WINDOWS_FLOAT.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Moves files to the trash (the Recycle Bin on Windows) on a thread of its
 /// own; failures are logged.
 /// Whether Patina may move the file to the trash, or why not. Only a Flatpak

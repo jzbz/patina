@@ -355,7 +355,7 @@ export component TitleBar inherits Rectangle {
                 }
             }
 
-            IconButton {
+            if Platform.can-float: IconButton {
                 y: 2px;
                 icon: root.always-on-top ? @image-url("icons/pin-filled.svg") : @image-url("icons/pin.svg");
                 icon-size: 16px;

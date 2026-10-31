@@ -1200,6 +1200,7 @@ pub fn available(item: &Item) -> bool {
         }
         "files-register" | "files-defaults" => cfg!(windows),
         "files-remove" => !cfg!(target_os = "macos") && !crate::platform::flatpak(),
+        "always-on-top" => crate::platform::windows_float(),
         _ => true,
     }
 }

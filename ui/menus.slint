@@ -1,4 +1,4 @@
-import { MenuPlayback, MenuMedia, Actions } from "globals.slint";
+import { MenuPlayback, MenuMedia, Actions, Platform } from "globals.slint";
 
 // The application menu, shown from the title bar's menu button and by
 // right-clicking the video. It mirrors IINA's main menu.
@@ -323,7 +323,7 @@ export component MainMenu inherits ContextMenuArea {
                     Actions.patina("toggle-fullscreen");
                 }
             }
-            MenuItem {
+            if Platform.can-float: MenuItem {
                 title: "Float on Top";
                 checked: MenuPlayback.on-top;
                 activated => {

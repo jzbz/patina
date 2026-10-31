@@ -150,6 +150,10 @@ pub struct PlayerController {
     /// once winit has made the window).
     #[cfg(target_os = "macos")]
     titlebar_styled: Cell<bool>,
+    /// Linux: whether this is a Wayland window has been looked at (it can
+    /// only be once winit has made the window).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    window_system_known: Cell<bool>,
     /// Selected playlist rows, by mpv's entry ids.
     playlist_selection: RefCell<crate::playlist::Selection>,
     /// How much of each row's name is a series prefix shared with its
@@ -183,6 +187,8 @@ impl PlayerController {
             online_request: Cell::new(0),
             #[cfg(target_os = "macos")]
             titlebar_styled: Cell::new(false),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            window_system_known: Cell::new(false),
             playlist_selection: RefCell::new(Default::default()),
             series_prefixes: RefCell::new(Vec::new()),
             app: Rc::downgrade(app),
@@ -315,6 +321,19 @@ impl PlayerController {
         let _ = visible;
     }
 
+    /// Takes Float on Top away from a Wayland window, which can't float:
+    /// the pin, the menu item and the preference go, for this window and
+    /// every later one.
+    fn check_window_system(&self) {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if !self.window_system_known.replace(true)
+            && crate::wayland::is_wayland(self.window.window())
+        {
+            crate::platform::windows_cannot_float();
+            self.window.global::<Platform>().set_can_float(false);
+        }
+    }
+
     /// Brings the window to the front.
     pub fn raise(&self) {
         self.raise_with(None);
@@ -417,6 +436,7 @@ impl PlayerController {
         platform.set_windows(cfg!(target_os = "windows"));
         platform.set_custom_titlebar(prefs.custom_titlebar());
         platform.set_overlay_titlebar(prefs.custom_titlebar() || prefs.transparent_titlebar());
+        platform.set_can_float(crate::platform::windows_float());
         platform.set_version(env!("CARGO_PKG_VERSION").into());
 
         let ui = self.window.global::<Prefs>();
@@ -1497,6 +1517,7 @@ impl PlayerController {
                 return EventResult::Propagate;
             };
             this.style_titlebar();
+            this.check_window_system();
             this.app().start_media_controls(&this);
             // Once the window is first drawn, which is when the desktop
             // shows it: after Slint draws for this event.
