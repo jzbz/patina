@@ -1645,6 +1645,7 @@ impl PlayerController {
         self.wheel.set((ax, ay));
         self.mark_user_action();
         let prefs = self.app().prefs();
+        // A step up or to the right is positive: louder, faster, later.
         for (steps, action) in [(steps_y, vertical), (-steps_x, horizontal)] {
             if steps == 0.0 {
                 continue;
@@ -1659,7 +1660,7 @@ impl PlayerController {
                     self.player().command_quiet(&["multiply", "speed", &factor]);
                 }
                 "seek" => {
-                    let delta = format!("{}", -steps as f64 * prefs.seek_step / 2.0);
+                    let delta = format!("{}", steps as f64 * prefs.seek_step / 2.0);
                     self.player()
                         .command_quiet(&["seek", &delta, "relative+keyframes"]);
                 }
