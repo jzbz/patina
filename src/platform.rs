@@ -51,6 +51,37 @@ pub fn flatpak() -> bool {
         && *FLATPAK.get_or_init(|| Path::new("/.flatpak-info").exists())
 }
 
+/// Whether this is Linux without a PipeWire server to connect to. When
+/// mpv's PipeWire audio output fails to connect, PipeWire's cleanup can
+/// wait forever for its own thread (`pw_thread_loop_stop`, seen with
+/// libpipewire 1.6), and mpv's core with it, and with that Patina's window.
+/// mpv tries that output before every file unless told otherwise, and
+/// lists audio devices through every output it has, whatever `ao` says.
+/// The Flatpak's libmpv has no PipeWire output.
+pub fn pipewire_missing() -> bool {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        !flatpak()
+            && pipewire_socket(|name| std::env::var_os(name)).is_none_or(|path| !path.exists())
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    false
+}
+
+/// Where a PipeWire client would connect, as libpipewire finds it:
+/// `PIPEWIRE_REMOTE` (a path, or a name in the runtime folder), else
+/// `pipewire-0`, in `PIPEWIRE_RUNTIME_DIR` or else `XDG_RUNTIME_DIR`.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn pipewire_socket(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    let remote = set("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
+    if Path::new(&remote).is_absolute() {
+        return Some(PathBuf::from(remote));
+    }
+    let dir = set("PIPEWIRE_RUNTIME_DIR").or_else(|| set("XDG_RUNTIME_DIR"))?;
+    Some(Path::new(&dir).join(remote))
+}
+
 static WINDOWS_FLOAT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Whether a window can float on top of the others. A Wayland window can't:
@@ -312,6 +343,46 @@ pub fn file_uri(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn the_pipewire_socket_is_found_as_libpipewire_finds_it() {
+        use std::ffi::OsString;
+        use std::path::PathBuf;
+        let socket = |vars: &[(&str, &str)]| {
+            let vars: Vec<(String, OsString)> = vars
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), OsString::from(value)))
+                .collect();
+            super::pipewire_socket(|name| {
+                vars.iter()
+                    .find(|(wanted, _)| wanted == name)
+                    .map(|(_, value)| value.clone())
+            })
+        };
+        assert_eq!(
+            socket(&[("XDG_RUNTIME_DIR", "/run/user/1000")]),
+            Some(PathBuf::from("/run/user/1000/pipewire-0"))
+        );
+        assert_eq!(
+            socket(&[
+                ("XDG_RUNTIME_DIR", "/run/user/1000"),
+                ("PIPEWIRE_RUNTIME_DIR", "/run/pipewire"),
+                ("PIPEWIRE_REMOTE", "other"),
+            ]),
+            Some(PathBuf::from("/run/pipewire/other"))
+        );
+        assert_eq!(
+            socket(&[("PIPEWIRE_REMOTE", "/tmp/pw.sock"), ("XDG_RUNTIME_DIR", "")]),
+            Some(PathBuf::from("/tmp/pw.sock"))
+        );
+        // Empty values count as unset; with no folder there is no socket.
+        assert_eq!(
+            socket(&[("PIPEWIRE_REMOTE", ""), ("XDG_RUNTIME_DIR", "")]),
+            None
+        );
+        assert_eq!(socket(&[]), None);
+    }
+
     #[test]
     fn file_uris_are_percent_encoded() {
         assert_eq!(

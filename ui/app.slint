@@ -146,6 +146,9 @@ export component PlayerWindow inherits Window {
 
     // Opens the application menu on what is true now (see MenuPlayback).
     function open-menu(x: length, y: length) {
+        // A core that doesn't keep the audio devices listed lists them now,
+        // for the next time the menu opens (this one copies what it has).
+        Actions.patina("audio-devices");
         MenuPlayback.has-media = Playback.has-media;
         MenuPlayback.has-video = Playback.has-video;
         MenuPlayback.seekable = Playback.seekable;
@@ -265,10 +268,15 @@ export component PlayerWindow inherits Window {
         root.pip-play-hovered = false;
         root.pip-exit-hovered = false;
     }
-    // Music mode sizes the window to what it shows.
+    // Music mode sizes the window to what it shows. The Audio panel shows
+    // the audio devices: a core that doesn't keep them listed lists them
+    // as it opens.
     changed sidebar-open => {
         if self.music-mode {
             Actions.patina("music-layout");
+        }
+        if self.sidebar-open && self.sidebar-tab == "audio" {
+            Actions.patina("audio-devices");
         }
     }
     changed music-art => {
@@ -280,6 +288,11 @@ export component PlayerWindow inherits Window {
     changed dialog => {
         if self.music-mode {
             Actions.patina("music-layout");
+        }
+    }
+    changed sidebar-tab => {
+        if self.sidebar-open && self.sidebar-tab == "audio" {
+            Actions.patina("audio-devices");
         }
     }
     changed video-width => {

@@ -60,6 +60,22 @@ lets any later one go at once: mpv can't quit from inside a hook, and the
 thread that would continue it waits for the UI thread, which may be the one
 shutting the core down.
 
+**PipeWire.** When mpv's PipeWire audio output can't connect, PipeWire's
+cleanup sometimes waits forever for its own thread (`pw_thread_loop_stop`,
+with libpipewire 1.6), and mpv's core waits with it; the next call the UI
+thread makes into mpv then never returns either. mpv tries that output
+before every file unless `ao` says otherwise, and lists audio devices by
+going through every output it has, whatever `ao` says. So on Linux without
+a PipeWire socket to connect to (`platform::pipewire_missing`) a core gets
+`ao=pulse,alsa`, unless the user chose an output (in their mpv options, on
+the command line or in Patina's mpv.conf), and doesn't keep
+`audio-device-list` observed: the window asks for it when the menu opens,
+the Audio panel shows or the preferences' Audio page does
+(`PlayerController::request_audio_devices`), so the menu has the list from
+its second opening on. That leaves the PipeWire attempt to the moment a
+device list is shown, instead of every file and every start. The Flatpak's
+libmpv is built without PipeWire's output, so none of this applies there.
+
 Commands that concern the window rather than playback are handled in Rust:
 `quit` closes the window, `show-progress` and `show-text` become Patina OSD
 messages, and mpv's `fullscreen`, `ontop` and `window-scale` properties are

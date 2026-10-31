@@ -36,6 +36,9 @@ const REPLY_SHOW_TEXT: u64 = 10;
 const REPLY_SCREENSHOT: u64 = 11;
 /// Reply userdata for what yt-dlp said about the file, from mpv's yt-dlp hook.
 const REPLY_YTDL: u64 = 12;
+/// Reply userdata for the audio devices, asked for when about to be shown by
+/// a core that doesn't keep them listed (CoreOptions::list_audio_devices).
+const REPLY_AUDIO_DEVICES: u64 = 13;
 
 /// Qualities chosen from the Video Quality and Audio Quality menus for one
 /// online video: None leaves that part to the preferences.
@@ -103,6 +106,9 @@ pub struct PlayerController {
     load_asked: Cell<bool>,
     /// The core started with a request's own mpv options.
     own_options: Cell<bool>,
+    /// mpv keeps the audio devices listed; otherwise they are asked for
+    /// when about to be shown.
+    lists_audio_devices: bool,
     closed: Cell<bool>,
     osd_timer: Timer,
     last_user_action: Cell<Option<Instant>>,
@@ -312,6 +318,7 @@ impl PlayerController {
             pip_pending: Cell::new(PipPending::No),
             load_asked: Cell::new(false),
             own_options: Cell::new(false),
+            lists_audio_devices: options.list_audio_devices,
             closed: Cell::new(false),
             osd_timer: Timer::default(),
             last_user_action: Cell::new(None),
@@ -381,6 +388,22 @@ impl PlayerController {
 
     pub fn set_own_options(&self, own: bool) {
         self.own_options.set(own);
+    }
+
+    /// Asks mpv for the audio devices, which a menu, the Audio panel or the
+    /// preferences are about to show, when the core doesn't keep them
+    /// listed. Each ask goes through all of mpv's audio outputs, PipeWire's
+    /// too, so it happens only on the way to showing them.
+    pub fn request_audio_devices(&self) {
+        if self.lists_audio_devices || !self.is_running() {
+            return;
+        }
+        if let Err(error) = self
+            .mpv
+            .get_property_async(REPLY_AUDIO_DEVICES, "audio-device-list")
+        {
+            log::debug!("{error}");
+        }
     }
 
     /// Whether the core started with a request's own mpv options, which
@@ -1016,6 +1039,24 @@ impl PlayerController {
                         .map(Rc::new);
                     self.set_online(media);
                 }
+                Event::GetPropertyReply {
+                    userdata: REPLY_AUDIO_DEVICES,
+                    result,
+                } => match result {
+                    Ok((_, value)) => {
+                        if self.state.borrow_mut().apply(Prop::AudioDeviceList, &value) {
+                            changed.insert(Prop::AudioDeviceList);
+                            if let Some(app) = self.app.upgrade() {
+                                // Deferred: the app may be borrowing its
+                                // windows right now.
+                                Timer::single_shot(Duration::ZERO, move || {
+                                    app.audio_devices_changed()
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => log::debug!("{error}"),
+                },
                 Event::GetPropertyReply { userdata, result }
                     if userdata >= crate::inspector::REPLY_BASE =>
                 {
@@ -2207,6 +2248,7 @@ impl PlayerController {
                 }
             }
             "music-next" => self.player().command(&["playlist-next"]),
+            "audio-devices" => self.request_audio_devices(),
             "toggle-ontop" => {
                 let ontop = !self.window.get_float_on_top();
                 self.player().set("ontop", ontop);

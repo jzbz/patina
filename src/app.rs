@@ -25,6 +25,10 @@ thread_local! {
 /// way.
 const BATCH_WITHIN: Duration = Duration::from_millis(200);
 
+/// mpv's audio outputs on Linux without PipeWire's own output, nor JACK,
+/// which is usually PipeWire's JACK and fails the same way.
+const AUDIO_OUTPUTS_WITHOUT_PIPEWIRE: &str = "pulse,alsa";
+
 pub struct App {
     paths: Paths,
     prefs: RefCell<Rc<Preferences>>,
@@ -296,11 +300,21 @@ impl App {
         options.push(("volume".into(), format!("{}", prefs.start_volume())));
         options.extend(prefs.mpv_options.iter().cloned());
         options.extend(self.cli_mpv_options.iter().cloned());
+        let config_dir = (prefs.use_mpv_config && mpv_config.is_dir()).then_some(mpv_config);
+        // Without a PipeWire server, keep mpv from trying its PipeWire
+        // output before every file (see platform::pipewire_missing), unless
+        // the user chose the output; first, so that a choice made in the
+        // options wins anyway.
+        let pipewire_missing = crate::platform::pipewire_missing();
+        if pipewire_missing && !chooses_audio_output(&options, config_dir.as_deref()) {
+            options.insert(0, ("ao".into(), AUDIO_OUTPUTS_WITHOUT_PIPEWIRE.into()));
+        }
         CoreOptions {
-            config_dir: (prefs.use_mpv_config && mpv_config.is_dir()).then_some(mpv_config),
+            config_dir,
             watch_later_dir: self.paths.watch_later_dir(),
             options,
             verbose: self.verbose,
+            list_audio_devices: !pipewire_missing,
         }
     }
 
@@ -993,6 +1007,27 @@ impl App {
         }
     }
 
+    /// Asks the player audio_devices reads from to list the devices, when
+    /// its core doesn't keep them listed; audio_devices_changed follows.
+    pub fn request_audio_devices(&self) {
+        let window = self
+            .active
+            .borrow()
+            .upgrade()
+            .or_else(|| self.windows.borrow().last().cloned());
+        if let Some(window) = window {
+            window.request_audio_devices();
+        }
+    }
+
+    /// A player's audio devices, asked for, have arrived.
+    pub fn audio_devices_changed(&self) {
+        let preferences = self.preferences.borrow().clone();
+        if let Some(preferences) = preferences {
+            preferences.audio_devices_changed();
+        }
+    }
+
     /// Audio devices as (name, description), from the active player.
     pub fn audio_devices(&self) -> Vec<(String, String)> {
         let window = self
@@ -1468,6 +1503,27 @@ fn spawn(future: impl std::future::Future<Output = ()> + 'static) {
     }
 }
 
+/// Whether the user chose mpv's audio output: in their own mpv options or on
+/// the command line (`options`), or in the mpv.conf Patina reads.
+fn chooses_audio_output(
+    options: &[(String, String)],
+    config_dir: Option<&std::path::Path>,
+) -> bool {
+    options.iter().any(|(name, _)| name == "ao")
+        || config_dir
+            .and_then(|dir| std::fs::read_to_string(dir.join("mpv.conf")).ok())
+            .is_some_and(|conf| sets_audio_output(&conf))
+}
+
+/// Whether an mpv.conf sets `ao`, as `ao=…` or `--ao=…`, anywhere in it.
+fn sets_audio_output(conf: &str) -> bool {
+    conf.lines().any(|line| {
+        let line = line.trim().trim_start_matches("--");
+        line.strip_prefix("ao")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    })
+}
+
 /// Of windows as (window, whether it has nothing to play, focus serial),
 /// the one focused last of those with something to play.
 fn used_last<T>(windows: impl IntoIterator<Item = (T, bool, u64)>) -> Option<T> {
@@ -1480,7 +1536,15 @@ fn used_last<T>(windows: impl IntoIterator<Item = (T, bool, u64)>) -> Option<T> 
 
 #[cfg(test)]
 mod tests {
-    use super::used_last;
+    use super::{sets_audio_output, used_last};
+
+    #[test]
+    fn an_mpv_conf_that_sets_ao_is_told_from_one_that_does_not() {
+        assert!(sets_audio_output("vo=gpu\nao=alsa\n"));
+        assert!(sets_audio_output("  --ao = pulse"));
+        assert!(!sets_audio_output("audio-device=alsa/default\n# ao=pulse"));
+        assert!(!sets_audio_output("aoc=1\n"));
+    }
 
     #[test]
     fn media_follow_the_window_used_last_that_plays() {

@@ -25,6 +25,12 @@ pub struct CoreOptions {
     /// mpv options, then the command line's; later ones win.
     pub options: Vec<(String, String)>,
     pub verbose: bool,
+    /// Whether mpv keeps the audio devices listed from the start. Listing
+    /// them goes through every audio output mpv has, PipeWire's included
+    /// whatever `ao` says, so without a PipeWire server
+    /// (platform::pipewire_missing) the window asks for the list only when
+    /// it is about to show it.
+    pub list_audio_devices: bool,
 }
 
 /// Userdata for asynchronous commands whose failure should be shown.
@@ -152,6 +158,9 @@ impl Player {
         mpv.request_log_messages(if options.verbose { "v" } else { "warn" })
             .map_err(|error| error.to_string())?;
         for prop in Prop::ALL {
+            if *prop == Prop::AudioDeviceList && !options.list_audio_devices {
+                continue;
+            }
             if let Err(error) = mpv.observe_property(*prop as u64, prop.name()) {
                 log::warn!("{error}");
             }
@@ -313,13 +322,19 @@ mod tests {
             return;
         }
         let dir = std::env::temp_dir().join(format!("patina-core-{}", std::process::id()));
-        let options = CoreOptions {
-            watch_later_dir: dir.join("watch-later"),
-            options: crate::settings::Preferences::default()
+        // No audio output and no device list: either can reach mpv's
+        // PipeWire output, whose failing connect can hang on a machine
+        // without PipeWire (platform::pipewire_missing).
+        let mut mpv_options = vec![("ao".to_owned(), "null".to_owned())];
+        mpv_options.extend(
+            crate::settings::Preferences::default()
                 .mpv_options()
                 .into_iter()
-                .map(|(name, value)| (name.to_owned(), value))
-                .collect(),
+                .map(|(name, value)| (name.to_owned(), value)),
+        );
+        let options = CoreOptions {
+            watch_later_dir: dir.join("watch-later"),
+            options: mpv_options,
             ..Default::default()
         };
         let (mut player, _events) = Player::start(&options).unwrap();

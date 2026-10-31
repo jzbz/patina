@@ -260,11 +260,21 @@ impl PreferencesController {
     fn show_page(self: &Rc<Self>, page: Page) {
         self.page.set(page);
         self.refresh();
+        if page == Page::Audio {
+            self.app().request_audio_devices();
+        }
         if page == Page::KeyBindings {
             self.refresh_bindings();
         }
         if page == Page::Jellyfin {
             self.measure_images();
+        }
+    }
+
+    /// The audio devices asked for on the way to this page have arrived.
+    pub fn audio_devices_changed(&self) {
+        if self.page.get() == Page::Audio {
+            self.refresh();
         }
     }
 
