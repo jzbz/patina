@@ -1,0 +1,808 @@
+// An item's page: its poster and details, what can be done with it, a
+// show's seasons and episodes or an album's songs, its people, and rows of
+// related items. Its backdrop is drawn by LibraryView, behind the bar too.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Library, LibraryTrack, LibraryPerson } from "library-model.slint";
+import { LibraryUi, Artwork, Avatar, Badge, PlayOverlay, ProgressStrip, CardRow, ChoiceTabs, ChoiceMenu, StripHeader, ToggleButton, SquareButton, KeyButton, KeyFocus } from "library-parts.slint";
+
+// An episode in a season's list: its thumbnail, title, air date and
+// overview. Clicking opens it and double-clicking plays it, as a card does;
+// from the keyboard, Enter opens it and Space or Shift+Enter plays it.
+component EpisodeRow inherits Rectangle {
+    in property <LibraryTrack> track;
+    property <length> thumb-width: 160px;
+    property <string> heading: root.track.number != "" ? root.track.number + ". " + root.track.title : root.track.title;
+
+    height: root.thumb-width * 9 / 16 + 16px;
+    border-radius: Theme.panel-radius;
+    background: touch.has-hover ? Theme.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: root.heading;
+    accessible-description: root.track.overview;
+    accessible-action-default => {
+        LibraryUi.open(root.track.id, "episode");
+    }
+
+    click-timer := Timer {
+        interval: 280ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            LibraryUi.open(root.track.id, "episode");
+        }
+    }
+
+    KeyFocus {
+        radius: root.border-radius;
+        activated => {
+            LibraryUi.open(root.track.id, "episode");
+        }
+        space-alternates: true;
+        alternate => {
+            Library.play(root.track.id, false);
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            click-timer.restart();
+            click-timer.running = true;
+        }
+        double-clicked => {
+            click-timer.running = false;
+            Library.play(root.track.id, false);
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                menu.show({ x: self.mouse-x, y: self.mouse-y });
+            }
+            LibraryUi.pointer(event);
+        }
+
+        HorizontalLayout {
+            padding: 8px;
+            spacing: 14px;
+
+            Artwork {
+                width: root.thumb-width;
+                border-radius: Theme.control-radius;
+                source: root.track.image;
+                kind: "episode";
+                aspect: 16 / 9;
+
+                if root.track.progress >= 0: ProgressStrip {
+                    y: parent.height - self.height;
+                    value: root.track.progress;
+                }
+                Badge {
+                    x: parent.width - self.width - 5px;
+                    y: 5px;
+                    played: root.track.played;
+                }
+                if touch.has-hover: PlayOverlay {
+                    size: 34px;
+                    label: "Play " + root.track.title;
+                    clicked => {
+                        click-timer.running = false;
+                        Library.play(root.track.id, false);
+                    }
+                    menu(x, y) => {
+                        menu.show({ x: self.absolute-position.x - root.absolute-position.x + x, y: self.absolute-position.y - root.absolute-position.y + y });
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 3px;
+                HorizontalLayout {
+                    height: 18px;
+                    spacing: 10px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.heading;
+                        color: root.track.playing ? Theme.playing : Theme.text;
+                        font-size: Theme.font-normal;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.track.duration;
+                        color: Theme.secondary-text;
+                        font-size: Theme.font-small;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.track.subtitle != "": Text {
+                    height: 15px;
+                    text: root.track.subtitle;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-small;
+                    overflow: elide;
+                }
+                Text {
+                    vertical-stretch: 1;
+                    min-height: 0;
+                    text: root.track.overview;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-small;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            MenuItem {
+                title: "Play";
+                activated => {
+                    Library.play(root.track.id, false);
+                }
+            }
+            MenuItem {
+                title: "Play Next";
+                activated => {
+                    Library.queue(root.track.id, true);
+                }
+            }
+            MenuItem {
+                title: "Add to Queue";
+                activated => {
+                    Library.queue(root.track.id, false);
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: root.track.played ? "Mark as Unplayed" : "Mark as Played";
+                activated => {
+                    Library.set-played(root.track.id, !root.track.played);
+                }
+            }
+            MenuItem {
+                title: root.track.favorite ? "Remove from Favourites" : "Add to Favourites";
+                activated => {
+                    Library.set-favorite(root.track.id, !root.track.favorite);
+                }
+            }
+        }
+    }
+}
+
+// A song in an album's or playlist's list. Double-clicking plays it, or the
+// Play button that replaces its number under the pointer, or Enter.
+component SongRow inherits Rectangle {
+    in property <LibraryTrack> track;
+    // A playlist's songs come from different albums, so each shows its art.
+    in property <bool> show-image;
+
+    height: root.track.subtitle != "" ? 44px : 36px;
+    border-radius: Theme.control-radius;
+    background: touch.has-hover ? Theme.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: root.track.title;
+    accessible-description: root.track.subtitle;
+    accessible-action-default => {
+        Library.play(root.track.id, false);
+    }
+
+    KeyFocus {
+        radius: root.border-radius;
+        activated => {
+            Library.play(root.track.id, false);
+        }
+    }
+
+    touch := TouchArea {
+        double-clicked => {
+            Library.play(root.track.id, false);
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                menu.show({ x: self.mouse-x, y: self.mouse-y });
+            }
+            LibraryUi.pointer(event);
+        }
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 12px;
+            spacing: 12px;
+
+            Rectangle {
+                width: 28px;
+                if root.track.playing && !touch.has-hover: Image {
+                    source: @image-url("icons/volume-2.svg");
+                    width: 15px;
+                    height: 15px;
+                    colorize: Theme.playing;
+                }
+                if !root.track.playing && !touch.has-hover: Text {
+                    text: root.track.number;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-small;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if touch.has-hover: Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    border-radius: Theme.control-radius;
+                    background: play-touch.has-hover ? Theme.pressed : transparent;
+                    accessible-role: button;
+                    accessible-label: "Play " + root.track.title;
+                    accessible-action-default => {
+                        Library.play(root.track.id, false);
+                    }
+                    Image {
+                        source: @image-url("icons/play.svg");
+                        width: 12px;
+                        height: 12px;
+                        colorize: Theme.text;
+                    }
+                    play-touch := TouchArea {
+                        clicked => {
+                            Library.play(root.track.id, false);
+                        }
+                    }
+                }
+            }
+
+            if root.show-image: Artwork {
+                y: (parent.height - self.height) / 2;
+                width: 30px;
+                height: 30px;
+                border-radius: 4px;
+                source: root.track.image;
+                kind: "song";
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: root.track.title;
+                    color: root.track.playing ? Theme.playing : Theme.text;
+                    font-size: Theme.font-normal;
+                    font-weight: root.track.playing ? 600 : 400;
+                    overflow: elide;
+                }
+                if root.track.subtitle != "": Text {
+                    text: root.track.subtitle;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-small;
+                    overflow: elide;
+                }
+            }
+
+            if root.track.favorite: Image {
+                y: (parent.height - self.height) / 2;
+                source: @image-url("icons/heart-filled.svg");
+                width: 12px;
+                height: 12px;
+                colorize: Theme.danger;
+            }
+
+            Text {
+                text: root.track.duration;
+                color: Theme.secondary-text;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            MenuItem {
+                title: "Play";
+                activated => {
+                    Library.play(root.track.id, false);
+                }
+            }
+            MenuItem {
+                title: "Play Next";
+                activated => {
+                    Library.queue(root.track.id, true);
+                }
+            }
+            MenuItem {
+                title: "Add to Queue";
+                activated => {
+                    Library.queue(root.track.id, false);
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: root.track.favorite ? "Remove from Favourites" : "Add to Favourites";
+                activated => {
+                    Library.set-favorite(root.track.id, !root.track.favorite);
+                }
+            }
+        }
+    }
+}
+
+// A person's portrait, name and role. Opening a person is the controller's
+// to answer (with their other work) or ignore.
+component PersonTile inherits Rectangle {
+    in property <LibraryPerson> person;
+    // The keyboard reached it: the row scrolls it into sight.
+    callback focused;
+    width: 96px;
+    height: 128px;
+    accessible-role: button;
+    accessible-label: root.person.role != "" ? root.person.name + ", " + root.person.role : root.person.name;
+    accessible-action-default => {
+        LibraryUi.open(root.person.id, "person");
+    }
+
+    KeyFocus {
+        radius: Theme.panel-radius;
+        activated => {
+            LibraryUi.open(root.person.id, "person");
+        }
+        focused => {
+            root.focused();
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            LibraryUi.open(root.person.id, "person");
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+
+        Avatar {
+            x: (parent.width - self.width) / 2;
+            y: 0;
+            size: 84px;
+            source: root.person.image;
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 0;
+            width: 84px;
+            height: 84px;
+            border-radius: self.height / 2;
+            border-width: 2px;
+            border-color: touch.has-hover ? #ffffffb8 : transparent;
+            animate border-color { duration: 120ms; }
+        }
+        Text {
+            y: 90px;
+            width: parent.width;
+            height: 17px;
+            text: root.person.name;
+            color: touch.has-hover ? Theme.icon-hover : Theme.text;
+            font-size: Theme.font-normal;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            y: 107px;
+            width: parent.width;
+            height: 15px;
+            text: root.person.role;
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component PeopleRow inherits VerticalLayout {
+    in property <[LibraryPerson]> people;
+    property <length> step: 96px + 12px;
+    spacing: 8px;
+
+    StripHeader {
+        title: "Cast & Crew";
+        scrolls: strip.content-width > strip.width + 1px;
+        can-scroll-back: strip.content-x < 0;
+        can-scroll-on: strip.content-x > strip.width - strip.content-width + 1px;
+        page(direction) => {
+            let page = max(root.step, strip.width - 2 * LibraryUi.inset - root.step);
+            strip.content-x = clamp(strip.content-x - direction * page, min(0px, strip.width - strip.content-width), 0px);
+        }
+    }
+
+    strip := Flickable {
+        height: 128px;
+        content-width: max(self.width, root.people.length * root.step - 12px + 2 * LibraryUi.inset);
+        content-height: self.height;
+        mouse-drag-pan-enabled: false;
+        accessible-role: list;
+        accessible-label: "Cast & Crew";
+
+        for person[index] in root.people: PersonTile {
+            x: LibraryUi.inset + index * root.step;
+            y: 0;
+            person: person;
+            focused => {
+                let left = self.x;
+                if left + strip.content-x < LibraryUi.inset {
+                    strip.content-x = min(0px, LibraryUi.inset - left);
+                } else if left + self.width + strip.content-x > strip.width - LibraryUi.inset {
+                    strip.content-x = max(strip.width - strip.content-width, strip.width - LibraryUi.inset - left - self.width);
+                }
+            }
+        }
+    }
+}
+
+export component DetailPage inherits ScrollView {
+    property <bool> episodes: Library.detail.kind == "series" || Library.detail.kind == "season";
+    property <bool> songs: !root.episodes && Library.tracks.length > 0;
+    property <bool> wide: root.visible-width >= 640px;
+    // Round for an artist or a person, as their cards and portraits are.
+    property <bool> round: Library.detail.kind == "artist" || Library.detail.kind == "person";
+    property <float> poster-aspect: root.round ? 1 : Library.detail.poster-aspect > 0 ? Library.detail.poster-aspect : 2 / 3;
+    property <length> poster-width: root.poster-aspect > 1.2 ? 300px : root.poster-aspect > 0.9 ? 240px : 220px;
+    // Under this the buttons drop their longer words.
+    property <bool> roomy: root.visible-width >= 760px || (!root.wide && root.visible-width >= 520px);
+    property <bool> has-logo: Library.detail.logo.width > 0;
+
+    // As wide as the view: rows of cards scroll by themselves.
+    content-width: self.visible-width;
+
+    // The load (Library.loads) the page has gone where scroll-offset says
+    // for, and whether it is there now: until then it is placed as its
+    // content grows, and once it has stayed there a moment, or the user
+    // scrolls, it records where it is.
+    property <int> settled: -1;
+    property <bool> in-place;
+    property <int> loads: Library.loads;
+    property <bool> busy: Library.loading;
+    property <int> reveal: LibraryUi.focus-serial;
+    function restore() {
+        self.content-y = LibraryUi.place(self.content-height, self.visible-height);
+        self.check-place();
+    }
+    function check-place() {
+        self.in-place = !Library.loading && LibraryUi.reached(self.content-y, self.content-height, self.visible-height);
+        if self.in-place {
+            settle-timer.restart();
+            settle-timer.running = true;
+        }
+    }
+    settle-timer := Timer {
+        interval: 250ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.in-place {
+                root.settled = Library.loads;
+            }
+        }
+    }
+    init => {
+        self.restore();
+    }
+    changed loads => {
+        self.restore();
+    }
+    changed busy => {
+        if self.settled != Library.loads {
+            self.restore();
+        }
+    }
+    changed content-height => {
+        if self.settled != Library.loads {
+            self.restore();
+        }
+    }
+    changed visible-height => {
+        if self.settled != Library.loads {
+            self.restore();
+        }
+    }
+    changed content-y => {
+        if self.settled != Library.loads {
+            if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
+                self.check-place();
+            } else {
+                self.restore();
+            }
+        } else {
+            Library.scroll-offset = -self.content-y;
+        }
+    }
+    scrolled => {
+        self.settled = Library.loads;
+    }
+    // Scrolls what the keyboard moved to into sight.
+    changed reveal => {
+        let top = LibraryUi.focus-top - self.absolute-position.y;
+        let bottom = LibraryUi.focus-bottom - self.absolute-position.y;
+        self.settled = Library.loads;
+        if top < 0 {
+            self.content-y = min(0px, self.content-y - top + 8px);
+        } else if bottom > self.visible-height {
+            self.content-y = max(min(0px, self.visible-height - self.content-height), self.content-y - (bottom - self.visible-height) - 8px);
+        }
+    }
+
+    // From the top: the viewport is at least as tall as the view, and a
+    // page shorter than that would otherwise spread its parts down it.
+    VerticalLayout {
+        alignment: start;
+        padding-top: 8px;
+        padding-bottom: 32px;
+        spacing: 24px;
+
+        HorizontalLayout {
+            padding-left: LibraryUi.inset;
+            padding-right: LibraryUi.inset;
+            spacing: 28px;
+
+            if root.wide: VerticalLayout {
+                alignment: start;
+                Artwork {
+                    width: root.poster-width;
+                    height: root.poster-width / root.poster-aspect;
+                    border-radius: root.round ? min(self.width, self.height) / 2 : Theme.panel-radius;
+                    source: Library.detail.poster;
+                    kind: Library.detail.kind;
+                    aspect: root.poster-aspect;
+                    drop-shadow-blur: 18px;
+                    drop-shadow-color: #00000080;
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: start;
+                spacing: 8px;
+
+                if Library.detail.parent-title != "": HorizontalLayout {
+                    alignment: start;
+                    Rectangle {
+                        width: parent-link.preferred-width;
+                        height: 20px;
+                        accessible-role: button;
+                        accessible-label: Library.detail.parent-title;
+                        accessible-action-default => {
+                            LibraryUi.open(Library.detail.parent-id, Library.detail.parent-kind);
+                        }
+                        parent-link := HorizontalLayout {
+                            spacing: 3px;
+                            Text {
+                                text: Library.detail.parent-title;
+                                color: parent-touch.has-hover ? Theme.text : Theme.secondary-text;
+                                font-size: Theme.font-normal;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Image {
+                                y: (parent.height - self.height) / 2;
+                                source: @image-url("icons/chevron-right.svg");
+                                width: 13px;
+                                height: 13px;
+                                colorize: parent-touch.has-hover ? Theme.text : Theme.secondary-text;
+                            }
+                        }
+                        parent-touch := TouchArea {
+                            clicked => {
+                                LibraryUi.open(Library.detail.parent-id, Library.detail.parent-kind);
+                            }
+                            pointer-event(event) => {
+                                LibraryUi.pointer(event);
+                            }
+                        }
+                    }
+                }
+
+                if root.has-logo: HorizontalLayout {
+                    alignment: start;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+                    Image {
+                        width: min(360px, 76px * Library.detail.logo.width / max(1, Library.detail.logo.height));
+                        height: 76px;
+                        source: Library.detail.logo;
+                        image-fit: contain;
+                        horizontal-alignment: left;
+                        accessible-role: image;
+                        accessible-label: Library.detail.title;
+                    }
+                }
+                if !root.has-logo: Text {
+                    text: Library.detail.title;
+                    color: Theme.text;
+                    font-size: 26px;
+                    font-weight: 700;
+                    wrap: word-wrap;
+                }
+
+                if Library.detail.tagline != "": Text {
+                    text: Library.detail.tagline;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-heading;
+                    font-italic: true;
+                    wrap: word-wrap;
+                }
+                if Library.detail.facts != "": Text {
+                    text: Library.detail.facts;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-normal;
+                    wrap: word-wrap;
+                }
+                if Library.detail.genres != "": Text {
+                    text: Library.detail.genres;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-normal;
+                    wrap: word-wrap;
+                }
+
+                // Only once the item has arrived: until then nothing is
+                // known about what it offers.
+                if Library.detail.loaded: HorizontalLayout {
+                    alignment: start;
+                    padding-top: 8px;
+                    spacing: 8px;
+                    if Library.detail.can-play: KeyButton {
+                        primary: true;
+                        icon: @image-url("icons/play.svg");
+                        text: Library.detail.resume != "" ? Library.detail.resume : "Play";
+                        clicked => {
+                            Library.play(Library.detail.id, false);
+                        }
+                    }
+                    // A square icon button where the page is too narrow
+                    // for the words.
+                    if Library.detail.can-play && Library.detail.resume != "" && root.roomy: KeyButton {
+                        icon: @image-url("icons/skip-back.svg");
+                        text: "Play from Beginning";
+                        clicked => {
+                            Library.play(Library.detail.id, true);
+                        }
+                    }
+                    if Library.detail.can-play && Library.detail.resume != "" && !root.roomy: SquareButton {
+                        icon: @image-url("icons/skip-back.svg");
+                        label: "Play from Beginning";
+                        clicked => {
+                            Library.play(Library.detail.id, true);
+                        }
+                    }
+                    if LibraryUi.shuffles(Library.detail.kind) && (root.roomy || !Library.detail.can-play): KeyButton {
+                        icon: @image-url("icons/shuffle.svg");
+                        text: "Shuffle";
+                        clicked => {
+                            Library.shuffle(Library.detail.id);
+                        }
+                    }
+                    if LibraryUi.shuffles(Library.detail.kind) && !(root.roomy || !Library.detail.can-play): SquareButton {
+                        icon: @image-url("icons/shuffle.svg");
+                        label: "Shuffle";
+                        clicked => {
+                            Library.shuffle(Library.detail.id);
+                        }
+                    }
+                    if LibraryUi.watchable(Library.detail.kind): ToggleButton {
+                        icon: @image-url("icons/check.svg");
+                        label: "Played";
+                        checked: Library.detail.played;
+                        toggled(value) => {
+                            Library.set-played(Library.detail.id, value);
+                        }
+                    }
+                    ToggleButton {
+                        icon: @image-url("icons/heart.svg");
+                        checked-icon: @image-url("icons/heart-filled.svg");
+                        checked-color: Theme.danger;
+                        label: "Favourite";
+                        checked: Library.detail.favorite;
+                        toggled(value) => {
+                            Library.set-favorite(Library.detail.id, value);
+                        }
+                    }
+                }
+
+                if Library.detail.versions.length > 1 || Library.detail.audio.length > 1 || Library.detail.subtitles.length > 1: HorizontalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    if Library.detail.versions.length > 1: ChoiceMenu {
+                        label: "Version";
+                        icon: @image-url("icons/layers.svg");
+                        choices: Library.detail.versions;
+                        selected: Library.detail.version;
+                        chosen(id) => {
+                            Library.choose("version", id);
+                        }
+                    }
+                    if Library.detail.audio.length > 1: ChoiceMenu {
+                        label: "Audio";
+                        icon: @image-url("icons/volume-2.svg");
+                        choices: Library.detail.audio;
+                        selected: Library.detail.audio-track;
+                        chosen(id) => {
+                            Library.choose("audio", id);
+                        }
+                    }
+                    if Library.detail.subtitles.length > 1: ChoiceMenu {
+                        label: "Subtitles";
+                        icon: @image-url("icons/captions.svg");
+                        choices: Library.detail.subtitles;
+                        selected: Library.detail.subtitle-track;
+                        chosen(id) => {
+                            Library.choose("subtitle", id);
+                        }
+                    }
+                }
+
+                if Library.detail.overview != "": HorizontalLayout {
+                    alignment: start;
+                    padding-top: 6px;
+                    Text {
+                        max-width: 720px;
+                        text: Library.detail.overview;
+                        color: Theme.text;
+                        font-size: Theme.font-normal;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        if root.episodes && (Library.tabs.length > 0 || Library.tracks.length > 0): VerticalLayout {
+            spacing: 10px;
+            if Library.tabs.length > 0: HorizontalLayout {
+                alignment: start;
+                padding-left: LibraryUi.inset;
+                padding-right: LibraryUi.inset;
+                ChoiceTabs {
+                    choices: Library.tabs;
+                    selected: Library.tab;
+                    activated(id) => {
+                        Library.select-tab(id);
+                    }
+                }
+            }
+            VerticalLayout {
+                padding-left: LibraryUi.inset - 8px;
+                padding-right: LibraryUi.inset - 8px;
+                spacing: 2px;
+                for track in Library.tracks: EpisodeRow {
+                    track: track;
+                }
+            }
+        }
+
+        if root.songs: VerticalLayout {
+            padding-left: LibraryUi.inset - 8px;
+            padding-right: LibraryUi.inset - 8px;
+            for track in Library.tracks: SongRow {
+                track: track;
+                show-image: Library.detail.kind == "playlist";
+            }
+            if Library.tracks-note != "": HorizontalLayout {
+                padding-left: 8px;
+                Text {
+                    height: 32px;
+                    text: Library.tracks-note;
+                    color: Theme.secondary-text;
+                    font-size: Theme.font-normal;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if Library.people.length > 0: PeopleRow {
+            people: Library.people;
+        }
+
+        for row in Library.detail-rows: CardRow {
+            content: row;
+        }
+    }
+}

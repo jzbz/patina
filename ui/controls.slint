@@ -265,6 +265,92 @@ export component SeekPreview inherits Rectangle {
     }
 }
 
+// Skip Intro (Credits, Recap...) over the video, while a Jellyfin item's
+// segment that the server marks plays. Tab reaches it while it shows, and
+// Enter or Space presses it; other keys go on to the player. It takes no
+// focus on a click, so that the ring shows only for the keyboard.
+export component SkipButton inherits Rectangle {
+    in property <string> text;
+    // The key bound to it, shown beside its words.
+    in property <string> key;
+    in property <bool> shown;
+    out property <bool> has-focus: scope.has-focus;
+    // The words shown last, which stay while the button fades out.
+    property <string> words: root.text;
+    callback clicked;
+
+    changed text => {
+        if root.text != "" {
+            root.words = root.text;
+        }
+    }
+
+    width: layout.preferred-width;
+    height: 36px;
+    border-radius: Theme.panel-radius;
+    background: touch.pressed ? #3a3a3cf2 : touch.has-hover ? #2e2e30f0 : Theme.osc-background;
+    border-width: scope.has-focus ? 2px : 1px;
+    border-color: scope.has-focus ? Theme.accent : Theme.osc-border;
+    drop-shadow-blur: 12px;
+    drop-shadow-color: #00000066;
+    opacity: root.shown ? 1 : 0;
+    visible: self.opacity > 0;
+    animate opacity { duration: 200ms; }
+    accessible-role: button;
+    accessible-label: root.key != "" ? root.words + " (" + root.key + ")" : root.words;
+    accessible-enabled: root.shown;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    scope := FocusScope {
+        enabled: root.shown;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    layout := HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: center;
+        Text {
+            text: root.words;
+            color: Theme.text;
+            font-size: Theme.font-normal;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        if root.key != "": Text {
+            text: root.key;
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            vertical-alignment: center;
+        }
+        Image {
+            source: @image-url("icons/skip-forward.svg");
+            width: 14px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            colorize: touch.has-hover ? Theme.icon-hover : Theme.icon;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.shown;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 component WindowButton inherits Rectangle {
     in property <image> icon;
     in property <bool> danger;

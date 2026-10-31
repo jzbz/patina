@@ -1,0 +1,174 @@
+{
+  "Items": [
+    {
+      "Name": "Night Ferry",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "528098b3cf145c70b05a3b07b9e7c722",
+      "PlaylistItemId": "528098b3cf145c70b05a3b07b9e7c722",
+      "HasLyrics": false,
+      "Container": "flac",
+      "PremiereDate": "2022-01-01T00:00:00.0000000Z",
+      "ChannelId": null,
+      "RunTimeTicks": 120000000,
+      "ProductionYear": 2022,
+      "IndexNumber": 3,
+      "ParentIndexNumber": 1,
+      "IsFolder": false,
+      "Type": "Audio",
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Mira Vale-Low Tide-0001-0003Night Ferry",
+        "ItemId": "528098b3cf145c70b05a3b07b9e7c722"
+      },
+      "PrimaryImageAspectRatio": 1,
+      "Artists": [
+        "Mira Vale"
+      ],
+      "ArtistItems": [
+        {
+          "Name": "Mira Vale",
+          "Id": "87a731ca1a13a2dd7619c1bd04321bcd"
+        }
+      ],
+      "Album": "Low Tide",
+      "AlbumId": "1636303b56ebc4e255c11a0280cf350c",
+      "AlbumPrimaryImageTag": "45b472a23de17c7247877043d753924a",
+      "AlbumArtist": "Mira Vale",
+      "AlbumArtists": [
+        {
+          "Name": "Mira Vale",
+          "Id": "87a731ca1a13a2dd7619c1bd04321bcd"
+        }
+      ],
+      "ImageTags": {
+        "Primary": "55e09355ce320754ee872077cfaec1d2"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "55e09355ce320754ee872077cfaec1d2": "eVEYuhD6MdkDVtMeMej?oyjsV@j?ozj[aeo#aefPafayaeayj[fjfk",
+          "45b472a23de17c7247877043d753924a": "eVEYuhD6MdkDVtMeMej?oyjsV@j?ozj[aeo#aefPafayaeayj[fjfk"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Audio"
+    },
+    {
+      "Name": "Low Tide",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "b12192c4f24fbb9ca831a42c3d527608",
+      "PlaylistItemId": "b12192c4f24fbb9ca831a42c3d527608",
+      "HasLyrics": true,
+      "Container": "flac",
+      "PremiereDate": "2022-01-01T00:00:00.0000000Z",
+      "ChannelId": null,
+      "RunTimeTicks": 120000000,
+      "ProductionYear": 2022,
+      "IndexNumber": 1,
+      "ParentIndexNumber": 1,
+      "IsFolder": false,
+      "Type": "Audio",
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Mira Vale-Low Tide-0001-0001Low Tide",
+        "ItemId": "b12192c4f24fbb9ca831a42c3d527608"
+      },
+      "PrimaryImageAspectRatio": 1,
+      "Artists": [
+        "Mira Vale"
+      ],
+      "ArtistItems": [
+        {
+          "Name": "Mira Vale",
+          "Id": "87a731ca1a13a2dd7619c1bd04321bcd"
+        }
+      ],
+      "Album": "Low Tide",
+      "AlbumId": "1636303b56ebc4e255c11a0280cf350c",
+      "AlbumPrimaryImageTag": "45b472a23de17c7247877043d753924a",
+      "AlbumArtist": "Mira Vale",
+      "AlbumArtists": [
+        {
+          "Name": "Mira Vale",
+          "Id": "87a731ca1a13a2dd7619c1bd04321bcd"
+        }
+      ],
+      "ImageTags": {
+        "Primary": "c3a1bd111540b5897f555f5eba602ef6"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "c3a1bd111540b5897f555f5eba602ef6": "eVEYuhD6MdkDVtMeMej?oyjsV@j?ozj[aeo#aefPafayaeayj[fjfk",
+          "45b472a23de17c7247877043d753924a": "eVEYuhD6MdkDVtMeMej?oyjsV@j?ozj[aeo#aefPafayaeayj[fjfk"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Audio"
+    },
+    {
+      "Name": "Harbor Lights",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "74ff7a8e3b71b0ad8029296b00049957",
+      "PlaylistItemId": "74ff7a8e3b71b0ad8029296b00049957",
+      "HasLyrics": false,
+      "Container": "flac",
+      "PremiereDate": "2022-01-01T00:00:00.0000000Z",
+      "ChannelId": null,
+      "RunTimeTicks": 120000000,
+      "ProductionYear": 2022,
+      "IndexNumber": 4,
+      "ParentIndexNumber": 1,
+      "IsFolder": false,
+      "Type": "Audio",
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Mira Vale-Low Tide-0001-0004Harbor Lights",
+        "ItemId": "74ff7a8e3b71b0ad8029296b00049957"
+      },
+      "PrimaryImageAspectRatio": 1,
+      "Artists": [
+        "Mira Vale"
+      ],
+      "ArtistItems": [
+        {
+          "Name": "Mira Vale",
+          "Id": "87a731ca1a13a2dd7619c1bd04321bcd"
+        }
+      ],
+      "Album": "Low Tide",
+      "AlbumId": "1636303b56ebc4e255c11a0280cf350c",
+      "AlbumPrimaryImageTag": "45b472a23de17c7247877043d753924a",
+      "AlbumArtist": "Mira Vale",
+      "AlbumArtists": [
+        {
+          "Name": "Mira Vale",
+          "Id": "87a731ca1a13a2dd7619c1bd04321bcd"
+        }
+      ],
+      "ImageTags": {
+        "Primary": "90b12e77464a10d2847943310c8b0afd"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "90b12e77464a10d2847943310c8b0afd": "eVEYuhD6MdkDVtMeMej?oyjsV@j?ozj[aeo#aefPafayaeayj[fjfk",
+          "45b472a23de17c7247877043d753924a": "eVEYuhD6MdkDVtMeMej?oyjsV@j?ozj[aeo#aefPafayaeayj[fjfk"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Audio"
+    }
+  ],
+  "TotalRecordCount": 3,
+  "StartIndex": 0
+}

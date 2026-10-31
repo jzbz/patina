@@ -484,6 +484,9 @@ fn watch(values: &Values, watched: &[String]) -> Vec<InspectorRow> {
     }
     for name in watched {
         let (value, dim) = match values.get(name) {
+            // A Jellyfin transcode's header carries the account's token,
+            // and a screenshot of the Inspector is what one shares for help.
+            Some(Ok(_)) if secret(name) => ("(hidden)".into(), true),
             Some(Ok(node)) => (describe(node), false),
             Some(Err(error)) => (error.clone(), true),
             None => ("…".into(), true),
@@ -497,6 +500,15 @@ fn watch(values: &Values, watched: &[String]) -> Vec<InspectorRow> {
         });
     }
     rows
+}
+
+/// Whether a property's value may hold a secret: the HTTP headers mpv
+/// sends, by any of the names that reach them (`options/…`,
+/// `file-local-options/…`).
+fn secret(name: &str) -> bool {
+    name.trim()
+        .to_ascii_lowercase()
+        .ends_with("http-header-fields")
 }
 
 /// Any mpv value as text.
@@ -611,5 +623,33 @@ mod tests {
         };
         assert_eq!(find("A/V sync"), "-0.012 s");
         assert_eq!(find("Hardware decoder"), "none (software)");
+    }
+
+    #[test]
+    fn watching_the_http_headers_shows_no_token() {
+        let header = Node::Array(vec![Node::String(
+            "Authorization: MediaBrowser Token=\"abc123\"".into(),
+        )]);
+        let mut values = Values::new();
+        let watched: Vec<String> = [
+            "http-header-fields",
+            "file-local-options/http-header-fields",
+            "options/HTTP-Header-Fields",
+            "user-agent",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        for name in &watched {
+            values.insert(name.clone(), Ok(header.clone()));
+        }
+        let rows = watch(&values, &watched);
+        for row in rows.iter().filter(|row| row.removable) {
+            let shown = row.value.to_string();
+            if row.label == "user-agent" {
+                assert!(shown.contains("abc123"), "{shown}");
+            } else {
+                assert_eq!(shown, "(hidden)", "{}", row.label);
+            }
+        }
     }
 }

@@ -128,6 +128,10 @@ pub fn moves(current: &[i64], desired: &[i64]) -> Vec<(usize, usize)> {
 /// The shortest prefix worth folding, as in IINA.
 const MIN_PREFIX: usize = 7;
 
+/// What separates the parts of a title Patina makes itself, as a Jellyfin
+/// episode's.
+const PART: &str = " · ";
+
 /// For each name, the length in bytes of the longest series prefix it
 /// shares with another name in the list ("[Group] Show - " in
 /// "[Group] Show - 01 [1080p].mkv"), or 0. The prefix ends after a
@@ -141,6 +145,12 @@ pub fn series_prefixes(names: &[&str]) -> Vec<usize> {
             .take_while(|((_, x), y)| x == y)
             .map(|((_, x), _)| x.len_utf8())
             .sum();
+        // A title in parts, as Jellyfin's episodes are ("Show · S1 E2 ·
+        // Name"), folds whole parts only: cut inside "S1", episodes of two
+        // seasons would read alike.
+        if let Some(part) = a[..shared].rfind(PART) {
+            return part + PART.len();
+        }
         // Back off to the end of the last separator.
         a[..shared]
             .char_indices()
@@ -315,6 +325,16 @@ mod tests {
         let show = "Show - ".len();
         assert_eq!(series_prefixes(&names), [show, 0, show, show]);
         assert_eq!(series_prefixes(&["Same name.mkv", "Same name.mkv"]), [0, 0]);
+        // A title in parts keeps the season in what shows.
+        let episodes = [
+            "Lantern Street · S1 E1 · Opening Night",
+            "Lantern Street · S1 E2 · Night Market",
+            "Lantern Street · S2 E1 · Back Again",
+            "Lantern Street · S2 E2 · Last Stop",
+        ];
+        for (name, prefix) in episodes.iter().zip(series_prefixes(&episodes)) {
+            assert_eq!(&name[..prefix], "Lantern Street · ", "{name}");
+        }
     }
 
     #[test]

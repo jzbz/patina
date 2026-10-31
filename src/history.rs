@@ -119,12 +119,17 @@ impl HistoryController {
         let app = self.app();
         let entries = app.history_entries();
         let query = self.query.borrow().clone();
+        // A Jellyfin item is shown with its server, never its entry.
+        let place = |path: &str| {
+            crate::jellyfin::session::parse_entry(path).map(|_| app.source_place(path))
+        };
         let built = build(
             &entries,
             &query,
             self.group.get(),
             &Zoned::now(),
             &self.missing.borrow(),
+            &place,
         );
         let matched = built.iter().filter(|(_, path)| path.is_some()).count();
         let (rows, paths): (Vec<_>, Vec<_>) = built.into_iter().unzip();
@@ -256,12 +261,14 @@ impl HistoryController {
 }
 
 /// The rows to show, each with the file it stands for (None for headings).
+/// `place` names where an entry is when that isn't its folder or host.
 fn build(
     entries: &[HistoryEntry],
     query: &str,
     group: Group,
     now: &Zoned,
     missing: &HashSet<String>,
+    place: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<(HistoryRow, Option<String>)> {
     let query = query.trim().to_lowercase();
     let mut matching: Vec<&HistoryEntry> = entries
@@ -285,7 +292,9 @@ fn build(
     for entry in matching {
         let key = match group {
             Group::Date => day_label(played(entry).date(), today),
-            Group::Folder => util::parent_directory(&entry.path),
+            Group::Folder => {
+                place(&entry.path).unwrap_or_else(|| util::parent_directory(&entry.path))
+            }
         };
         match groups.iter_mut().find(|(existing, _)| *existing == key) {
             Some((_, members)) => members.push(entry),
@@ -312,6 +321,8 @@ fn build(
                 Group::Folder => when.strftime("%b %-d, %Y").to_string(),
             };
             let detail = match group {
+                Group::Date if let Some(place) = place(&entry.path) => place,
+                Group::Folder if place(&entry.path).is_some() => String::new(),
                 _ if url => entry.path.clone(),
                 Group::Date => util::parent_directory(&entry.path),
                 Group::Folder => file_name(&entry.path),
@@ -405,7 +416,7 @@ mod tests {
             entry("/media/old.avi", "2026-09-01T12:00:00", 0.0, 0.0),
         ];
         let none = HashSet::new();
-        let rows = build(&entries, "", Group::Date, &now, &none);
+        let rows = build(&entries, "", Group::Date, &now, &none, &|_| None);
         assert_eq!(
             titles(&rows),
             [
@@ -425,7 +436,7 @@ mod tests {
         assert_eq!(first.progress, 0.5);
         assert_eq!(first.progress_text, "10:00 / 20:00");
 
-        let rows = build(&entries, "", Group::Folder, &now, &none);
+        let rows = build(&entries, "", Group::Folder, &now, &none, &|_| None);
         assert_eq!(
             titles(&rows),
             [
@@ -450,9 +461,33 @@ mod tests {
             entry("/media/film.mp4", "2026-10-26T09:30:00", 0.0, 0.0),
         ];
         let missing = HashSet::from(["/media/film.mp4".to_owned()]);
-        let rows = build(&entries, " SHOW ", Group::Date, &now, &missing);
+        let rows = build(&entries, " SHOW ", Group::Date, &now, &missing, &|_| None);
         assert_eq!(titles(&rows), ["Today", "  02.mkv"]);
-        let rows = build(&entries, "film", Group::Date, &now, &missing);
+        let rows = build(&entries, "film", Group::Date, &now, &missing, &|_| None);
         assert!(rows[1].0.missing);
+    }
+
+    #[test]
+    fn jellyfin_items_show_their_server_and_never_their_entry() {
+        let now: Zoned = "2026-10-26T20:00:00[UTC]".parse().unwrap();
+        let mut film = entry("jellyfin://srv/m1", "2026-10-26T19:00:00", 0.0, 0.0);
+        film.title = "Night Signal".into();
+        let entries = [
+            film,
+            entry("/media/clip.mkv", "2026-10-26T18:00:00", 0.0, 0.0),
+        ];
+        let place = |path: &str| {
+            path.starts_with("jellyfin://")
+                .then(|| "Home Server".to_owned())
+        };
+        let rows = build(&entries, "", Group::Date, &now, &HashSet::new(), &place);
+        assert_eq!(titles(&rows), ["Today", "  Night Signal", "  clip.mkv"]);
+        assert_eq!(rows[1].0.detail, "Home Server");
+        let rows = build(&entries, "", Group::Folder, &now, &HashSet::new(), &place);
+        assert_eq!(
+            titles(&rows),
+            ["Home Server", "  Night Signal", "/media", "  clip.mkv"]
+        );
+        assert_eq!(rows[1].0.detail, "");
     }
 }

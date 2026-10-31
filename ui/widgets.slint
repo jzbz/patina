@@ -78,6 +78,7 @@ export component TextButton inherits Rectangle {
     background: !root.enabled ? #ffffff0d : root.primary ? (touch.pressed ? #2368d0 : touch.has-hover ? #3b88ff : Theme.accent) : (touch.pressed ? #ffffff2e : touch.has-hover ? #ffffff24 : #ffffff1a);
     accessible-role: button;
     accessible-label: root.text;
+    accessible-enabled: root.enabled;
     accessible-action-default => {
         root.clicked();
     }

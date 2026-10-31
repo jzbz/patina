@@ -9,6 +9,7 @@ pub enum Page {
     Audio,
     Subtitles,
     Network,
+    Jellyfin,
     Control,
     KeyBindings,
     Advanced,
@@ -16,13 +17,14 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 10] = [
+    pub const ALL: [Page; 11] = [
         Page::General,
         Page::Interface,
         Page::Video,
         Page::Audio,
         Page::Subtitles,
         Page::Network,
+        Page::Jellyfin,
         Page::Control,
         Page::KeyBindings,
         Page::Advanced,
@@ -37,6 +39,7 @@ impl Page {
             Page::Audio => "Audio",
             Page::Subtitles => "Subtitles",
             Page::Network => "Network",
+            Page::Jellyfin => "Jellyfin",
             Page::Control => "Control",
             Page::KeyBindings => "Key Bindings",
             Page::Advanced => "Advanced",
@@ -132,6 +135,12 @@ const SCROLL_ACTIONS: &[(&str, &str)] = &[
     ("none", "Do nothing"),
 ];
 
+const SEGMENT_ACTIONS: &[(&str, &str)] = &[
+    ("ask", "Show a Skip button"),
+    ("skip", "Skip automatically"),
+    ("none", "Do nothing"),
+];
+
 const ENCODINGS: &[(&str, &str)] = &[
     ("auto", "Detect automatically"),
     ("utf-8", "Unicode (UTF-8)"),
@@ -165,7 +174,7 @@ const ENCODINGS: &[(&str, &str)] = &[
 ];
 
 use Control::{Button, Choice, Lines, Password, Path, Switch, Text};
-use Page::{Advanced, Audio, General, Interface, Network, Subtitles, Utilities, Video};
+use Page::{Advanced, Audio, General, Interface, Jellyfin, Network, Subtitles, Utilities, Video};
 
 pub const ITEMS: &[Item] = &[
     // General.
@@ -985,6 +994,95 @@ pub const ITEMS: &[Item] = &[
             Text,
         ),
         "ytdl",
+    ),
+    // Jellyfin.
+    item(
+        Jellyfin,
+        "Skipping",
+        "jellyfin-skip-intro",
+        "Intros",
+        "Where a plugin on the server marks them.",
+        Choice(SEGMENT_ACTIONS),
+    ),
+    item(
+        Jellyfin,
+        "Skipping",
+        "jellyfin-skip-recap",
+        "Recaps",
+        "",
+        Choice(SEGMENT_ACTIONS),
+    ),
+    item(
+        Jellyfin,
+        "Skipping",
+        "jellyfin-skip-preview",
+        "Previews",
+        "",
+        Choice(SEGMENT_ACTIONS),
+    ),
+    item(
+        Jellyfin,
+        "Skipping",
+        "jellyfin-skip-outro",
+        "Credits",
+        "",
+        Choice(SEGMENT_ACTIONS),
+    ),
+    item(
+        Jellyfin,
+        "Skipping",
+        "jellyfin-skip-commercial",
+        "Commercials",
+        "",
+        Choice(SEGMENT_ACTIONS),
+    ),
+    item(
+        Jellyfin,
+        "Transcoding",
+        "jellyfin-transcode-hevc",
+        "Have the server convert HEVC (H.265) video",
+        "For computers that can't decode it smoothly. Takes effect with the next file.",
+        Switch,
+    ),
+    item(
+        Jellyfin,
+        "Transcoding",
+        "jellyfin-transcode-av1",
+        "Have the server convert AV1 video",
+        "",
+        Switch,
+    ),
+    item(
+        Jellyfin,
+        "Transcoding",
+        "jellyfin-transcode-hdr",
+        "Have the server convert HDR video to SDR",
+        "",
+        Switch,
+    ),
+    item(
+        Jellyfin,
+        "Transcoding",
+        "jellyfin-transcode-over-1080p",
+        "Have the server convert video larger than 1080p",
+        "",
+        Switch,
+    ),
+    item(
+        Jellyfin,
+        "Images",
+        "jellyfin-image-cache-mb",
+        "Largest poster cache",
+        "Posters and backdrops from every server, kept between runs.",
+        number(0.0, 100000.0, 50.0, "MB"),
+    ),
+    item(
+        Jellyfin,
+        "Images",
+        "clear-jellyfin-images",
+        "Clear Poster Cache",
+        "",
+        Button,
     ),
     // Control.
     item(

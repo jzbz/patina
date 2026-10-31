@@ -2,6 +2,10 @@
 
 use crate::app::App;
 use crate::input::{Binding, KeyCombo};
+use crate::jellyfin::models::StreamKind;
+use crate::jellyfin::playback::{self, Playing, Report};
+use crate::jellyfin::segments::{self, Segments, Span};
+use crate::jellyfin::{session, trickplay};
 use crate::mpv::{EndFileReason, Event, Mpv};
 use crate::opensubtitles;
 use crate::player::state::{
@@ -14,8 +18,8 @@ use crate::thumbnails;
 use crate::util::{self, format_delay, format_speed, format_time};
 use crate::ytdl;
 use crate::{
-    Actions, ChapterItem, DeviceItem, Media, OnlineSubs, OnlineSubtitle, Osd, Platform, Playback,
-    PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem, TrackItem,
+    Actions, ChapterItem, DeviceItem, Library, Media, OnlineSubs, OnlineSubtitle, Osd, Platform,
+    Playback, PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem, TrackItem,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -69,6 +73,15 @@ const DEFAULT_SIZE: slint::LogicalSize = slint::LogicalSize::new(960.0, 600.0);
 /// How long a size change waits for Slint to apply new size limits: its own
 /// zero-delay timer, which a later one of the same deadline would precede.
 const AFTER_LIMITS: Duration = Duration::from_millis(1);
+/// The qualities a Jellyfin item can be asked for below its own, in bits
+/// per second: the server transcodes to them.
+const JELLYFIN_QUALITIES: [(i64, &str); 5] = [
+    (20_000_000, "20 Mbit/s"),
+    (10_000_000, "10 Mbit/s"),
+    (6_000_000, "6 Mbit/s"),
+    (4_000_000, "4 Mbit/s"),
+    (2_000_000, "2 Mbit/s"),
+];
 
 pub struct PlayerController {
     app: Weak<App>,
@@ -159,6 +172,70 @@ pub struct PlayerController {
     /// How much of each row's name is a series prefix shared with its
     /// neighbours, in bytes (0 for none).
     series_prefixes: RefCell<Vec<usize>>,
+    /// The Jellyfin library shown while the window is idle; None once the
+    /// window has closed.
+    library: RefCell<Option<Rc<crate::jellyfin::library::LibraryController>>>,
+    /// Counts the times the playlist was replaced, so that the library can
+    /// drop a Play answer that comes after the window opened something
+    /// else.
+    opens: Cell<u64>,
+    /// The Jellyfin playback of the file open now, for its reports and the
+    /// mapping of its tracks; None for any other file.
+    jellyfin: RefCell<Option<Playing>>,
+    /// What the load hook made of a Jellyfin entry, until mpv has opened it
+    /// or failed to.
+    jellyfin_resolved: playback::Resolved,
+    /// The versions chosen for Jellyfin entries from the Version menu, by
+    /// entry, until the library opens the entry again with its page's.
+    jellyfin_versions: RefCell<HashMap<String, String>>,
+    /// The bitrate chosen from the Video Quality menu for Jellyfin items,
+    /// which holds for every one the window plays: lowered for the
+    /// network, it is wanted for the next episode too.
+    jellyfin_quality: Cell<Option<i64>>,
+    /// What the next load of an entry, reloading it for another quality,
+    /// version or subtitle, carries over: where it was and its streams.
+    jellyfin_reload: RefCell<Option<(String, playback::Reload)>>,
+    /// The segments of the playback a reload replaces, by entry: which
+    /// were skipped without asking stays so.
+    jellyfin_kept_segments: RefCell<Option<(String, Segments)>>,
+    jellyfin_pacer: RefCell<playback::Pacer>,
+    /// Asks the pacer once a second whether progress is due.
+    jellyfin_timer: Timer,
+    /// Where the Jellyfin file was when last heard, for its reports: once
+    /// it has ended mpv no longer says.
+    jellyfin_position: Cell<f64>,
+    /// The server's tracks wait to be selected until mpv lists the file's.
+    jellyfin_tracks: Cell<bool>,
+    /// A seek is under way; it is reported once playback restarts.
+    jellyfin_seeked: Cell<bool>,
+    /// The file has opened and not yet started playing: its start is
+    /// reported once it has, when mpv knows where it is, whether it can
+    /// seek and which tracks play.
+    jellyfin_start_pending: Cell<bool>,
+    /// mpv said where playback is last time it said anything: at a file's
+    /// end it says nothing, which the state reads as 0, the start of an
+    /// intro or recap the file ending would be sent back to skip.
+    position_known: Cell<bool>,
+    /// The file reached its end, where mpv keeps it open: its stop was
+    /// reported then, and playing on (a seek back) starts it again.
+    jellyfin_at_end: Cell<bool>,
+    /// A stop was reported: the library shows the server's progress once
+    /// the server has taken it (`Change::Played`), not before.
+    jellyfin_stopping: Cell<bool>,
+    /// The intros, credits and the like the server marks in the Jellyfin
+    /// file, and the one whose Skip button shows.
+    jellyfin_segments: RefCell<Segments>,
+    jellyfin_offer: Cell<Option<Span>>,
+    /// Seek-bar previews from the server's trickplay images, for a
+    /// Jellyfin file that has them.
+    jellyfin_tiles: RefCell<Option<Rc<trickplay::Tiles>>>,
+    /// The time the seek preview was asked for last, shown once a tile
+    /// that was missing has come.
+    preview_time: Cell<f64>,
+    /// The window's size when it left the library to play something, which
+    /// it goes back to when it is idle again: fitted to a small video or a
+    /// cover, the library's bar would hide its tabs.
+    library_size: Cell<Option<slint::LogicalSize>>,
     this: Weak<PlayerController>,
 }
 
@@ -191,6 +268,28 @@ impl PlayerController {
             window_system_known: Cell::new(false),
             playlist_selection: RefCell::new(Default::default()),
             series_prefixes: RefCell::new(Vec::new()),
+            library: RefCell::new(None),
+            opens: Cell::new(0),
+            jellyfin: RefCell::new(None),
+            jellyfin_resolved: playback::Resolved::default(),
+            jellyfin_versions: RefCell::new(HashMap::new()),
+            jellyfin_quality: Cell::new(None),
+            jellyfin_reload: RefCell::new(None),
+            jellyfin_kept_segments: RefCell::new(None),
+            jellyfin_pacer: RefCell::new(playback::Pacer::default()),
+            jellyfin_timer: Timer::default(),
+            jellyfin_position: Cell::new(0.0),
+            jellyfin_tracks: Cell::new(false),
+            jellyfin_seeked: Cell::new(false),
+            jellyfin_start_pending: Cell::new(false),
+            position_known: Cell::new(false),
+            jellyfin_at_end: Cell::new(false),
+            jellyfin_stopping: Cell::new(false),
+            jellyfin_segments: RefCell::new(Segments::default()),
+            jellyfin_offer: Cell::new(None),
+            jellyfin_tiles: RefCell::new(None),
+            preview_time: Cell::new(0.0),
+            library_size: Cell::new(None),
             app: Rc::downgrade(app),
             window,
             player: RefCell::new(Some(player)),
@@ -230,6 +329,11 @@ impl PlayerController {
         controller.sync(&Prop::ALL.iter().copied().collect());
         controller.apply_preferences();
         controller.wire_callbacks();
+        *controller.library.borrow_mut() = Some(crate::jellyfin::library::LibraryController::new(
+            &app.jellyfin(),
+            &controller.window,
+            Rc::downgrade(&controller),
+        ));
         controller.wire_window_events();
         controller.attach_video()?;
         controller.spawn_event_pump(events);
@@ -411,8 +515,33 @@ impl PlayerController {
             .borrow()
             .playlist
             .iter()
-            .map(|entry| (entry.label(), entry.filename.clone()))
+            .map(|entry| (self.entry_label(entry), entry.filename.clone()))
             .collect()
+    }
+
+    /// A playlist entry's name: a Jellyfin item's title, as the library or
+    /// the history knows it, and otherwise as `PlaylistEntry::label` has it.
+    fn entry_label(&self, entry: &PlaylistEntry) -> String {
+        if session::parse_entry(&entry.filename).is_some()
+            && let Some(title) = self.app().entry_title(&entry.filename)
+        {
+            return title;
+        }
+        entry.label()
+    }
+
+    /// What a file is called in messages: a Jellyfin item by its title.
+    fn display_name(&self, path: &str) -> String {
+        if session::parse_entry(path).is_some()
+            && let Some(title) = self.app().entry_title(path)
+        {
+            return title;
+        }
+        if path.is_empty() {
+            String::from("the file")
+        } else {
+            file_name(path)
+        }
     }
 
     // ---- Setup ----------------------------------------------------------
@@ -565,6 +694,9 @@ impl PlayerController {
         if sources.is_empty() {
             return;
         }
+        if !append {
+            self.opens.set(self.opens.get() + 1);
+        }
         if self.ready.get() {
             self.load(&sources, append);
         } else {
@@ -572,11 +704,43 @@ impl PlayerController {
         }
     }
 
+    /// Adds sources to the playlist: right after the file playing with
+    /// `next`, otherwise at the end. An idle window starts playing them.
+    pub fn queue(&self, sources: Vec<String>, next: bool) {
+        let at = usize::try_from(self.state.borrow().playlist_pos).ok();
+        match at {
+            Some(at) if next && self.ready.get() && !self.is_idle() => {
+                let player = self.player();
+                for (offset, source) in sources.iter().enumerate() {
+                    loadfile(&player, source, "insert-at", Some(at + 1 + offset));
+                }
+            }
+            _ => self.open(sources, true),
+        }
+    }
+
+    fn library(&self) -> Option<Rc<crate::jellyfin::library::LibraryController>> {
+        self.library.borrow().clone()
+    }
+
+    /// How many times the playlist was replaced so far (see `opens`).
+    pub fn opened(&self) -> u64 {
+        self.opens.get()
+    }
+
     fn load(&self, sources: &[String], append: bool) {
+        if !append && self.is_idle() && self.window.global::<Library>().get_shown() {
+            self.remember_library_size();
+        }
         let player = self.player();
         self.load_asked.set(true);
         if !append {
-            player.command_quiet(&["write-watch-later-config"]);
+            // The server keeps a Jellyfin item's place, opened or still
+            // opening: a watch-later file for its entry would be read
+            // before the load hook the next time it opens.
+            if session::parse_entry(&self.state.borrow().path).is_none() {
+                player.command_quiet(&["write-watch-later-config"]);
+            }
             self.has_fitted.set(false);
         }
         for (index, source) in sources.iter().enumerate() {
@@ -599,6 +763,7 @@ impl PlayerController {
 
     fn handle_events(&self, batch: Vec<Event>) {
         let mut changed = HashSet::new();
+        let mut restarted = false;
         for event in batch {
             match event {
                 Event::PropertyChange {
@@ -606,6 +771,17 @@ impl PlayerController {
                 } => {
                     if log::log_enabled!(log::Level::Trace) && userdata != Prop::TimePos as u64 {
                         log::trace!("{:?} = {value:?}", Prop::from_userdata(userdata));
+                    }
+                    // The last position mpv gave: at a file's end it gives
+                    // none, which the state reads as 0.
+                    if userdata == Prop::TimePos as u64 {
+                        let position = value.as_f64();
+                        self.position_known.set(position.is_some());
+                        if let Some(position) = position
+                            && self.jellyfin.borrow().is_some()
+                        {
+                            self.jellyfin_position.set(position.max(0.0));
+                        }
                     }
                     if let Some(prop) = Prop::from_userdata(userdata)
                         && self.state.borrow_mut().apply(prop, &value)
@@ -623,7 +799,16 @@ impl PlayerController {
                     self.track.set(self.track.get() + 1);
                     self.reset_thumbnails();
                     self.set_online(None);
+                    self.reset_segments();
+                    self.window
+                        .global::<Media>()
+                        .set_video_versions(ModelRc::new(VecModel::default()));
+                    self.jellyfin_tracks.set(false);
+                    self.jellyfin_seeked.set(false);
+                    self.jellyfin_start_pending.set(false);
+                    self.jellyfin_stopping.set(false);
                     self.loading.set(true);
+                    changed.insert(Prop::PausedForCache);
                     self.crop_index.set(0);
                     self.window.set_error(SharedString::new());
                     let resize = self.app().prefs().resize_window;
@@ -637,10 +822,23 @@ impl PlayerController {
                     self.loading.set(false);
                     changed.insert(Prop::PausedForCache);
                     self.reapply_audio_filters();
+                    self.jellyfin_loaded();
+                    if self.jellyfin.borrow().is_some() {
+                        // Whether it is music is the server's to say, which
+                        // the window knows only now.
+                        changed.insert(Prop::TrackList);
+                    }
                     let state = self.state.borrow();
+                    // mpv may not have said the title it was given yet.
+                    let title = match &*self.jellyfin.borrow() {
+                        Some(playing) => playing.title.clone(),
+                        None => state.title.clone(),
+                    };
                     self.app()
-                        .record_history(&state.path, &state.title, state.duration);
-                    if util::is_url(&state.path) {
+                        .record_history(&state.path, &title, state.duration);
+                    // A Jellyfin item's stream is the server's, which mpv's
+                    // yt-dlp hook leaves alone.
+                    if util::is_url(&state.path) && self.jellyfin.borrow().is_none() {
                         self.request_property(
                             REPLY_YTDL,
                             "user-data/mpv/ytdl/json-subprocess-result/stdout",
@@ -665,25 +863,27 @@ impl PlayerController {
                     ..
                 } => {}
                 Event::EndFile { reason, error, .. } => {
-                    self.loading.set(false);
+                    let opened = !self.loading.replace(false);
                     self.load_asked.set(false);
                     if self.pip_pending.get() == PipPending::Opening {
                         self.pip_pending.set(PipPending::No);
                     }
                     changed.insert(Prop::PausedForCache);
-                    {
+                    // A file that never opened (a Jellyfin item while
+                    // signed out, a drive not mounted) keeps where History
+                    // says it was.
+                    if opened {
                         let state = self.state.borrow();
                         self.app()
                             .update_history(&state.path, state.position, state.duration);
                     }
+                    let failure = self.jellyfin_ended();
                     if reason == EndFileReason::Error {
-                        let detail = error.map(|error| error.description()).unwrap_or_default();
+                        let detail = failure
+                            .or_else(|| error.map(|error| error.description()))
+                            .unwrap_or_default();
                         let path = self.state.borrow().path.clone();
-                        let name = if path.is_empty() {
-                            String::from("the file")
-                        } else {
-                            file_name(&path)
-                        };
+                        let name = self.display_name(&path);
                         self.window
                             .set_error(format!("Could not open {name}\n{detail}").into());
                     }
@@ -692,8 +892,18 @@ impl PlayerController {
                     if self.user_acted() {
                         self.osd_seek();
                     }
+                    if self.jellyfin.borrow().is_some() {
+                        self.jellyfin_seeked.set(true);
+                    }
                 }
                 Event::PlaybackRestart => {
+                    restarted = true;
+                    if self.jellyfin_seeked.replace(false)
+                        && !self.jellyfin_at_end.get()
+                        && !self.jellyfin_start_pending.get()
+                    {
+                        self.jellyfin_changed_now();
+                    }
                     // A seek finished (or playback began): tell the media
                     // controls where playback is now.
                     if let Some(app) = self.app.upgrade()
@@ -751,6 +961,15 @@ impl PlayerController {
                 _ => {}
             }
         }
+        if self.jellyfin.borrow().is_some() {
+            self.jellyfin_changes(&changed);
+            // Reported once mpv has said, in this batch, where playback
+            // began and what plays: at the file's load it knows neither.
+            if restarted && self.jellyfin_start_pending.replace(false) {
+                self.jellyfin_started();
+                self.check_segments();
+            }
+        }
         if !changed.is_empty() {
             self.sync(&changed);
         }
@@ -778,6 +997,16 @@ impl PlayerController {
         if any(&[Prop::Idle]) && state.idle {
             self.music_override.set(false);
             self.leave_music_mode(false);
+            self.restore_library_size();
+            // What played may have moved on the server's progress, which
+            // the library shows again now. Deferred: it reads the state
+            // borrowed here. After a Jellyfin item, once the server has
+            // taken the report of its end (`Change::Played`).
+            if !self.jellyfin_stopping.get()
+                && let Some(library) = self.library()
+            {
+                Timer::single_shot(Duration::ZERO, move || library.refresh());
+            }
         }
         if any(&[Prop::TrackList, Prop::Idle]) && !state.idle {
             self.auto_music_mode(&state);
@@ -800,6 +1029,15 @@ impl PlayerController {
         if any(&[Prop::PausedForCache, Prop::CacheBuffering, Prop::Idle]) {
             playback.set_buffering(!state.idle && (state.paused_for_cache || self.loading.get()));
             playback.set_buffering_percent(state.cache_buffering as i32);
+        }
+        if any(&[Prop::PausedForCache, Prop::Path, Prop::Idle]) {
+            // A Jellyfin item opens once its server has answered.
+            let waiting = session::parse_entry(&state.path)
+                .filter(|_| self.loading.get() && !state.idle)
+                .and_then(|(server, _)| self.app().jellyfin().server(server))
+                .map(|server| format!("Waiting for {}…", server.name))
+                .unwrap_or_default();
+            playback.set_loading_text(waiting.into());
         }
         if any(&[Prop::Seekable]) {
             playback.set_seekable(state.seekable);
@@ -827,8 +1065,15 @@ impl PlayerController {
             playback.set_speed(state.speed as f32);
         }
         if any(&[Prop::MediaTitle, Prop::Path]) {
-            // Like IINA, local files are titled by their file name.
-            let title = if state.path.is_empty() || util::is_url(&state.path) {
+            // Like IINA, local files are titled by their file name. A
+            // Jellyfin item by its own, which mpv has only once the load
+            // hook has asked the server: before, it would show the item's
+            // id.
+            let jellyfin =
+                session::parse_entry(&state.path).and_then(|_| self.app().entry_title(&state.path));
+            let title = if let Some(title) = jellyfin {
+                title
+            } else if state.path.is_empty() || util::is_url(&state.path) {
                 state.title.clone()
             } else {
                 file_name(&state.path)
@@ -984,8 +1229,8 @@ impl PlayerController {
             Prop::SecondarySid,
         ]) {
             media.set_video_tracks(track_model(&state, TrackKind::Video, false, false));
-            media.set_audio_tracks(track_model(&state, TrackKind::Audio, true, false));
-            media.set_sub_tracks(track_model(&state, TrackKind::Sub, true, false));
+            media.set_audio_tracks(self.audio_track_model(&state));
+            media.set_sub_tracks(self.sub_track_model(&state));
             media.set_secondary_sub_tracks(track_model(&state, TrackKind::Sub, true, true));
             media.set_downloaded_subtitle(self.downloaded_subtitle(&state).is_some());
         }
@@ -1131,13 +1376,25 @@ impl PlayerController {
     // ---- On-screen display ---------------------------------------------
 
     pub fn show_osd(&self, text: &str, detail: &str, progress: Option<f64>) {
+        let timeout = self.app().prefs().osd_timeout;
+        self.show_osd_for(text, detail, progress, timeout);
+    }
+
+    /// An OSD message shown for at least `seconds`: one that explains
+    /// something, such as a sign-in that won't be kept, can't be read in
+    /// the second a playback message lasts.
+    pub fn show_message(&self, text: &str, detail: &str, seconds: f32) {
+        let timeout = self.app().prefs().osd_timeout.max(seconds);
+        self.show_osd_for(text, detail, None, timeout);
+    }
+
+    fn show_osd_for(&self, text: &str, detail: &str, progress: Option<f64>, timeout: f32) {
         self.osd_fallback.set(None);
         // Music mode shows its state in its own controls instead.
         if self.in_music_mode() {
             return;
         }
-        let prefs = self.app().prefs();
-        if !prefs.osd_enabled {
+        if !self.app().prefs().osd_enabled {
             return;
         }
         let osd = self.window.global::<Osd>();
@@ -1148,7 +1405,7 @@ impl PlayerController {
         let window = self.window.as_weak();
         self.osd_timer.start(
             TimerMode::SingleShot,
-            Duration::from_secs_f32(prefs.osd_timeout.max(0.3)),
+            Duration::from_secs_f32(timeout.max(0.3)),
             move || {
                 if let Some(window) = window.upgrade() {
                     window.global::<Osd>().set_visible(false);
@@ -1420,6 +1677,14 @@ impl PlayerController {
                 "audio" => "aid",
                 _ => "sid",
             };
+            if property == "sid" && this.choose_jellyfin_subtitle(id) {
+                return;
+            }
+            // One of the source's audio streams a transcode doesn't carry.
+            if property == "aid" && id < 0 {
+                this.choose_jellyfin_audio(-id - 1);
+                return;
+            }
             if id > 0 {
                 this.player().set(property, id as i64);
             } else {
@@ -1635,6 +1900,10 @@ impl PlayerController {
             return false;
         };
         self.mark_user_action();
+        if self.leaves_jellyfin_item(&combo, &binding) {
+            self.player().command(&["stop"]);
+            return true;
+        }
         match binding {
             Binding::Mpv(commands) => {
                 for command in commands {
@@ -1644,6 +1913,18 @@ impl PlayerController {
             Binding::Patina(action) => self.run_action(&action),
         }
         true
+    }
+
+    /// Whether a key goes back to the library from a Jellyfin item playing
+    /// or opening, as the library's own Back would: Escape, outside full
+    /// screen, where as bound by default it does nothing. Playing from the
+    /// library replaces it, and Stop was the only way back.
+    fn leaves_jellyfin_item(&self, combo: &KeyCombo, binding: &Binding) -> bool {
+        let state = self.state.borrow();
+        !state.fullscreen
+            && !state.idle
+            && session::parse_entry(&state.path).is_some()
+            && leaves_full_screen(combo, binding)
     }
 
     fn handle_wheel(&self, dx: f32, dy: f32) {
@@ -1800,6 +2081,8 @@ impl PlayerController {
             "preferences" => app.open_preferences(),
             "history" => app.open_history(),
             "video-quality" => self.choose_quality(Some(argument), None),
+            "video-version" => self.choose_jellyfin_version(argument),
+            "skip-segment" => self.skip_segment(),
             "audio-quality" => self.choose_quality(None, Some(argument)),
             "download-video" => self.download_video(),
             "downloads" => app.open_downloads(),
@@ -1814,6 +2097,19 @@ impl PlayerController {
                 }
             }
             "inspector" => app.open_inspector(),
+            // The library shows only in an idle window: while this one
+            // plays, signing in starts in a new window rather than behind
+            // the video, where it would come up when the playlist ends.
+            "jellyfin-sign-in" => {
+                let library = if self.is_idle() {
+                    self.library()
+                } else {
+                    app.new_window().and_then(|window| window.library())
+                };
+                if let Some(library) = library {
+                    library.begin_sign_in();
+                }
+            }
             "close-window" => self.close(),
             "quit" => app.quit(),
             "minimize" => self.window.window().set_minimized(true),
@@ -2258,6 +2554,33 @@ impl PlayerController {
         });
     }
 
+    /// Notes the window's size as it leaves the library to play something.
+    fn remember_library_size(&self) {
+        let window = self.window.window();
+        let size = (!window.is_fullscreen() && !window.is_maximized() && !self.in_music_mode())
+            .then(|| window.size().to_logical(window.scale_factor()));
+        self.library_size.set(size);
+    }
+
+    /// The window is idle again after playing from the library: back to the
+    /// size it had there, after music mode's own restoring (which waits for
+    /// Slint to lift its size limits) and in its place.
+    fn restore_library_size(&self) {
+        let Some(size) = self.library_size.take() else {
+            return;
+        };
+        let this = self.this.clone();
+        Timer::single_shot(AFTER_LIMITS + Duration::from_millis(4), move || {
+            let Some(this) = this.upgrade() else {
+                return;
+            };
+            let window = this.window.window();
+            if this.is_idle() && !window.is_fullscreen() && !window.is_maximized() {
+                this.resize_window(size);
+            }
+        });
+    }
+
     /// Whether the window is `size` already, give or take a pixel or two.
     fn has_size(&self, size: slint::LogicalSize) -> bool {
         let window = self.window.window();
@@ -2398,7 +2721,7 @@ impl PlayerController {
         {
             self.pip_pending.set(PipPending::No);
         }
-        match state.audio_status() {
+        match self.audio_status(state) {
             // Never out of full screen or picture-in-picture.
             AudioStatus::Audio
                 if !self.in_music_mode()
@@ -2410,6 +2733,20 @@ impl PlayerController {
             }
             AudioStatus::NotAudio if self.in_music_mode() => self.leave_music_mode(false),
             _ => {}
+        }
+    }
+
+    /// Whether the file is music, as `PlaybackState::audio_status` has it,
+    /// except for a Jellyfin item: its stream is remote, which the state
+    /// never counts as music, and the server says what it is.
+    fn audio_status(&self, state: &PlaybackState) -> AudioStatus {
+        if state.idle || session::parse_entry(&state.path).is_none() {
+            return state.audio_status();
+        }
+        match &*self.jellyfin.borrow() {
+            Some(playing) if playing.audio_only => AudioStatus::Audio,
+            Some(_) => AudioStatus::NotAudio,
+            None => AudioStatus::Unknown,
         }
     }
 
@@ -2646,6 +2983,21 @@ impl PlayerController {
             crate::platform::file_uri(std::path::Path::new(&state.path))
         };
         let count = state.playlist.len() as i64;
+        // A Jellyfin item as the server describes it, with its artwork from
+        // the server (whose image URLs carry no token).
+        let jellyfin = self.jellyfin.borrow();
+        let shown = jellyfin
+            .as_ref()
+            .filter(|playing| playing.entry == state.path)
+            .map(|playing| &playing.shown);
+        let (artist, album) = match shown {
+            Some(shown) => (shown.artist.clone(), shown.album.clone()),
+            None if audio => (music_artist, music_album),
+            None => (
+                meta(&["artist", "album_artist", "performer"]),
+                meta(&["album"]),
+            ),
+        };
         NowPlaying {
             status: if state.paused {
                 Status::Paused
@@ -2654,14 +3006,10 @@ impl PlayerController {
             },
             track: self.track.get(),
             title,
-            artist: if audio {
-                music_artist
-            } else {
-                meta(&["artist", "album_artist", "performer"])
-            },
-            album: if audio { music_album } else { meta(&["album"]) },
+            artist,
+            album,
             url,
-            art_url: String::new(),
+            art_url: shown.map(|shown| shown.art_url.clone()).unwrap_or_default(),
             duration: state.duration,
             rate: state.speed,
             volume: state.volume / 100.0,
@@ -2769,7 +3117,11 @@ impl PlayerController {
     }
 
     fn rebuild_playlist(&self, state: &PlaybackState) {
-        let labels: Vec<String> = state.playlist.iter().map(PlaylistEntry::label).collect();
+        let labels: Vec<String> = state
+            .playlist
+            .iter()
+            .map(|entry| self.entry_label(entry))
+            .collect();
         let names: Vec<&str> = labels.iter().map(String::as_str).collect();
         *self.series_prefixes.borrow_mut() = crate::playlist::series_prefixes(&names);
         self.playlist_selection
@@ -2802,7 +3154,7 @@ impl PlayerController {
                 .map(|probe| probe.duration)
                 .filter(|d| *d > 0.0)
         };
-        let folder = util::parent_directory(&entry.filename);
+        let folder = app.source_place(&entry.filename);
         let prefs = app.prefs();
         let tags = probe
             .as_ref()
@@ -2815,7 +3167,7 @@ impl PlayerController {
             Some(probe) if probe.artist.is_empty() => (probe.title.clone(), String::new(), folder),
             Some(probe) => (probe.title.clone(), String::new(), probe.artist.clone()),
             None => {
-                let label = entry.label();
+                let label = self.entry_label(entry);
                 let prefix = self
                     .series_prefixes
                     .borrow()
@@ -3191,7 +3543,17 @@ impl PlayerController {
         let choices = self.app().subtitle_choices();
         let qualities = self.qualities.borrow().clone();
         let resume_at = self.resume_at.borrow_mut().take();
+        let reload = self.jellyfin_reload.borrow_mut().take();
         let links = self.app().link_sources();
+        let session = self.app().jellyfin();
+        let jellyfin = playback::Hook {
+            servers: session.servers(),
+            registry: session.registry(),
+            versions: self.jellyfin_versions.borrow().clone(),
+            max_bitrate: self.jellyfin_quality.get(),
+            rules: playback::transcode_rules(&prefs),
+            resolved: self.jellyfin_resolved.clone(),
+        };
         let mpv = self.mpv.clone();
         let Some(hook) = self.player.borrow().as_ref().map(Player::hook) else {
             return;
@@ -3200,8 +3562,22 @@ impl PlayerController {
             let hook = hook.clone();
             move || {
                 crate::scheme::screen_playlist_entry(&mpv, &links);
-                apply_quality(&mpv, &qualities, resume_at);
-                subtitle_match::load_for_current_file(&mpv, languages.as_deref(), &choices);
+                let path = mpv
+                    .get_property("path")
+                    .ok()
+                    .and_then(|path| path.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                // A Jellyfin entry is a stream the server picks, asked for
+                // here: it may block, as the hook waits on this thread.
+                if session::parse_entry(&path).is_some() {
+                    let reload = reload
+                        .filter(|(entry, _)| *entry == path)
+                        .map(|(_, reload)| reload);
+                    playback::prepare(&mpv, &path, &jellyfin, reload);
+                } else {
+                    apply_quality(&mpv, &qualities, resume_at);
+                    subtitle_match::load_for_current_file(&mpv, languages.as_deref(), &choices);
+                }
                 hook.resume(&mpv, id);
             }
         });
@@ -3209,6 +3585,742 @@ impl PlayerController {
             log::warn!("could not match subtitles: {error}");
             hook.resume(&self.mpv, id);
         }
+    }
+
+    // ---- Jellyfin -------------------------------------------------------
+
+    /// mpv opened a file: a Jellyfin entry's playback, as the load hook
+    /// planned it. Its start is reported once it has started playing.
+    fn jellyfin_loaded(&self) {
+        let path = self.state.borrow().path.clone();
+        let kept = self
+            .jellyfin_kept_segments
+            .borrow_mut()
+            .take()
+            .filter(|(entry, _)| *entry == path)
+            .map(|(_, segments)| segments);
+        let resolved = self
+            .jellyfin_resolved
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let playing = match resolved {
+            Some((entry, Ok(playing))) if entry == path => playing,
+            Some((entry, _)) => {
+                log::debug!("the load hook's answer for {entry} came for {path}");
+                return;
+            }
+            None => return,
+        };
+        self.jellyfin_position.set(playing.start);
+        self.start_trickplay(&playing);
+        *self.jellyfin.borrow_mut() = Some(playing);
+        self.jellyfin_tracks.set(true);
+        self.jellyfin_at_end.set(false);
+        self.jellyfin_start_pending.set(true);
+        self.set_jellyfin_qualities();
+        self.set_jellyfin_versions();
+        self.fetch_segments(kept);
+    }
+
+    /// Reports the playback's start, and its progress from then on.
+    fn jellyfin_started(&self) {
+        self.jellyfin_report(true);
+        let weak = self.this.clone();
+        self.jellyfin_timer
+            .start(TimerMode::Repeated, Duration::from_secs(1), move || {
+                if let Some(this) = weak.upgrade() {
+                    this.jellyfin_tick();
+                }
+            });
+    }
+
+    /// A file ended, or the window closed: a Jellyfin playback reports its
+    /// stop. For an entry that never opened, what went wrong, in words.
+    fn jellyfin_ended(&self) -> Option<String> {
+        self.jellyfin_timer.stop();
+        self.jellyfin_tracks.set(false);
+        self.reset_segments();
+        let session = self.app().jellyfin();
+        let never_played = self.jellyfin_start_pending.replace(false);
+        if let Some(playing) = self.jellyfin.borrow_mut().take() {
+            // Reported when it reached the end.
+            if self.jellyfin_at_end.replace(false) {
+                return None;
+            }
+            // Opened and stopped before it began playing, the server never
+            // heard of it: its session ends, and nothing of the account's
+            // changes.
+            let position = self.jellyfin_position.get();
+            session.report(
+                &playing.server_id,
+                Report::Stopped(playing.stopped(position, never_played)),
+            );
+            self.jellyfin_stopping.set(true);
+            return None;
+        }
+        let path = self.state.borrow().path.clone();
+        let resolved = self
+            .jellyfin_resolved
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match resolved {
+            // Asked of the server, and never opened: the server ends its
+            // session (and any transcode) and changes nothing of the
+            // account's.
+            Some((entry, Ok(playing))) if entry == path => {
+                session.report(
+                    &playing.server_id,
+                    Report::Stopped(playing.stopped(0.0, true)),
+                );
+                None
+            }
+            Some((entry, Err(failure))) if entry == path => {
+                let server_id = session::parse_entry(&entry).map(|(server, _)| server.to_owned());
+                let server = server_id.as_deref().and_then(|id| session.server(id));
+                if let (
+                    playback::Failure::Request(crate::jellyfin::api::Error::Unauthorized),
+                    Some(id),
+                ) = (&failure, server_id.as_deref())
+                    && let Some(account) = session.account(id)
+                {
+                    session.unauthorized(id, &account.client);
+                }
+                if failure == playback::Failure::SignedOut
+                    && let Some(id) = server_id.as_deref()
+                {
+                    self.sign_in_to_play(id, &entry);
+                }
+                Some(failure.message(server.map(|server| server.name).as_deref()))
+            }
+            _ => None,
+        }
+    }
+
+    /// An entry didn't open for want of its server's sign-in: once the
+    /// window is idle, the library asks for it, saying why, rather than
+    /// leaving a message with nothing to do about it.
+    fn sign_in_to_play(&self, server_id: &str, entry: &str) {
+        let note = format!("Sign in to play {}.", self.display_name(entry));
+        let server_id = server_id.to_owned();
+        let weak = self.this.clone();
+        Timer::single_shot(Duration::ZERO, move || {
+            if let Some(this) = weak.upgrade()
+                && this.is_idle()
+                && let Some(library) = this.library()
+            {
+                library.sign_in_to(&server_id, &note);
+            }
+        });
+    }
+
+    /// The account the file playing comes from is being signed out (in
+    /// another window): playback reports where it stopped, while the token
+    /// still works, and stops, since nothing more of it would reach the
+    /// server and what the playlist holds of it couldn't open.
+    pub fn jellyfin_signing_out(&self, server_id: &str) {
+        let playing = self
+            .jellyfin
+            .borrow()
+            .as_ref()
+            .is_some_and(|playing| playing.server_id == server_id);
+        if !playing {
+            return;
+        }
+        self.jellyfin_ended();
+        self.player().command(&["stop"]);
+        let name = self
+            .app()
+            .jellyfin()
+            .server(server_id)
+            .map(|server| server.name)
+            .unwrap_or_default();
+        self.show_message(&format!("Signed Out of {name}"), "", 3.0);
+    }
+
+    /// The library opened these entries, with what was chosen on their
+    /// pages: a version chosen in this window's menu gives way to it.
+    pub fn jellyfin_opened(&self, entries: &[String]) {
+        let mut versions = self.jellyfin_versions.borrow_mut();
+        for entry in entries {
+            versions.remove(entry);
+        }
+    }
+
+    /// The player's state, for a report.
+    fn jellyfin_moment(&self) -> playback::Moment {
+        let state = self.state.borrow();
+        playback::Moment {
+            position: self.jellyfin_position.get(),
+            paused: state.paused,
+            muted: state.muted,
+            volume: state.volume,
+            seekable: state.seekable,
+            aid: state.aid,
+            sid: state.sid,
+            tracks: mpv_tracks(&state),
+            loop_file: state.loop_file,
+            loop_playlist: state.loop_playlist,
+        }
+    }
+
+    /// Reports the playback's start, or its progress.
+    fn jellyfin_report(&self, start: bool) {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return;
+        };
+        let progress = playing.progress(&self.jellyfin_moment());
+        let report = if start {
+            Report::Start(progress)
+        } else {
+            Report::Progress(progress)
+        };
+        self.app().jellyfin().report(&playing.server_id, report);
+        self.jellyfin_pacer.borrow_mut().sent(Instant::now());
+    }
+
+    /// Something worth reporting changed (a pause, a seek, a track): its
+    /// report goes now, or with the next tick when one went just now.
+    /// Before the start has gone, the start says it.
+    fn jellyfin_changed_now(&self) {
+        if self.jellyfin.borrow().is_some()
+            && !self.jellyfin_start_pending.get()
+            && self.jellyfin_pacer.borrow_mut().change(Instant::now())
+        {
+            self.jellyfin_report(false);
+        }
+    }
+
+    fn jellyfin_tick(&self) {
+        if self.jellyfin.borrow().is_some()
+            && !self.jellyfin_at_end.get()
+            && !self.jellyfin_start_pending.get()
+            && self.jellyfin_pacer.borrow().due(Instant::now())
+        {
+            self.jellyfin_report(false);
+        }
+    }
+
+    /// A batch of mpv's changes while a Jellyfin file plays.
+    fn jellyfin_changes(&self, changed: &HashSet<Prop>) {
+        if self.jellyfin_tracks.get() && !self.state.borrow().tracks.is_empty() {
+            self.select_jellyfin_tracks();
+        }
+        if changed.contains(&Prop::TimePos) {
+            self.check_segments();
+        }
+        // mpv keeps a file open at its end, which for the server is where
+        // playback stopped: it counts it watched (or not) from that. A seek
+        // back from there plays on, as a new start.
+        let at_end = self.state.borrow().eof;
+        if changed.contains(&Prop::EofReached) && at_end != self.jellyfin_at_end.get() {
+            self.jellyfin_at_end.set(at_end);
+            if at_end {
+                self.jellyfin_timer.stop();
+                if let Some(playing) = self.jellyfin.borrow().clone() {
+                    let position = self.jellyfin_position.get();
+                    self.app().jellyfin().report(
+                        &playing.server_id,
+                        Report::Stopped(playing.stopped(position, false)),
+                    );
+                }
+                self.leave_finished_playlist();
+            } else {
+                self.jellyfin_started();
+            }
+            return;
+        }
+        if self.jellyfin_at_end.get() {
+            return;
+        }
+        if [Prop::Pause, Prop::Aid, Prop::Sid]
+            .iter()
+            .any(|prop| changed.contains(prop))
+        {
+            self.jellyfin_changed_now();
+        }
+    }
+
+    /// The last entry of the playlist reached its end: the window goes back
+    /// to the library (or the welcome view) rather than staying on the last
+    /// frame, which mpv keeps; the server has where it stopped. The library
+    /// shows the server's progress once the server has taken the report.
+    fn leave_finished_playlist(&self) {
+        let last = {
+            let state = self.state.borrow();
+            usize::try_from(state.playlist_pos).is_ok_and(|at| at + 1 >= state.playlist.len())
+                && !state.loop_file
+                && !state.loop_playlist
+        };
+        if last {
+            self.jellyfin_stopping.set(true);
+            self.player().command(&["stop"]);
+        }
+    }
+
+    /// Selects the server's audio and subtitle among the tracks mpv found,
+    /// once per file, where the hook's selection didn't: a subtitle file
+    /// that failed to load moves the others' numbers, and mpv drops a
+    /// choice made for another file's tracks. What is set here ends with
+    /// the file, as the hook's own does.
+    fn select_jellyfin_tracks(&self) {
+        self.jellyfin_tracks.set(false);
+        let (selection, planned, aid, sid) = {
+            let state = self.state.borrow();
+            let Some(playing) = self.jellyfin.borrow().clone() else {
+                return;
+            };
+            (
+                playing.selection(&mpv_tracks(&state)),
+                playing.planned(),
+                state.aid,
+                state.sid,
+            )
+        };
+        let wanted = |pick, planned, current: Option<i64>| match pick {
+            playback::Pick::Track(id) => (current != Some(id)).then_some(pick),
+            playback::Pick::Off => current.is_some().then_some(pick),
+            // The hook asked for a track mpv doesn't have as the server
+            // said: mpv chooses, rather than keep what that number names.
+            playback::Pick::Auto => matches!(planned, playback::Pick::Track(_)).then_some(pick),
+        };
+        let player = self.player();
+        if let Some(pick) = wanted(selection.aid, planned.aid, aid) {
+            player.set("aid", pick.value());
+        }
+        if let Some(pick) = wanted(selection.sid, planned.sid, sid) {
+            player.set("sid", pick.value());
+        }
+    }
+
+    /// The Audio menu: mpv's tracks, and for a Jellyfin transcode, which
+    /// carries one audio stream that mpv knows by no name, its name and the
+    /// source's other audio streams, which the server transcodes instead
+    /// when one is chosen. Those have negative ids, -1 for the server's
+    /// stream 0.
+    fn audio_track_model(&self, state: &PlaybackState) -> ModelRc<TrackItem> {
+        let model = track_model(state, TrackKind::Audio, true, false);
+        let jellyfin = self.jellyfin.borrow();
+        let Some(playing) = jellyfin
+            .as_ref()
+            .filter(|playing| playing.method == crate::jellyfin::models::PlayMethod::Transcode)
+        else {
+            return model;
+        };
+        let mut items: Vec<TrackItem> = model.iter().collect();
+        if let Some(label) = playing.audio.and_then(|index| playing.stream_label(index)) {
+            for item in items.iter_mut().filter(|item| item.id == 1) {
+                item.title = label.clone().into();
+            }
+        }
+        items.extend(playing.other_audio().map(|stream| {
+            TrackItem {
+                id: -(stream.index + 1),
+                title: playing
+                    .stream_label(stream.index)
+                    .unwrap_or_default()
+                    .into(),
+                detail: "transcoded by the server".into(),
+                selected: false,
+            }
+        }));
+        ModelRc::new(VecModel::from(items))
+    }
+
+    /// A choice of one of the source's audio streams a Jellyfin transcode
+    /// doesn't carry: the server is asked for it, and the file loads again
+    /// where it was.
+    fn choose_jellyfin_audio(&self, index: i32) {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return;
+        };
+        let label = playing.stream_label(index).unwrap_or_default();
+        self.reload_jellyfin(
+            &playing,
+            |reload| reload.audio = Some(index),
+            "Audio",
+            label,
+        );
+    }
+
+    /// The Subtitles menu: mpv's tracks, and for a Jellyfin item also the
+    /// subtitles only the server can show, by burning them in. Those have
+    /// negative ids, -1 for the server's stream 0.
+    fn sub_track_model(&self, state: &PlaybackState) -> ModelRc<TrackItem> {
+        let model = track_model(state, TrackKind::Sub, true, false);
+        let jellyfin = self.jellyfin.borrow();
+        let Some(playing) = jellyfin.as_ref() else {
+            return model;
+        };
+        let burned = playing.burned_in();
+        let tracks = mpv_tracks(state);
+        let mut items: Vec<TrackItem> = model.iter().collect();
+        for item in &mut items {
+            if burned.is_some() {
+                item.selected = false;
+            }
+            // The server's subtitle files are named for what they hold.
+            let file = tracks.iter().find(|track| {
+                track.kind == StreamKind::Subtitle
+                    && track.external
+                    && track.id == i64::from(item.id)
+            });
+            if let Some(label) = file
+                .and_then(|track| playing.stream_index(track))
+                .and_then(|index| playing.stream_label(index))
+            {
+                item.title = label.into();
+            }
+        }
+        items.extend(playing.burnable().map(|stream| {
+            TrackItem {
+                id: -(stream.index + 1),
+                title: playing
+                    .stream_label(stream.index)
+                    .unwrap_or_default()
+                    .into(),
+                detail: "burned in by the server".into(),
+                selected: burned == Some(stream.index),
+            }
+        }));
+        ModelRc::new(VecModel::from(items))
+    }
+
+    /// A choice from the Subtitles menu while a Jellyfin item plays: one
+    /// the server has to burn in, or any other while it burns one in, is
+    /// asked of the server, and the file loads again where it was. False
+    /// for a choice mpv makes by itself.
+    fn choose_jellyfin_subtitle(&self, id: i32) -> bool {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return false;
+        };
+        let index = if id < 0 {
+            -id - 1
+        } else if playing.burned_in().is_some() {
+            // None, or one the user added, which mpv shows once the
+            // server burns in nothing.
+            let state = self.state.borrow();
+            mpv_tracks(&state)
+                .iter()
+                .find(|track| track.kind == StreamKind::Subtitle && track.id == i64::from(id))
+                .and_then(|track| playing.stream_index(track))
+                .filter(|_| id > 0)
+                .unwrap_or(-1)
+        } else {
+            return false;
+        };
+        if playing.burned_in() == Some(index) {
+            return true;
+        }
+        let label = self
+            .sub_track_model(&self.state.borrow())
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.title.to_string())
+            .unwrap_or_else(|| "None".to_owned());
+        self.reload_jellyfin(
+            &playing,
+            |reload| reload.subtitle = Some(index),
+            "Subtitle",
+            label,
+        );
+        true
+    }
+
+    /// Fills the Video Quality menu for a Jellyfin item: Automatic, which
+    /// plays the file as it is, and the bitrates below the file's that the
+    /// server can transcode it to (one above it would play the file as it
+    /// is all the same). The item checked says which of the two plays.
+    fn set_jellyfin_qualities(&self) {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return;
+        };
+        if playing.audio_only {
+            return;
+        }
+        let chosen = self.jellyfin_quality.get();
+        let how = match playing.method {
+            crate::jellyfin::models::PlayMethod::Transcode => "transcoded",
+            _ => "original",
+        };
+        let title = |label: &str, selected: bool| -> SharedString {
+            if selected {
+                format!("{label} ({how})").into()
+            } else {
+                label.into()
+            }
+        };
+        let mut items = vec![QualityItem {
+            key: "auto".into(),
+            title: title("Automatic", chosen.is_none()),
+            selected: chosen.is_none(),
+        }];
+        items.extend(
+            JELLYFIN_QUALITIES
+                .iter()
+                // The one chosen stays, whatever this file's bitrate: it is
+                // the window's, for every item.
+                .filter(|(bitrate, _)| {
+                    chosen == Some(*bitrate) || playing.bitrate.is_none_or(|own| *bitrate < own)
+                })
+                .map(|(bitrate, label)| QualityItem {
+                    key: bitrate.to_string().into(),
+                    title: title(label, chosen == Some(*bitrate)),
+                    selected: chosen == Some(*bitrate),
+                }),
+        );
+        let globals = self.window.global::<Media>();
+        globals.set_video_qualities(ModelRc::new(VecModel::from(items)));
+        globals.set_audio_qualities(ModelRc::new(VecModel::default()));
+    }
+
+    /// A choice from the Video Quality menu for a Jellyfin item: it holds
+    /// for every item the window plays from now on, and this one loads
+    /// again where it was.
+    fn choose_jellyfin_quality(&self, key: &str) {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return;
+        };
+        let bitrate = key.parse::<i64>().ok();
+        if bitrate == self.jellyfin_quality.get() {
+            return;
+        }
+        self.jellyfin_quality.set(bitrate);
+        let label = JELLYFIN_QUALITIES
+            .iter()
+            .find(|(rate, _)| Some(*rate) == bitrate)
+            .map_or("Automatic", |(_, label)| label);
+        self.reload_jellyfin(&playing, |_| {}, "Video Quality", label.to_owned());
+    }
+
+    /// Loads a Jellyfin item again where it was, with the streams playing
+    /// (as `change` leaves them) for that load only.
+    fn reload_jellyfin(
+        &self,
+        playing: &Playing,
+        change: impl FnOnce(&mut playback::Reload),
+        title: &'static str,
+        label: String,
+    ) {
+        let mut reload = {
+            let state = self.state.borrow();
+            let (audio, subtitle) =
+                playing.reported_streams(&mpv_tracks(&state), state.aid, state.sid);
+            playback::Reload {
+                at: state.position,
+                audio,
+                subtitle,
+            }
+        };
+        change(&mut reload);
+        *self.jellyfin_reload.borrow_mut() = Some((playing.entry.clone(), reload));
+        *self.jellyfin_kept_segments.borrow_mut() = Some((
+            playing.entry.clone(),
+            self.jellyfin_segments.borrow().clone(),
+        ));
+        *self.quality_message.borrow_mut() = Some((playing.entry.clone(), title, label.clone()));
+        self.player().command(&["playlist-play-index", "current"]);
+        // The reload changes tracks, which isn't news.
+        self.last_user_action.set(None);
+        self.show_osd(title, &format!("{label}…"), None);
+    }
+
+    /// Fills the Version menu with the item's versions, when it has more
+    /// than one.
+    fn set_jellyfin_versions(&self) {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return;
+        };
+        let items: Vec<QualityItem> = playing
+            .versions
+            .iter()
+            .map(|version| QualityItem {
+                key: version.id.clone().into(),
+                title: version.name.clone().into(),
+                selected: version.id == playing.media_source_id,
+            })
+            .collect();
+        self.window
+            .global::<Media>()
+            .set_video_versions(ModelRc::new(VecModel::from(items)));
+    }
+
+    /// A choice from the Version menu: the item loads again where it was,
+    /// in that version, with the server's choice of its tracks (the
+    /// tracks playing now are numbered as the old version numbers them).
+    fn choose_jellyfin_version(&self, id: &str) {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return;
+        };
+        let Some(version) = playing
+            .versions
+            .iter()
+            .find(|version| version.id == id && version.id != playing.media_source_id)
+        else {
+            return;
+        };
+        self.jellyfin_versions
+            .borrow_mut()
+            .insert(playing.entry.clone(), version.id.clone());
+        self.reload_jellyfin(
+            &playing,
+            |reload| {
+                reload.audio = None;
+                reload.subtitle = None;
+            },
+            "Version",
+            version.name.clone(),
+        );
+    }
+
+    // ---- Jellyfin media segments ----------------------------------------
+
+    fn reset_segments(&self) {
+        *self.jellyfin_segments.borrow_mut() = Segments::default();
+        self.offer_segment(None);
+    }
+
+    /// Asks the server for the Jellyfin file's media segments: whatever a
+    /// plugin on it found. A video's only. `kept` are the segments of the
+    /// playback this one reloads, whose spans skipped without asking stay
+    /// skipped: one the user went back into isn't skipped again.
+    fn fetch_segments(&self, kept: Option<Segments>) {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return;
+        };
+        let session = self.app().jellyfin();
+        let Some(account) = session
+            .account(&playing.server_id)
+            .filter(|_| !playing.audio_only)
+        else {
+            return;
+        };
+        let track = self.track.get();
+        let weak = self.this.clone();
+        let client = account.client;
+        session::load(
+            {
+                let client = client.clone();
+                let item_id = playing.item_id.clone();
+                move || client.media_segments(&item_id)
+            },
+            move |result| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                // Another file (or the same again) has started since.
+                if this.track.get() != track || this.jellyfin.borrow().is_none() {
+                    return;
+                }
+                match result {
+                    Ok(found) => {
+                        let duration = playing.duration.or_else(|| {
+                            let duration = this.state.borrow().duration;
+                            (duration > 0.0).then_some(duration)
+                        });
+                        let mut segments = Segments::new(&found, duration);
+                        if let Some(kept) = &kept {
+                            segments.keep_skipped(kept);
+                        }
+                        *this.jellyfin_segments.borrow_mut() = segments;
+                        this.check_segments();
+                    }
+                    Err(crate::jellyfin::api::Error::Unauthorized) => {
+                        this.app()
+                            .jellyfin()
+                            .unauthorized(&playing.server_id, &client);
+                    }
+                    Err(error) => log::debug!("no media segments for {}: {error}", playing.entry),
+                }
+            },
+        );
+    }
+
+    /// The position moved: a segment playing shows its Skip button, or is
+    /// skipped, as the preferences say for its kind. Not before the file
+    /// has started playing (mpv can't seek it yet), nor as it ends, when
+    /// mpv no longer says where it is.
+    fn check_segments(&self) {
+        if self.jellyfin_segments.borrow().is_empty()
+            || self.jellyfin_start_pending.get()
+            || !self.position_known.get()
+        {
+            return;
+        }
+        let position = self.state.borrow().position;
+        let prefs = self.app().prefs();
+        let now = self
+            .jellyfin_segments
+            .borrow_mut()
+            .at(position, |kind| segments::Action::of(&prefs, kind));
+        match now {
+            segments::Now::Nothing => self.offer_segment(None),
+            segments::Now::Offer(span) => self.offer_segment(Some(span)),
+            segments::Now::Skip(span) => {
+                log::debug!("skipping {:?} to {:.1}", span.kind, span.end);
+                self.offer_segment(None);
+                self.seek_past(span);
+            }
+        }
+    }
+
+    fn offer_segment(&self, span: Option<Span>) {
+        if self.jellyfin_offer.get() == span {
+            return;
+        }
+        self.jellyfin_offer.set(span);
+        let label = span.map_or("", |span| segments::button_label(span.kind));
+        // The key that does what the button does, which nothing else shows.
+        let key = span
+            .and_then(|_| {
+                self.app()
+                    .bindings()
+                    .iter()
+                    .find(|(_, binding)| {
+                        matches!(binding, Binding::Patina(action) if action == "skip-segment")
+                    })
+                    .map(|(combo, _)| combo.label())
+            })
+            .unwrap_or_default();
+        let playback = self.window.global::<Playback>();
+        playback.set_skip_key(key.into());
+        playback.set_skip_label(label.into());
+    }
+
+    /// The Skip button, or a key bound to it: playback goes on at the end
+    /// of the segment it offers.
+    fn skip_segment(&self) {
+        if let Some(span) = self.jellyfin_offer.get() {
+            self.offer_segment(None);
+            self.seek_past(span);
+        }
+    }
+
+    /// Exact, since a seek to the keyframe before the end would land in
+    /// the segment again. Credits that run to the end end the file, and the
+    /// playlist plays on. The OSD says what was skipped, in the place of
+    /// the seek's (the position before it, a key having been pressed just
+    /// now) or the chapter's.
+    fn seek_past(&self, span: Span) {
+        self.last_user_action.set(None);
+        self.player()
+            .command_quiet(&["seek", &format!("{:.3}", span.end), "absolute+exact"]);
+        self.show_osd(segments::skipped_label(span.kind), "", None);
+    }
+
+    /// Seek-bar previews from the server's trickplay images, when the
+    /// server has them for the version playing and previews are on.
+    fn start_trickplay(&self, playing: &Playing) {
+        let prefs = self.app().prefs();
+        if !prefs.thumbnails || playing.audio_only {
+            return;
+        }
+        let Some(account) = self.app().jellyfin().account(&playing.server_id) else {
+            return;
+        };
+        let width = prefs.thumbnail_width.clamp(40, 600) * 2;
+        *self.jellyfin_tiles.borrow_mut() = trickplay::Tiles::new(account.client, playing, width);
     }
 
     // ---- Online video ---------------------------------------------------
@@ -3283,6 +4395,12 @@ impl PlayerController {
     /// leave it to the preferences): the file loads again with it, where it
     /// was.
     fn choose_quality(&self, video: Option<&str>, audio: Option<&str>) {
+        if let Some(key) = video
+            && self.jellyfin.borrow().is_some()
+        {
+            self.choose_jellyfin_quality(key);
+            return;
+        }
         let Some(media) = self.online.borrow().clone() else {
             return;
         };
@@ -3690,11 +4808,13 @@ impl PlayerController {
         self.thumbnail_job.borrow_mut().take();
         self.thumbnails.borrow_mut().clear();
         self.thumbnail_path.borrow_mut().clear();
+        self.jellyfin_tiles.borrow_mut().take();
         self.window.global::<Playback>().set_preview_ready(false);
     }
 
     /// Starts making thumbnails once a local video's duration and size are
-    /// known, as IINA does (never for streams or audio).
+    /// known, as IINA does (never for streams or audio). A Jellyfin item's
+    /// come from the server, as its trickplay images (`start_trickplay`).
     fn maybe_start_thumbnails(&self, state: &PlaybackState) {
         let app = self.app();
         let prefs = app.prefs();
@@ -3762,6 +4882,24 @@ impl PlayerController {
             .unwrap_or_default();
         playback.set_preview_chapter(chapter.into());
 
+        self.preview_time.set(time);
+        let tiles = self.jellyfin_tiles.borrow().clone();
+        if let Some(tiles) = tiles {
+            let weak = self.this.clone();
+            let thumbnail = tiles.thumbnail(time, move || {
+                if let Some(this) = weak.upgrade() {
+                    this.show_preview(this.preview_time.get());
+                }
+            });
+            match thumbnail {
+                Some(image) => {
+                    playback.set_preview_image(image);
+                    playback.set_preview_ready(true);
+                }
+                None => playback.set_preview_ready(false),
+            }
+            return;
+        }
         let thumbnails = self.thumbnails.borrow();
         if thumbnails.is_empty() || state.duration <= 0.0 {
             playback.set_preview_ready(false);
@@ -3793,7 +4931,7 @@ impl PlayerController {
         let items: Vec<RecentItem> = items
             .into_iter()
             .map(|(title, path)| RecentItem {
-                detail: util::parent_directory(&path).into(),
+                detail: app.source_place(&path).into(),
                 title: title.into(),
                 path: path.into(),
             })
@@ -3817,7 +4955,11 @@ impl PlayerController {
             }
             self.app().update_prefs(|prefs| prefs.volume = state.volume);
         }
+        // The window's end is the playback's: mpv says nothing more once
+        // it is shut down.
+        self.jellyfin_ended();
         self.reset_thumbnails();
+        self.library.borrow_mut().take();
         // Hiding the window tears down its renderer, which frees mpv's render
         // context while the GL context is still current; without OpenGL the
         // render thread frees its own.
@@ -3999,6 +5141,35 @@ fn track_osd(kind: &str, track: Option<&Track>) -> (String, String, Option<f64>)
         Some(track) => (format!("{kind}: {}", track.label()), track.detail(), None),
         None => (format!("{kind}: None"), String::new(), None),
     }
+}
+
+/// Escape as bound by default, which only leaves full screen.
+fn leaves_full_screen(combo: &KeyCombo, binding: &Binding) -> bool {
+    combo.mods == 0
+        && combo.key == "ESC"
+        && matches!(binding, Binding::Mpv(commands)
+            if commands == &[vec!["set".to_owned(), "fullscreen".to_owned(), "no".to_owned()]])
+}
+
+/// mpv's tracks, as a Jellyfin playback maps them to the server's streams.
+fn mpv_tracks(state: &PlaybackState) -> Vec<playback::MpvTrack> {
+    state
+        .tracks
+        .iter()
+        .map(|track| playback::MpvTrack {
+            kind: match track.kind {
+                TrackKind::Video => StreamKind::Video,
+                TrackKind::Audio => StreamKind::Audio,
+                TrackKind::Sub => StreamKind::Subtitle,
+            },
+            id: track.id,
+            external: track.external,
+            filename: track
+                .external
+                .then(|| track.external_filename.clone())
+                .filter(|name| !name.is_empty()),
+        })
+        .collect()
 }
 
 fn track_model(
@@ -4200,6 +5371,18 @@ mod tests {
             .map(|f| f.str_or_default("label"))
             .collect();
         assert_eq!(labels, ["patina-eq"]);
+    }
+
+    #[test]
+    fn escape_bound_by_default_only_leaves_full_screen() {
+        let bindings = crate::input::Bindings::parse(&crate::input::default_conf());
+        let escape = KeyCombo::parse("ESC").unwrap();
+        assert!(leaves_full_screen(&escape, bindings.get(&escape).unwrap()));
+        // Bound otherwise, it keeps doing what the user asked.
+        let quit = Binding::Mpv(vec![vec!["quit".to_owned()]]);
+        assert!(!leaves_full_screen(&escape, &quit));
+        let enter = KeyCombo::parse("ENTER").unwrap();
+        assert!(!leaves_full_screen(&enter, bindings.get(&enter).unwrap()));
     }
 
     #[test]

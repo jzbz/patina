@@ -107,6 +107,9 @@ pub enum Value {
     Double(f64),
     /// A list of strings, as string-list options take.
     List(Vec<String>),
+    /// Keys and their values, as key-value list options take: set as a
+    /// string, a value holding a comma or an equals sign would be misread.
+    Map(Vec<(String, String)>),
 }
 
 impl From<&str> for Value {
@@ -136,6 +139,19 @@ impl From<i64> for Value {
 impl From<f64> for Value {
     fn from(value: f64) -> Self {
         Value::Double(value)
+    }
+}
+
+/// A value that must not reach a log or an error message: a header
+/// carrying a sign-in's token. The setters put the value they failed to
+/// set into their errors, which `Mpv::set_property_secret` doesn't, and
+/// Debug shows only that there is one.
+#[derive(Clone, PartialEq)]
+pub struct Secret(pub Value);
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret(hidden)")
     }
 }
 
@@ -186,6 +202,39 @@ fn with_raw_value<R>(
                     list: &raw mut list,
                 },
                 format: ffi::MPV_FORMAT_NODE_ARRAY,
+            };
+            f(ffi::MPV_FORMAT_NODE, (&raw mut node).cast())
+        }
+        Value::Map(entries) => {
+            let keys = entries
+                .iter()
+                .map(|(key, _)| cstring(key))
+                .collect::<Result<Vec<_>>>()?;
+            let items = entries
+                .iter()
+                .map(|(_, value)| cstring(value))
+                .collect::<Result<Vec<_>>>()?;
+            let mut keys: Vec<*mut c_char> =
+                keys.iter().map(|key| key.as_ptr().cast_mut()).collect();
+            let mut values: Vec<ffi::mpv_node> = items
+                .iter()
+                .map(|item| ffi::mpv_node {
+                    u: ffi::mpv_node_u {
+                        string: item.as_ptr().cast_mut(),
+                    },
+                    format: ffi::MPV_FORMAT_STRING,
+                })
+                .collect();
+            let mut list = ffi::mpv_node_list {
+                num: c_int::try_from(values.len()).unwrap_or(c_int::MAX),
+                values: values.as_mut_ptr(),
+                keys: keys.as_mut_ptr(),
+            };
+            let mut node = ffi::mpv_node {
+                u: ffi::mpv_node_u {
+                    list: &raw mut list,
+                },
+                format: ffi::MPV_FORMAT_NODE_MAP,
             };
             f(ffi::MPV_FORMAT_NODE, (&raw mut node).cast())
         }
@@ -251,6 +300,9 @@ pub struct Mpv {
     handle: NonNull<ffi::mpv_handle>,
     api: &'static ffi::Api,
     event_lock: Mutex<()>,
+    /// The level of log messages asked for, which `set_property_secret`
+    /// lowers while it sets a secret; held meanwhile.
+    log_level: Mutex<String>,
 }
 
 // SAFETY: every mpv_handle function used here is documented as thread-safe;
@@ -274,6 +326,7 @@ impl Mpv {
                 handle,
                 api,
                 event_lock: Mutex::new(()),
+                log_level: Mutex::new("no".to_owned()),
             },
         })
     }
@@ -341,6 +394,57 @@ impl Mpv {
             unsafe { (self.api.mpv_set_property)(self.ptr(), cname.as_ptr(), format, data) }
         })?;
         check(code, || format!("setting {name} to {value:?}"))
+    }
+
+    /// Sets a property as `set_property` does, with the value left out of
+    /// any error: an error names only the property. mpv itself logs every
+    /// property it sets, value and all, at its verbose level, to the
+    /// terminal and to the log messages asked for (as `--verbose` asks for
+    /// both); meanwhile its own messages go no further than info there.
+    /// mpv's log file (`log-file`) records the debug level whatever the
+    /// levels say, so it gets the value all the same: what sets a secret
+    /// has to make sure no log file is being written first.
+    pub fn set_property_secret(&self, name: &str, value: &Secret) -> Result<()> {
+        let cname = cstring(name)?;
+        let hidden = || format!("setting {name} (the value is hidden)");
+        let level = self
+            .log_level
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A key-value list, which reads as a map and is set as a string.
+        let terminal = match self.get_property("msg-level") {
+            Ok(Node::Map(levels)) => levels
+                .iter()
+                .filter_map(|(module, level)| Some(format!("{module}={}", level.as_str()?)))
+                .collect::<Vec<_>>()
+                .join(","),
+            _ => String::new(),
+        };
+        let quiet = if terminal.is_empty() {
+            "cplayer=info".to_owned()
+        } else {
+            format!("{terminal},cplayer=info")
+        };
+        let verbose = matches!(level.as_str(), "v" | "debug" | "trace");
+        if let Err(error) = self.set_property("msg-level", quiet.as_str()) {
+            log::debug!("{error}");
+        }
+        if verbose && let Err(error) = self.request_level("info") {
+            log::debug!("{error}");
+        }
+        let code = with_raw_value(&value.0, |format, data| {
+            // SAFETY: valid handle; `data` matches `format` and outlives the call.
+            unsafe { (self.api.mpv_set_property)(self.ptr(), cname.as_ptr(), format, data) }
+        })
+        // A NUL byte in the value: cstring's error would quote it.
+        .map_err(|error| Error::new(error.code, hidden()));
+        if verbose && let Err(error) = self.request_level(&level) {
+            log::debug!("{error}");
+        }
+        if let Err(error) = self.set_property("msg-level", terminal.as_str()) {
+            log::debug!("{error}");
+        }
+        check(code?, hidden)
     }
 
     /// Reads a property, waiting for mpv. Never call this on the UI thread.
@@ -415,6 +519,16 @@ impl Mpv {
     }
 
     pub fn request_log_messages(&self, min_level: &str) -> Result<()> {
+        let mut level = self
+            .log_level
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.request_level(min_level)?;
+        *level = min_level.to_owned();
+        Ok(())
+    }
+
+    fn request_level(&self, min_level: &str) -> Result<()> {
         let level = cstring(min_level)?;
         // SAFETY: valid handle and level name.
         let code = unsafe { (self.api.mpv_request_log_messages)(self.ptr(), level.as_ptr()) };
@@ -722,6 +836,66 @@ mod tests {
         assert_eq!(error.code, -8);
         assert!(error.to_string().contains("no-such-property"));
         assert!(mpv.command(&["definitely-not-a-command"]).is_err());
+    }
+
+    #[test]
+    fn a_secret_stays_out_of_errors() {
+        let secret = Secret(Value::List(vec!["Authorization: Token=\"abc123\"".into()]));
+        assert!(!format!("{secret:?}").contains("abc123"));
+        let Some(mpv) = headless() else { return };
+        mpv.set_property_secret("http-header-fields", &secret)
+            .unwrap();
+        let set = mpv.get_property("http-header-fields").unwrap();
+        assert_eq!(
+            set.as_array().first().and_then(Node::as_str),
+            Some("Authorization: Token=\"abc123\"")
+        );
+        // Refused for want of a file, and for a NUL byte: neither error
+        // quotes the value, as the plain setter's would.
+        let error = mpv
+            .set_property_secret("file-local-options/http-header-fields", &secret)
+            .unwrap_err();
+        assert!(!error.to_string().contains("abc123"), "{error}");
+        assert!(
+            mpv.set_property("file-local-options/http-header-fields", secret.0.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("abc123")
+        );
+        let nul = Secret(Value::List(vec!["Token=\"abc\x00123\"".into()]));
+        let error = mpv
+            .set_property_secret("http-header-fields", &nul)
+            .unwrap_err();
+        assert!(!error.to_string().contains("abc"), "{error}");
+    }
+
+    #[test]
+    fn a_secret_stays_out_of_mpvs_log() {
+        let Some(mpv) = headless() else { return };
+        mpv.request_log_messages("v").unwrap();
+        mpv.set_property("msg-level", "all=v").unwrap();
+        let secret = Secret(Value::List(vec!["Authorization: Token=\"abc123\"".into()]));
+        mpv.set_property_secret("http-header-fields", &secret)
+            .unwrap();
+        // A property set after it is logged, as every one is at this level.
+        mpv.set_property("user-agent", "after the secret").unwrap();
+        let mut logged = Vec::new();
+        wait_for(&mpv, |event| match event {
+            Event::Log(message) => {
+                logged.push(message.text.clone());
+                message.text.contains("after the secret")
+            }
+            _ => false,
+        });
+        assert!(
+            logged.iter().all(|line| !line.contains("abc123")),
+            "{logged:?}"
+        );
+        assert_eq!(
+            mpv.get_property("msg-level").unwrap(),
+            Node::Map(vec![("all".into(), Node::String("v".into()))]),
+            "the terminal's levels are put back"
+        );
     }
 
     #[test]

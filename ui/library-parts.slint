@@ -1,0 +1,1097 @@
+// Pieces the library's pages share: cards and rows of cards, tabs, menu
+// buttons and toggles, and what an item shows while it has no image.
+
+import { Theme } from "theme.slint";
+import { IconButton, TextButton } from "widgets.slint";
+import { Library, LibraryCard, LibraryRow, LibraryChoice } from "library-model.slint";
+
+// What the view knows about the kinds of item (LibraryCard.kind) and the
+// metrics its pages share.
+export global LibraryUi {
+    // The page's side margin; rows of cards scroll under it.
+    out property <length> inset: 28px;
+    out property <length> card-gap: 16px;
+    // The title and subtitle under a card's image.
+    out property <length> caption-height: 40px;
+
+    // Items that play by themselves or as a queue, which a double-click
+    // plays rather than opens.
+    public pure function playable(kind: string) -> bool {
+        return kind == "movie" || kind == "episode" || kind == "video" || kind == "musicvideo" || kind == "song" || kind == "album" || kind == "playlist";
+    }
+
+    // Items that hold others, which Shuffle plays in random order.
+    public pure function shuffles(kind: string) -> bool {
+        return kind == "series" || kind == "season" || kind == "album" || kind == "playlist" || kind == "artist";
+    }
+
+    // Items the server keeps a watched state for.
+    public pure function watchable(kind: string) -> bool {
+        return kind == "movie" || kind == "episode" || kind == "video" || kind == "musicvideo" || kind == "series" || kind == "season" || kind == "collection";
+    }
+
+    // Stands in for an item's image until it arrives, or when it has none.
+    public pure function icon(kind: string) -> image {
+        if kind == "series" || kind == "season" || kind == "episode" || kind == "tvshows" {
+            return @image-url("icons/tv.svg");
+        }
+        if kind == "album" {
+            return @image-url("icons/disc-3.svg");
+        }
+        if kind == "artist" || kind == "person" {
+            return @image-url("icons/user-round.svg");
+        }
+        if kind == "song" || kind == "music" {
+            return @image-url("icons/music.svg");
+        }
+        if kind == "playlist" || kind == "playlists" {
+            return @image-url("icons/list-music.svg");
+        }
+        if kind == "collection" || kind == "boxsets" {
+            return @image-url("icons/layers.svg");
+        }
+        if kind == "folder" || kind == "folders" || kind == "library" || kind == "genre" {
+            return @image-url("icons/folder.svg");
+        }
+        return @image-url("icons/film.svg");
+    }
+
+    // What stands for a library's tab (Library.tab) on its empty page.
+    public pure function tab-icon(tab: string) -> image {
+        return tab == "shows" ? self.icon("series") : tab == "albums" ? self.icon("album") : tab == "artists" ? self.icon("artist") : tab == "playlists" ? self.icon("playlist") : tab == "collections" ? self.icon("collection") : tab == "genres" || tab == "items" ? self.icon("folder") : self.icon("movie");
+    }
+
+    // A card's width for its image's shape: posters and squares about
+    // 150 px, thumbnails 240.
+    public pure function card-width(aspect: float) -> length {
+        return aspect > 1.2 ? 240px : 150px;
+    }
+
+    // The aspect a row or grid lays its cards out at: its first card's.
+    public pure function row-aspect(cards: [LibraryCard]) -> float {
+        return cards.length > 0 && cards[0].aspect > 0 ? cards[0].aspect : 2 / 3;
+    }
+
+    // Opens an item, or goes to a page of the bar. The controller saves
+    // where the page it leaves was scrolled to while it handles the call;
+    // the page it opens starts at the top.
+    public function open(id: string, kind: string) {
+        Library.open(id, kind);
+        Library.scroll-offset = 0;
+    }
+
+    public function navigate(id: string) {
+        Library.navigate(id);
+        Library.scroll-offset = 0;
+    }
+
+    // Where a page's list or scroll view goes (its content-y): as far
+    // down as Library.scroll-offset says, or as its content reaches so
+    // far. Pages call it as they appear and as their content grows, until
+    // they have got there or the user scrolls (Library.loads), and record
+    // where they are only after that: a page's items arrive after it
+    // shows, and a Flickable can't be further down than its content, so
+    // the place Back returns to is reached as they come. Placing them
+    // after that would undo the user's scrolling, as the list's height
+    // estimate changes with each row it makes.
+    public pure function place(content-height: length, visible-height: length) -> length {
+        return -min(Library.scroll-offset, max(0px, content-height - visible-height));
+    }
+
+    // Whether a list at content-y is where place() puts it.
+    public pure function placed(content-y: length, content-height: length, visible-height: length) -> bool {
+        return abs(content-y - self.place(content-height, visible-height)) <= 1px;
+    }
+
+    // Whether a list at content-y has gone where scroll-offset says, which
+    // ends its restoring (see Library.loads): placed there, not past it,
+    // as the list itself may move when its rows are replaced.
+    public pure function reached(content-y: length, content-height: length, visible-height: length) -> bool {
+        return self.placed(content-y, content-height, visible-height) && -content-y >= Library.scroll-offset - 1px;
+    }
+
+    // Where the control the keyboard just moved to is, in the window, for
+    // the page's list to scroll it into sight (focus-serial counts the
+    // moves).
+    out property <length> focus-top;
+    out property <length> focus-bottom;
+    out property <int> focus-serial;
+
+    // The item whose card's menu is open (see Card).
+    in-out property <string> menu-card;
+
+    public function reveal(top: length, bottom: length) {
+        self.focus-top = top;
+        self.focus-bottom = bottom;
+        self.focus-serial += 1;
+    }
+
+    // What a card says to a screen reader beyond its title: what the badge
+    // and the strip show.
+    public pure function state(card: LibraryCard) -> string {
+        let watched = card.played ? "watched" : card.progress >= 0 ? round(card.progress * 100) + "% watched" : "";
+        let left = card.unplayed == 1 ? "1 unwatched episode" : card.unplayed > 1 ? card.unplayed + " unwatched episodes" : "";
+        let marks = watched != "" && left != "" ? watched + ", " + left : watched + left;
+        return card.favorite ? (marks != "" ? marks + ", favourite" : "favourite") : marks;
+    }
+
+    // Whether a key presses the control that has the focus: Enter or
+    // Space, without a modifier other than Shift.
+    public pure function presses(event: KeyEvent) -> bool {
+        return (event.text == Key.Return || event.text == " ") && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta;
+    }
+
+    // The mouse's back button, which every pointer handler in the library
+    // passes on, since the area that takes a press keeps it.
+    public function pointer(event: PointerEvent) {
+        if event.kind == PointerEventKind.down && event.button == PointerEventButton.back && Library.can-go-back {
+            Library.back();
+        }
+    }
+}
+
+// How far something has been watched, along the bottom of its image.
+export component ProgressStrip inherits Rectangle {
+    in property <float> value;
+    height: 4px;
+    background: #00000099;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.value, 0, 1);
+        background: Theme.playing;
+    }
+}
+
+// Lets Tab reach the control it covers, drawing a ring round it while it
+// has the keyboard; Enter or Space presses the control (Shift+Enter is
+// `alternate`). It takes no focus on a click, so that the ring shows only
+// for the keyboard. It goes under the control's own TouchArea, which keeps
+// the pointer's events.
+export component KeyFocus inherits FocusScope {
+    in property <length> radius: Theme.control-radius;
+    // White over the accent colour, where an accent ring wouldn't show.
+    in property <color> ring: Theme.accent;
+    // Whether the page's list scrolls it into sight: not for what is
+    // above the list (the bar, a grid's sort and filters).
+    in property <bool> reveals: true;
+    // Space is `alternate` rather than `activated`: a card's or episode's
+    // Space plays it, where Enter opens it.
+    in property <bool> space-alternates;
+    callback activated;
+    callback alternate;
+    // The keyboard reached it, after the page scrolled it into sight.
+    callback focused;
+    width: 100%;
+    height: 100%;
+    focus-on-click: false;
+
+    key-pressed(event) => {
+        if LibraryUi.presses(event) {
+            if (event.modifiers.shift && event.text == Key.Return) || (root.space-alternates && event.text == " ") {
+                root.alternate();
+            } else {
+                root.activated();
+            }
+            return accept;
+        }
+        reject
+    }
+    focus-gained => {
+        if root.reveals {
+            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height);
+        }
+        root.focused();
+    }
+
+    if root.has-focus: Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: root.radius;
+        border-width: 2px;
+        border-color: root.ring;
+    }
+}
+
+// The round mark in an image's corner: a check once watched, or the count
+// of episodes still to watch.
+export component Badge inherits Rectangle {
+    in property <bool> played;
+    in property <int> count;
+    visible: root.played || root.count > 0;
+    width: root.count > 0 ? max(20px, number.preferred-width + 12px) : 20px;
+    height: 20px;
+    border-radius: 10px;
+    background: Theme.accent;
+    drop-shadow-blur: 4px;
+    drop-shadow-color: #00000066;
+
+    if root.count == 0: Image {
+        source: @image-url("icons/check.svg");
+        width: 12px;
+        height: 12px;
+        colorize: Theme.accent-text;
+    }
+    number := Text {
+        visible: root.count > 0;
+        text: root.count;
+        color: Theme.accent-text;
+        font-size: Theme.font-small;
+        font-weight: 700;
+    }
+}
+
+// An item's image, or its kind's icon while there is none. The image is
+// cropped to fill when its shape is close to the slot's and fitted inside
+// otherwise, so that an album in a row of posters isn't cut in half.
+export component Artwork inherits Rectangle {
+    in property <image> source;
+    in property <string> kind;
+    in property <float> aspect: 1;
+    in property <float> slot-aspect: root.aspect;
+    background: #ffffff0f;
+    clip: true;
+
+    if root.source.width == 0: Image {
+        source: LibraryUi.icon(root.kind);
+        width: min(parent.width, parent.height) * 0.3;
+        height: self.width;
+        colorize: Theme.tertiary-text;
+    }
+    if root.source.width > 0: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+        image-fit: abs(root.aspect - root.slot-aspect) < 0.15 ? cover : contain;
+    }
+}
+
+// A round portrait: the signed-in user, an account to sign in as, a person.
+export component Avatar inherits Rectangle {
+    in property <image> source;
+    in property <length> size: 24px;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    background: #ffffff1f;
+    clip: true;
+
+    if root.source.width > 0: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+        image-fit: cover;
+    }
+    if root.source.width == 0: Image {
+        source: @image-url("icons/user-round.svg");
+        width: root.size * 0.56;
+        height: self.width;
+        colorize: Theme.secondary-text;
+    }
+}
+
+// The round Play button shown over an image while the pointer is on it.
+export component PlayOverlay inherits Rectangle {
+    in property <string> label;
+    in property <length> size: 40px;
+    callback clicked;
+    // Right-clicked, at this point in it: the item's menu, as anywhere else
+    // on the item.
+    callback menu(length, length);
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    background: touch.pressed ? #2368d0 : touch.has-hover ? Theme.accent : #000000b0;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    Image {
+        // The triangle's weight sits left of its box's centre.
+        x: (parent.width - self.width) / 2 + root.size * 0.03;
+        source: @image-url("icons/play.svg");
+        width: root.size * 0.4;
+        height: self.width;
+        colorize: white;
+    }
+
+    // So that a double-click, which plays the item anyway, plays it once.
+    repeat-guard := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            if !repeat-guard.running {
+                repeat-guard.running = true;
+                root.clicked();
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.menu(self.mouse-x, self.mouse-y);
+            }
+            LibraryUi.pointer(event);
+        }
+    }
+}
+
+// A poster, thumbnail or square with its title and subtitle under it.
+// Clicking opens the item; double-clicking plays it when it plays, so for
+// those the click waits out a double-click first, as clicks on the video
+// do. Right-clicking offers what can be done with it. From the keyboard,
+// Tab reaches it, Enter opens it, and Space or Shift+Enter plays it.
+export component Card inherits Rectangle {
+    in property <LibraryCard> card;
+    // The shape of the row's or grid's slots.
+    in property <float> slot-aspect: root.card.aspect > 0 ? root.card.aspect : 2 / 3;
+    // The keyboard reached the card: its row scrolls it into sight.
+    callback focused;
+    property <length> image-height: root.width / root.slot-aspect;
+    property <bool> round: root.card.kind == "artist" || root.card.kind == "person";
+    property <bool> playable: LibraryUi.playable(root.card.kind);
+    property <bool> queues: root.playable || LibraryUi.shuffles(root.card.kind);
+    property <bool> has-menu: root.card.kind != "library" && root.card.kind != "folder";
+    // Marked as hovered while the pointer is on it, and while its menu is
+    // open, so that a menu drawn over the next card is seen to be this
+    // one's.
+    property <bool> marked: touch.has-hover || (LibraryUi.menu-card == root.card.id && root.card.id != "");
+
+    height: root.image-height + LibraryUi.caption-height;
+    accessible-role: button;
+    accessible-label: root.card.subtitle != "" ? root.card.title + ", " + root.card.subtitle : root.card.title;
+    accessible-description: LibraryUi.state(root.card);
+    accessible-action-default => {
+        LibraryUi.open(root.card.id, root.card.kind);
+    }
+
+    function show-menu(x: length, y: length) {
+        LibraryUi.menu-card = root.card.id;
+        menu.show({ x: x, y: y });
+    }
+
+    click-timer := Timer {
+        interval: 280ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            LibraryUi.open(root.card.id, root.card.kind);
+        }
+    }
+
+    keys := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if LibraryUi.presses(event) {
+                if root.playable && (event.text == " " || event.modifiers.shift) {
+                    Library.play(root.card.id, false);
+                } else {
+                    LibraryUi.open(root.card.id, root.card.kind);
+                }
+                return accept;
+            }
+            if event.text == Key.Menu && root.has-menu {
+                root.show-menu(8px, root.image-height / 2);
+                return accept;
+            }
+            reject
+        }
+        focus-gained => {
+            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height);
+            root.focused();
+        }
+    }
+
+    touch := TouchArea {
+        // A menu says nothing when it closes without a choice; the pointer
+        // coming back to a card says it has.
+        changed has-hover => {
+            if self.has-hover {
+                LibraryUi.menu-card = "";
+            }
+        }
+        clicked => {
+            if root.playable {
+                // restart() alone never starts a timer that isn't running.
+                click-timer.restart();
+                click-timer.running = true;
+            } else {
+                LibraryUi.open(root.card.id, root.card.kind);
+            }
+        }
+        double-clicked => {
+            if root.playable {
+                click-timer.running = false;
+                Library.play(root.card.id, false);
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right && root.has-menu {
+                root.show-menu(self.mouse-x, self.mouse-y);
+            }
+            LibraryUi.pointer(event);
+        }
+
+        Artwork {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: root.image-height;
+            border-radius: root.round ? self.width / 2 : Theme.panel-radius;
+            source: root.card.image;
+            kind: root.card.kind;
+            aspect: root.card.aspect;
+            slot-aspect: root.slot-aspect;
+
+            if root.card.progress >= 0: ProgressStrip {
+                y: parent.height - self.height;
+                value: root.card.progress;
+            }
+            if root.marked: Rectangle {
+                background: #ffffff0f;
+            }
+        }
+
+        // The hover ring, outside the image's clip; the keyboard's focus
+        // draws it in the accent colour.
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: root.image-height;
+            border-radius: root.round ? self.width / 2 : Theme.panel-radius;
+            border-width: keys.has-focus ? 3px : 2px;
+            border-color: keys.has-focus ? Theme.accent : root.marked ? #ffffffb8 : transparent;
+            animate border-color { duration: 120ms; }
+        }
+
+        Badge {
+            x: parent.width - self.width - (root.round ? parent.width * 0.12 : 6px);
+            y: root.round ? parent.width * 0.06 : 6px;
+            played: root.card.played;
+            count: root.card.unplayed;
+        }
+
+        if touch.has-hover && root.playable: PlayOverlay {
+            x: (parent.width - self.width) / 2;
+            y: (root.image-height - self.height) / 2;
+            label: "Play " + root.card.title;
+            clicked => {
+                click-timer.running = false;
+                Library.play(root.card.id, false);
+            }
+            menu(x, y) => {
+                if root.has-menu {
+                    root.show-menu(self.x + x, self.y + y);
+                }
+            }
+        }
+
+        Text {
+            x: 0;
+            y: root.image-height + 6px;
+            width: parent.width;
+            height: 17px;
+            text: root.card.title;
+            color: root.marked || keys.has-focus ? Theme.icon-hover : Theme.text;
+            font-size: Theme.font-normal;
+            horizontal-alignment: root.round ? center : left;
+            overflow: elide;
+        }
+        Text {
+            x: 0;
+            y: root.image-height + 23px;
+            width: parent.width;
+            height: 15px;
+            text: root.card.subtitle;
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            horizontal-alignment: root.round ? center : left;
+            overflow: elide;
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            if root.playable: MenuItem {
+                title: "Play";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    Library.play(root.card.id, false);
+                }
+            }
+            if LibraryUi.shuffles(root.card.kind): MenuItem {
+                title: "Shuffle";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    Library.shuffle(root.card.id);
+                }
+            }
+            if root.queues: MenuItem {
+                title: "Play Next";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    Library.queue(root.card.id, true);
+                }
+            }
+            if root.queues: MenuItem {
+                title: "Add to Queue";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    Library.queue(root.card.id, false);
+                }
+            }
+            if root.queues: MenuSeparator { }
+            if LibraryUi.watchable(root.card.kind): MenuItem {
+                title: root.card.played ? "Mark as Unplayed" : "Mark as Played";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    Library.set-played(root.card.id, !root.card.played);
+                }
+            }
+            MenuItem {
+                title: root.card.favorite ? "Remove from Favourites" : "Add to Favourites";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    Library.set-favorite(root.card.id, !root.card.favorite);
+                }
+            }
+        }
+    }
+}
+
+// A line of cards that scrolls sideways: with the wheel and Shift, a
+// touchpad, or the row's arrows.
+export component CardStrip inherits Flickable {
+    in property <[LibraryCard]> cards;
+    in property <length> inset: LibraryUi.inset;
+    property <float> aspect: LibraryUi.row-aspect(root.cards);
+    property <length> card-width: LibraryUi.card-width(root.aspect);
+    out property <bool> can-scroll-back: root.content-x < 0;
+    out property <bool> can-scroll-on: root.content-x > root.width - root.content-width + 1px;
+    out property <bool> scrolls: root.content-width > root.width + 1px;
+
+    height: root.card-width / root.aspect + LibraryUi.caption-height;
+    content-width: max(root.width, root.cards.length * (root.card-width + LibraryUi.card-gap) - LibraryUi.card-gap + 2 * root.inset);
+    content-height: root.height;
+    mouse-drag-pan-enabled: false;
+    accessible-role: list;
+
+    // Moves by about a view's width, keeping a card's worth in sight.
+    public function page(direction: int) {
+        let step = max(root.card-width, root.width - 2 * root.inset - root.card-width);
+        root.content-x = clamp(root.content-x - direction * step, min(0px, root.width - root.content-width), 0px);
+    }
+
+    // Scrolls so that the `index`th card is in sight, as the keyboard
+    // reaches it.
+    function show-card(index: int) {
+        let left = root.inset + index * (root.card-width + LibraryUi.card-gap);
+        let right = left + root.card-width;
+        if left + root.content-x < root.inset {
+            root.content-x = min(0px, root.inset - left);
+        } else if right + root.content-x > root.width - root.inset {
+            root.content-x = max(root.width - root.content-width, root.width - root.inset - right);
+        }
+    }
+
+    for card[index] in root.cards: Card {
+        x: root.inset + index * (root.card-width + LibraryUi.card-gap);
+        y: 0;
+        width: root.card-width;
+        card: card;
+        slot-aspect: root.aspect;
+        focused => {
+            root.show-card(index);
+        }
+    }
+}
+
+// A row's title, with arrows that scroll it when it is wider than the view.
+export component StripHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <length> inset: LibraryUi.inset;
+    in property <bool> scrolls;
+    in property <bool> can-scroll-back;
+    in property <bool> can-scroll-on;
+    callback page(int);
+
+    height: 28px;
+    padding-left: root.inset;
+    padding-right: root.inset - 6px;
+    spacing: 2px;
+
+    Text {
+        horizontal-stretch: 1;
+        text: root.title;
+        color: Theme.text;
+        font-size: Theme.font-heading;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    // Hidden rather than removed, so that the title's room doesn't depend
+    // on the width it is given.
+    IconButton {
+        y: 0;
+        visible: root.scrolls;
+        icon: @image-url("icons/chevron-left.svg");
+        icon-size: 16px;
+        hover-background: true;
+        enabled: root.can-scroll-back;
+        tooltip: "Scroll " + root.title + " back";
+        clicked => {
+            root.page(-1);
+        }
+    }
+    IconButton {
+        y: 0;
+        visible: root.scrolls;
+        icon: @image-url("icons/chevron-right.svg");
+        icon-size: 16px;
+        hover-background: true;
+        enabled: root.can-scroll-on;
+        tooltip: "Scroll " + root.title + " on";
+        clicked => {
+            root.page(1);
+        }
+    }
+}
+
+// A titled row of cards: one of Home's, a search's, or under an item.
+export component CardRow inherits VerticalLayout {
+    in property <LibraryRow> content;
+    in property <length> inset: LibraryUi.inset;
+    spacing: 8px;
+
+    StripHeader {
+        title: root.content.title;
+        inset: root.inset;
+        scrolls: strip.scrolls;
+        can-scroll-back: strip.can-scroll-back;
+        can-scroll-on: strip.can-scroll-on;
+        page(direction) => {
+            strip.page(direction);
+        }
+    }
+
+    strip := CardStrip {
+        cards: root.content.cards;
+        inset: root.inset;
+        accessible-label: root.content.title;
+    }
+}
+
+// A library's tabs or a show's seasons, drawn like Segmented but sized to
+// each title, and scrolling sideways when there are more than fit.
+export component ChoiceTabs inherits Rectangle {
+    in property <[LibraryChoice]> choices;
+    in property <string> selected;
+    in property <bool> reveals: true;
+    callback activated(string);
+
+    height: 26px;
+    preferred-width: tabs.preferred-width;
+    max-width: tabs.preferred-width;
+    min-width: min(tabs.preferred-width, 120px);
+    border-radius: Theme.control-radius;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: Theme.field-border;
+    accessible-role: tab-list;
+
+    strip := Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: tabs.preferred-width;
+        content-height: self.height;
+        mouse-drag-pan-enabled: false;
+
+        tabs := HorizontalLayout {
+            width: self.preferred-width;
+            height: strip.height;
+            padding: 2px;
+            spacing: 2px;
+            for choice[index] in root.choices: Rectangle {
+                width: label.preferred-width + 22px;
+                border-radius: Theme.control-radius - 2px;
+                background: choice.id == root.selected ? Theme.accent : touch.has-hover ? Theme.hover : transparent;
+                accessible-role: tab;
+                accessible-label: choice.detail != "" ? choice.title + ", " + choice.detail : choice.title;
+                accessible-item-selectable: true;
+                accessible-item-selected: choice.id == root.selected;
+                accessible-item-index: index;
+                accessible-item-count: root.choices.length;
+                accessible-action-default => {
+                    root.activated(choice.id);
+                }
+                KeyFocus {
+                    radius: Theme.control-radius - 2px;
+                    ring: choice.id == root.selected ? Theme.accent-text : Theme.accent;
+                    reveals: root.reveals;
+                    activated => {
+                        root.activated(choice.id);
+                    }
+                    // Scrolls the tab into sight.
+                    focused => {
+                        strip.content-x = clamp(strip.content-x, strip.width - parent.x - parent.width, -parent.x);
+                    }
+                }
+                label := Text {
+                    text: choice.title;
+                    color: choice.id == root.selected ? Theme.accent-text : Theme.text;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                touch := TouchArea {
+                    clicked => {
+                        root.activated(choice.id);
+                    }
+                    pointer-event(event) => {
+                        LibraryUi.pointer(event);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A button that opens a menu, showing what is chosen: "Sort  Name".
+export component MenuButton inherits Rectangle {
+    in property <string> label;
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> reveals: true;
+    callback clicked;
+
+    height: 28px;
+    min-width: layout.min-width;
+    preferred-width: layout.preferred-width;
+    border-radius: Theme.control-radius;
+    background: touch.pressed ? #ffffff2e : touch.has-hover ? #ffffff24 : #ffffff1a;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-description: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    KeyFocus {
+        reveals: root.reveals;
+        activated => {
+            root.clicked();
+        }
+    }
+
+    layout := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 6px;
+        if root.icon.width > 0: Image {
+            y: (parent.height - self.height) / 2;
+            source: root.icon;
+            width: 14px;
+            height: 14px;
+            colorize: Theme.secondary-text;
+        }
+        if root.label != "": Text {
+            text: root.label;
+            color: Theme.secondary-text;
+            font-size: Theme.font-normal;
+            vertical-alignment: center;
+        }
+        // One item of the outer layout, so that children which show
+        // nothing (ChoiceMenu's) add no spacing.
+        HorizontalLayout {
+            @children
+            if root.text != "": Text {
+                max-width: 220px;
+                text: root.text;
+                color: Theme.text;
+                font-size: Theme.font-normal;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+        Image {
+            y: (parent.height - self.height) / 2;
+            source: @image-url("icons/chevron-down.svg");
+            width: 12px;
+            height: 12px;
+            colorize: Theme.secondary-text;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+    }
+}
+
+// A menu of choices (versions, audio and subtitle tracks, sort orders)
+// behind a button that shows the chosen one.
+export component ChoiceMenu inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <[LibraryChoice]> choices;
+    in property <string> selected;
+    callback chosen(string);
+
+    height: 28px;
+    min-width: button.min-width;
+    preferred-width: button.preferred-width;
+
+    button := MenuButton {
+        width: parent.width;
+        label: root.label;
+        icon: root.icon;
+        clicked => {
+            menu.show({ x: 0, y: root.height + 4px });
+        }
+
+        // The chosen title: a Slint function can't search the list, but a
+        // layout per choice can show its title only when it is the one.
+        for choice in root.choices: HorizontalLayout {
+            if choice.id == root.selected: Text {
+                max-width: 220px;
+                text: choice.title;
+                color: Theme.text;
+                font-size: Theme.font-normal;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            for choice in root.choices: MenuItem {
+                title: choice.detail != "" ? choice.title + " — " + choice.detail : choice.title;
+                checked: choice.id == root.selected;
+                activated => {
+                    root.chosen(choice.id);
+                }
+            }
+        }
+    }
+}
+
+// An on/off filter: Unplayed, Favourites.
+export component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    in property <bool> reveals: true;
+    callback toggled(bool);
+
+    height: 28px;
+    min-width: layout.preferred-width;
+    border-radius: self.height / 2;
+    background: root.checked ? Theme.selection : touch.pressed ? #ffffff2e : touch.has-hover ? #ffffff24 : #ffffff1a;
+    border-width: 1px;
+    border-color: root.checked ? Theme.accent : transparent;
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        root.toggled(!root.checked);
+    }
+
+    KeyFocus {
+        radius: root.border-radius;
+        reveals: root.reveals;
+        activated => {
+            root.toggled(!root.checked);
+        }
+    }
+
+    layout := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        if root.checked: Image {
+            y: (parent.height - self.height) / 2;
+            source: @image-url("icons/check.svg");
+            width: 13px;
+            height: 13px;
+            colorize: Theme.text;
+        }
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.font-normal;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.toggled(!root.checked);
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+    }
+}
+
+// A square button that is on or off: Played, Favourite. On, it takes the
+// selection's colour with an accent border, as a chip does, besides its
+// icon's colour, so that the two states differ by more than a tint.
+export component ToggleButton inherits Rectangle {
+    in property <image> icon;
+    in property <image> checked-icon: root.icon;
+    in property <color> checked-color: Theme.accent;
+    in property <bool> checked;
+    in property <string> label;
+    callback toggled(bool);
+
+    width: 32px;
+    height: 28px;
+    border-radius: Theme.control-radius;
+    background: root.checked ? Theme.selection : touch.pressed ? #ffffff2e : touch.has-hover ? #ffffff24 : #ffffff1a;
+    border-width: 1px;
+    border-color: root.checked ? Theme.accent : transparent;
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        root.toggled(!root.checked);
+    }
+
+    KeyFocus {
+        activated => {
+            root.toggled(!root.checked);
+        }
+    }
+
+    Image {
+        source: root.checked ? root.checked-icon : root.icon;
+        width: 15px;
+        height: 15px;
+        colorize: root.checked ? root.checked-color : Theme.icon;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.toggled(!root.checked);
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+    }
+}
+
+// A square button with just an icon, beside text buttons: Play from
+// Beginning and Shuffle where the page is too narrow for their words.
+export component SquareButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    callback clicked;
+
+    width: 32px;
+    height: 28px;
+    border-radius: Theme.control-radius;
+    background: touch.pressed ? #ffffff2e : touch.has-hover ? #ffffff24 : #ffffff1a;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    KeyFocus {
+        activated => {
+            root.clicked();
+        }
+    }
+
+    Image {
+        source: root.icon;
+        width: 15px;
+        height: 15px;
+        colorize: Theme.text;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+    }
+}
+
+// A text button the keyboard reaches too: the detail page's Play.
+export component KeyButton inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> primary;
+    callback clicked;
+
+    height: 28px;
+    min-width: button.min-width;
+    preferred-width: button.preferred-width;
+    accessible-role: none;
+
+    KeyFocus {
+        activated => {
+            root.clicked();
+        }
+    }
+    button := TextButton {
+        width: parent.width;
+        text: root.text;
+        icon: root.icon;
+        primary: root.primary;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The centred message for an empty page or a failure.
+export component Notice inherits VerticalLayout {
+    in property <image> icon;
+    in property <string> text;
+    in property <color> icon-color: Theme.tertiary-text;
+    alignment: center;
+    spacing: 12px;
+
+    if root.icon.width > 0: HorizontalLayout {
+        alignment: center;
+        Image {
+            source: root.icon;
+            width: 28px;
+            height: 28px;
+            colorize: root.icon-color;
+        }
+    }
+    HorizontalLayout {
+        alignment: center;
+        Text {
+            max-width: 420px;
+            text: root.text;
+            color: Theme.secondary-text;
+            font-size: Theme.font-normal;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+    @children
+}

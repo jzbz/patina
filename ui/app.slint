@@ -1,17 +1,19 @@
 import { Theme } from "theme.slint";
 import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, QualityItem, MenuPlayback, MenuMedia, OnlineSubs, OnlineSubtitle } from "globals.slint";
-import { ControlBar, TitleBar, OsdView, SeekPreview } from "controls.slint";
+import { ControlBar, TitleBar, OsdView, SeekPreview, SkipButton } from "controls.slint";
 import { Sidebar } from "sidebar.slint";
 import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
+import { LibraryView, Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn } from "library.slint";
 import { MusicPanel, MusicWindowButtons, DefaultArt } from "music.slint";
 import { PromptDialog, ConfirmDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog } from "dialogs.slint";
-import { Spinner, IconButton } from "widgets.slint";
+import { Spinner, IconButton, TextButton } from "widgets.slint";
 import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
 import { HistoryWindow, HistoryRow } from "history.slint";
 import { DownloadsWindow, DownloadRow } from "downloads.slint";
 import { InspectorWindow, InspectorRow } from "inspector.slint";
 
+export { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn }
 export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
 
 export component PlayerWindow inherits Window {
@@ -46,6 +48,9 @@ export component PlayerWindow inherits Window {
     in-out property <string> sidebar-tab: "playlist";
     in-out property <bool> controls-visible: true;
     in-out property <bool> drop-active;
+    // The library shows, and with it the window's messages as a toast at
+    // the bottom.
+    property <bool> library-notices: Library.shown && !Playback.has-media;
     // "", "open-url", "add-url", "jump-to", "about", "shortcuts",
     // "online-subtitles".
     in-out property <string> dialog;
@@ -66,9 +71,40 @@ export component PlayerWindow inherits Window {
     property <bool> show-chrome: root.controls-visible || root.keep-controls;
     property <string> pending-click;
     property <int> volume-shows;
+    // A file is open: the library and the welcome view have gone, with the
+    // keyboard's focus if one of them had it.
+    property <bool> media-open: Playback.has-media;
+    // A Jellyfin item's intro, credits or the like plays (Playback.skip-label).
+    // The button shows for a few seconds as the span begins, and again with
+    // the controller or a key: in a small window it would sit over the
+    // subtitles of a recap, or a song's in the credits, which mpv draws
+    // where they always are. Not over the seek bar's preview.
+    property <bool> skip-shown: Playback.skip-label != "" && Playback.has-media && !root.pip && !root.music-mode && root.dialog == "" && (root.skip-fresh || root.show-chrome || skip.has-focus) && !osc.seek-hovering;
+    property <string> skip-text: Playback.skip-label;
+    property <bool> skip-fresh;
 
     callback dialog-confirmed(string, string);
     callback video-area-changed();
+
+    // The Skip button shows again for a while.
+    function skip-again() {
+        if Playback.skip-label != "" {
+            root.skip-fresh = true;
+            skip-timer.restart();
+            skip-timer.running = true;
+        }
+    }
+    changed skip-text => {
+        root.skip-again();
+    }
+    skip-timer := Timer {
+        interval: 5s;
+        running: false;
+        triggered => {
+            root.skip-fresh = false;
+            self.running = false;
+        }
+    }
 
     public function show-controls() {
         root.controls-visible = true;
@@ -143,6 +179,7 @@ export component PlayerWindow inherits Window {
         MenuMedia.audio-devices = Media.audio-devices;
         MenuMedia.video-qualities = Media.video-qualities;
         MenuMedia.audio-qualities = Media.audio-qualities;
+        MenuMedia.video-versions = Media.video-versions;
         MenuMedia.online = Media.online;
         MenuMedia.downloaded-subtitle = Media.downloaded-subtitle;
         menu.show({ x: x, y: y });
@@ -193,6 +230,18 @@ export component PlayerWindow inherits Window {
         }
     }
 
+    // See the player's keys' focus-gained.
+    refocus-timer := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.dialog == "" {
+                keys.focus();
+            }
+        }
+    }
+
     forward-focus: keys;
 
     // The menus read the window's state through globals, being copied into
@@ -240,6 +289,21 @@ export component PlayerWindow inherits Window {
     changed show-chrome => {
         Actions.chrome-visible(self.show-chrome);
     }
+    // The player's keys take the focus the library or the welcome view
+    // had, or a file opened from the library would leave the keyboard
+    // reaching nothing.
+    changed media-open => {
+        if self.media-open && root.dialog == "" {
+            keys.focus();
+        }
+    }
+    // The Skip button went with the keyboard's focus: the player's keys
+    // work on.
+    changed skip-shown => {
+        if !self.skip-shown && skip.has-focus {
+            keys.focus();
+        }
+    }
 
     // macOS's menu bar, which Slint shows natively there (ahead of it, the
     // app menu Slint adds itself); the other platforms have none, and reach
@@ -266,6 +330,12 @@ export component PlayerWindow inherits Window {
                 title: "Open Folder…";
                 activated => {
                     Actions.patina("open-folder");
+                }
+            }
+            MenuItem {
+                title: "Jellyfin…";
+                activated => {
+                    Actions.patina("jellyfin-sign-in");
                 }
             }
             Menu {
@@ -555,6 +625,43 @@ export component PlayerWindow inherits Window {
 
         Menu {
             title: "Video";
+            // The tracks, quality and version first: in a window fitted to a
+            // small video the menu is cut off at its edge, and these are
+            // what a Jellyfin item needs from it.
+            Menu {
+                title: "Video Track";
+                enabled: Media.video-tracks.length > 0;
+                for track in Media.video-tracks: MenuItem {
+                    title: track.title;
+                    checked: track.selected;
+                    activated => {
+                        Actions.select-track("video", track.id);
+                    }
+                }
+            }
+            Menu {
+                title: "Video Quality";
+                enabled: Media.video-qualities.length > 1;
+                for item in Media.video-qualities: MenuItem {
+                    title: item.title;
+                    checked: item.selected;
+                    activated => {
+                        Actions.patina("video-quality " + item.key);
+                    }
+                }
+            }
+            Menu {
+                title: "Version";
+                enabled: Media.video-versions.length > 1;
+                for item in Media.video-versions: MenuItem {
+                    title: item.title;
+                    checked: item.selected;
+                    activated => {
+                        Actions.patina("video-version " + item.key);
+                    }
+                }
+            }
+            MenuSeparator { }
             MenuItem {
                 title: Playback.fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
                 enabled: !Playback.music-mode;
@@ -627,28 +734,6 @@ export component PlayerWindow inherits Window {
                 }
             }
             MenuSeparator { }
-            Menu {
-                title: "Video Track";
-                enabled: Media.video-tracks.length > 0;
-                for track in Media.video-tracks: MenuItem {
-                    title: track.title;
-                    checked: track.selected;
-                    activated => {
-                        Actions.select-track("video", track.id);
-                    }
-                }
-            }
-            Menu {
-                title: "Video Quality";
-                enabled: Media.video-qualities.length > 1;
-                for item in Media.video-qualities: MenuItem {
-                    title: item.title;
-                    checked: item.selected;
-                    activated => {
-                        Actions.patina("video-quality " + item.key);
-                    }
-                }
-            }
             Menu {
                 title: "Aspect Ratio";
                 for label[index] in ["Default", "4:3", "16:9", "16:10", "21:9", "5:4"]: MenuItem {
@@ -969,8 +1054,19 @@ export component PlayerWindow inherits Window {
     }
 
     keys := FocusScope {
+        // Slint 1.18 closes a menu before its submenus, and each gives the
+        // focus back to what had it when it opened: the menu to these keys,
+        // then each submenu to an item of the menu above it, closed by
+        // then, where the keyboard reaches nothing. Once the menu has given
+        // the keys the focus back, they take it again after the submenus.
+        focus-gained(reason) => {
+            if reason == FocusReason.popup-activation {
+                refocus-timer.running = true;
+            }
+        }
         key-pressed(event) => {
             Actions.activity();
+            root.skip-again();
             if event.text == Key.Escape && root.sidebar-open && !root.full-screen {
                 root.sidebar-open = false;
                 return accept;
@@ -1059,7 +1155,18 @@ export component PlayerWindow inherits Window {
             // Over the area above, which would otherwise take every click
             // meant for its buttons: what the welcome screen doesn't take
             // itself still reaches it, to move the window or open the menu.
-            if !Playback.has-media && !root.music-mode: WelcomeView {
+            if !Playback.has-media && !root.music-mode && !Library.shown: WelcomeView {
+                width: parent.width;
+                height: parent.height;
+                drop-active: root.drop-active;
+                clear-recent => {
+                    root.dialog = "clear-recent";
+                }
+            }
+
+            // A signed-in Jellyfin server's library, in the welcome
+            // screen's place; This Computer shows the welcome screen in it.
+            if !Playback.has-media && !root.music-mode && Library.shown: LibraryView {
                 width: parent.width;
                 height: parent.height;
                 drop-active: root.drop-active;
@@ -1069,11 +1176,15 @@ export component PlayerWindow inherits Window {
             }
         }
 
-        if Playback.buffering && Playback.has-media && (!root.music-mode || root.music-art-height >= 80px): VerticalLayout {
+        // A file opening, or waiting for the cache. A Jellyfin item opens
+        // once its server has answered, which a slow one can make a wait of
+        // half a minute: it says so, with a way out.
+        if Playback.buffering && Playback.has-media && (!root.music-mode || root.music-art-height >= 80px): loading := VerticalLayout {
+            property <bool> waiting: Playback.loading-text != "" && Playback.buffering-percent <= 0 && !root.music-mode;
             x: (parent.width - self.width) / 2;
             y: ((root.music-mode ? root.music-art-height : parent.height) - self.height) / 2;
-            width: 120px;
-            height: 80px;
+            width: self.waiting ? min(320px, parent.width - 32px) : 120px;
+            height: self.waiting ? 120px : 80px;
             spacing: 10px;
             alignment: center;
             HorizontalLayout {
@@ -1083,20 +1194,35 @@ export component PlayerWindow inherits Window {
                 }
             }
             Text {
-                text: Playback.buffering-percent > 0 ? "Buffering " + Playback.buffering-percent + "%" : "Loading…";
+                text: Playback.buffering-percent > 0 ? "Buffering " + Playback.buffering-percent + "%" : loading.waiting ? Playback.loading-text : "Loading…";
                 color: Theme.secondary-text;
                 font-size: Theme.font-normal;
                 horizontal-alignment: center;
+                overflow: elide;
+            }
+            if loading.waiting: HorizontalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Stop";
+                    clicked => {
+                        Actions.mpv(["stop"]);
+                    }
+                }
             }
         }
 
+        // Over the library, at the bottom on a plate of its own, as the
+        // library's notices are: in the middle it covered the page's own
+        // message (a server that doesn't answer says so there too).
         if root.error != "": Rectangle {
             x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
+            y: root.library-notices ? parent.height - self.height - 24px : (parent.height - self.height) / 2;
             width: min(460px, parent.width - 40px);
             height: error-text.preferred-height + 28px;
             border-radius: Theme.panel-radius;
-            background: Theme.osd-background;
+            background: root.library-notices ? #1d1d1f : Theme.osd-background;
+            drop-shadow-blur: root.library-notices ? 16px : 0px;
+            drop-shadow-color: #00000080;
             error-text := Text {
                 x: 16px;
                 width: parent.width - 32px;
@@ -1143,10 +1269,27 @@ export component PlayerWindow inherits Window {
             }
         }
 
-        if Prefs.osd-font-size > 0 && !root.music-mode: OsdView {
+        // While the library shows, its messages (a sign-in that won't be
+        // kept, a mark the server refused) come up at the bottom, on a
+        // plate of their own: at the top they covered the page's first row
+        // and its Back button, and what the page draws showed through.
+        if Prefs.osd-font-size > 0 && !root.music-mode && !root.library-notices: OsdView {
             x: 14px;
             y: (Platform.overlay-titlebar && !root.full-screen && root.show-chrome ? Theme.titlebar-height : 0px) + 12px;
             animate y { duration: 200ms; }
+        }
+        if Prefs.osd-font-size > 0 && !root.music-mode && root.library-notices: Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - 24px;
+            width: notice.width;
+            height: notice.height;
+            border-radius: 8px;
+            background: #1d1d1f;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000080;
+            opacity: Osd.visible ? 1 : 0;
+            animate opacity { duration: Osd.visible ? 80ms : 300ms; }
+            notice := OsdView { }
         }
 
         // The floating controller.
@@ -1180,6 +1323,22 @@ export component PlayerWindow inherits Window {
                 time: osc.seek-hover-time;
                 x: clamp(osc.seek-hover-x - self.width / 2, 0, parent.width - self.width);
                 y: -self.height - 6px;
+            }
+        }
+
+        // At the bottom right while the segment plays, whether the
+        // controller shows or not: beside the controller where there is
+        // room, above it otherwise.
+        skip := SkipButton {
+            property <length> right-edge: root.width - 24px - Theme.sidebar-width * root.sidebar-shown;
+            text: Playback.skip-label;
+            key: Playback.skip-key;
+            shown: root.skip-shown;
+            x: max(8px, self.right-edge - self.width);
+            y: osc-area.visible && self.x < osc-area.x + osc-area.width + 12px ? osc-area.y - self.height - 12px : root.height - self.height - 43px;
+            animate y { duration: 200ms; }
+            clicked => {
+                Actions.patina("skip-segment");
             }
         }
 

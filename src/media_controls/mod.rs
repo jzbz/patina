@@ -41,7 +41,9 @@ pub struct NowPlaying {
     pub artist: String,
     pub album: String,
     pub url: String,
-    /// A `file://` URL of the cover or a frame, if there is one.
+    /// A `file://` URL of the cover or a frame, or a Jellyfin server's
+    /// image (which anyone may fetch, so the URL carries no token), if
+    /// there is one.
     pub art_url: String,
     pub duration: f64,
     pub rate: f64,

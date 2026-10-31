@@ -12,6 +12,7 @@ mod inhibit;
 mod input;
 mod inspector;
 mod instance;
+mod jellyfin;
 #[cfg(target_os = "macos")]
 mod macos;
 mod media_controls;
@@ -74,8 +75,7 @@ fn main() -> ExitCode {
     };
 
     let default_level = if options.verbose { "debug" } else { "warn" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level))
-        .init();
+    Logger::new(env_logger::Env::default().default_filter_or(default_level)).init();
 
     // A Patina already running opens what this one was asked to, and this
     // one is done. Standard input can't be handed over.
@@ -283,6 +283,82 @@ mod tests {
         assert!(
             app[begin..end] == expected,
             "ui/app.slint's menu bar differs from ui/menus.slint; run tools/menubar.py"
+        );
+    }
+}
+
+/// The logger, from `RUST_LOG` or the level given, with ureq's and
+/// ureq-proto's trace output left out whatever it says: that output is the
+/// raw HTTP exchange, every `Authorization` header (a Jellyfin token) and
+/// every sign-in's answer included. At debug ureq hides headers and paths,
+/// so that much still comes through when asked for.
+struct Logger(env_logger::Logger);
+
+impl Logger {
+    fn new(env: env_logger::Env) -> Self {
+        Self(env_logger::Builder::from_env(env).build())
+    }
+
+    fn init(self) {
+        let level = self.0.filter();
+        if log::set_boxed_logger(Box::new(self)).is_ok() {
+            log::set_max_level(level);
+        }
+    }
+}
+
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        let target = metadata.target();
+        let http = ["ureq", "ureq_proto"].iter().any(|name| {
+            target
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"))
+        });
+        !(http && metadata.level() > log::Level::Debug) && self.0.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            self.0.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.0.flush();
+    }
+}
+
+#[cfg(test)]
+mod logger_tests {
+    use log::{Level, Log, Metadata};
+
+    fn enabled(filter: &str, target: &str, level: Level) -> bool {
+        let env = env_logger::Env::new().filter_or("PATINA_TEST_NO_SUCH_VARIABLE", filter);
+        super::Logger::new(env).enabled(&Metadata::builder().target(target).level(level).build())
+    }
+
+    #[test]
+    fn http_traces_never_reach_the_log() {
+        for filter in ["trace", "ureq_proto=trace,ureq=trace", "patina=trace,trace"] {
+            assert!(
+                !enabled(filter, "ureq_proto::util", Level::Trace),
+                "{filter}"
+            );
+            assert!(
+                !enabled(filter, "ureq::unversioned::transport", Level::Trace),
+                "{filter}"
+            );
+            assert!(enabled(filter, "ureq::run", Level::Debug), "{filter}");
+        }
+        assert!(enabled("trace", "patina::jellyfin", Level::Trace));
+        assert!(
+            enabled("trace", "ureqx", Level::Trace),
+            "only ureq's own modules"
+        );
+        assert!(
+            !enabled("warn", "ureq::run", Level::Debug),
+            "the cap allows nothing more"
         );
     }
 }

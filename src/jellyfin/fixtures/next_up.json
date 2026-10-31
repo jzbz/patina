@@ -1,0 +1,57 @@
+{
+  "Items": [
+    {
+      "Name": "Night Market",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "43db953c68132560c5f47cf2f87097a1",
+      "Container": "mkv",
+      "PremiereDate": "2020-01-17T00:00:00.0000000Z",
+      "ChannelId": null,
+      "Overview": "Episode 2 of season 1 of Lantern Street.",
+      "RunTimeTicks": 200210000,
+      "ProductionYear": 2020,
+      "IndexNumber": 2,
+      "ParentIndexNumber": 1,
+      "IsFolder": false,
+      "Type": "Episode",
+      "ParentBackdropItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentBackdropImageTags": [
+        "0fa1a2a6836d16e9ac082436d529829e"
+      ],
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "30390605-0c0b-b52f-46ff-a3d5a2382ed3001002",
+        "ItemId": "43db953c68132560c5f47cf2f87097a1"
+      },
+      "SeriesName": "Lantern Street",
+      "SeriesId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "SeasonId": "b125538ac3ad8f364cfb6fef5369fed2",
+      "PrimaryImageAspectRatio": 1.7777777777777777,
+      "SeriesPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "SeasonName": "Season 1",
+      "VideoType": "VideoFile",
+      "ImageTags": {
+        "Primary": "ca80a2e82f1fc12cc11f17dca64fa95e"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "ca80a2e82f1fc12cc11f17dca64fa95e": "WoI}uDDN;7RHTc9WxuNaSuV_XRRhkBO8ofbEayw~t7jEsDbHjZj]",
+          "fbac6553457b8c2d679f861e3c37eee9": "dpK]k|I]WXs.0:a$oLWXj]oLazjuoMWXj@fQR.j[a|az"
+        },
+        "Backdrop": {
+          "0fa1a2a6836d16e9ac082436d529829e": "WsM4vj1PI]$jNexGxGR.oLj[WXoLWXa}j[a|fQjt$%S5a#j[a#j["
+        }
+      },
+      "ParentPrimaryImageItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "LocationType": "FileSystem",
+      "MediaType": "Video"
+    }
+  ],
+  "TotalRecordCount": 1,
+  "StartIndex": 0
+}

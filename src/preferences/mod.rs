@@ -69,6 +69,7 @@ const PRESETS: &[(&str, &str, bool)] = &[
     ("Download the video", "download-video", true),
     ("Downloads", "downloads", true),
     ("Find online subtitles", "find-online-subtitles", true),
+    ("Skip the intro or credits", "skip-segment", true),
     (
         "Save the downloaded subtitle",
         "save-downloaded-subtitle",
@@ -119,6 +120,9 @@ pub struct PreferencesController {
     /// A file type action is running; xdg-mime runs at once would overwrite
     /// each other's defaults.
     associating: Cell<bool>,
+    /// What the Jellyfin poster cache holds on disk, in bytes: counted on
+    /// a thread of its own when the Jellyfin page shows, None until then.
+    image_usage: Cell<Option<u64>>,
 }
 
 impl PreferencesController {
@@ -146,6 +150,7 @@ impl PreferencesController {
             password_note: RefCell::new(None),
             notes: RefCell::new(std::collections::HashMap::new()),
             associating: Cell::new(false),
+            image_usage: Cell::new(None),
         });
         controller.wire();
         controller.show_page(Page::General);
@@ -252,11 +257,29 @@ impl PreferencesController {
 
     // ---- Pages ----------------------------------------------------------
 
-    fn show_page(&self, page: Page) {
+    fn show_page(self: &Rc<Self>, page: Page) {
         self.page.set(page);
         self.refresh();
         if page == Page::KeyBindings {
             self.refresh_bindings();
+        }
+        if page == Page::Jellyfin {
+            self.measure_images();
+        }
+    }
+
+    /// Counts what the Jellyfin poster cache holds, for its Clear button.
+    fn measure_images(self: &Rc<Self>) {
+        let usage = self.app().jellyfin().images().disk_usage();
+        let weak = Rc::downgrade(self);
+        let spawned = slint::spawn_local(async move {
+            if let (Ok(bytes), Some(this)) = (usage.recv().await, weak.upgrade()) {
+                this.image_usage.set(Some(bytes));
+                this.refresh();
+            }
+        });
+        if let Err(error) = spawned {
+            log::warn!("{error}");
         }
     }
 
@@ -403,6 +426,13 @@ impl PreferencesController {
                     let size =
                         crate::thumbnails::cache_size(&self.app().paths().thumbnail_cache_dir());
                     row.detail = format!("Using {:.1} MB.", size as f64 / 1e6).into();
+                } else if item.key == "clear-jellyfin-images" {
+                    // Posters show what a library holds: signing out of a
+                    // server clears them too.
+                    let usage = self.image_usage.get().map_or_else(String::new, |size| {
+                        format!("Using {:.1} MB. ", size as f64 / 1e6)
+                    });
+                    row.detail = format!("{usage}Signing out of a server clears it too.").into();
                 }
             }
         }
@@ -578,6 +608,21 @@ impl PreferencesController {
             "clear-history" => app.clear_history(),
             "clear-resume" => clear(paths.watch_later_dir()),
             "clear-thumbnails" => clear(paths.thumbnail_cache_dir()),
+            "clear-jellyfin-images" => {
+                self.image_usage.set(None);
+                let cleared = app.jellyfin().images().clear();
+                let weak = Rc::downgrade(self);
+                let spawned = slint::spawn_local(async move {
+                    if cleared.recv().await.is_ok()
+                        && let Some(this) = weak.upgrade()
+                    {
+                        this.measure_images();
+                    }
+                });
+                if let Err(error) = spawned {
+                    log::warn!("{error}");
+                }
+            }
             "open-config-folder" => {
                 let _ = std::fs::create_dir_all(&paths.config);
                 crate::platform::open_path(&paths.config);

@@ -1,0 +1,44 @@
+{
+  "Items": [
+    {
+      "Name": "Paper Harbor",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "c45f7bfd1380494ec3fc6830fae86c2f",
+      "HasSubtitles": true,
+      "Container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "PremiereDate": "2019-08-30T00:00:00.0000000Z",
+      "OfficialRating": "PG",
+      "ChannelId": null,
+      "Overview": "A town builds its fishing fleet out of paper and waits for a dry summer.",
+      "RunTimeTicks": 240000000,
+      "ProductionYear": 2019,
+      "IsFolder": false,
+      "Type": "Movie",
+      "UserData": {
+        "PlayedPercentage": 50,
+        "PlaybackPositionTicks": 120000000,
+        "PlayCount": 1,
+        "IsFavorite": false,
+        "LastPlayedDate": "2026-10-31T03:58:36.4738006Z",
+        "Played": false,
+        "Key": "c45f7bfd-1380-494e-c3fc-6830fae86c2f",
+        "ItemId": "c45f7bfd1380494ec3fc6830fae86c2f"
+      },
+      "PrimaryImageAspectRatio": 0.6666666666666666,
+      "VideoType": "VideoFile",
+      "ImageTags": {
+        "Primary": "9033af39ca09ce3a46c6ccf59b9f1fcd"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "9033af39ca09ce3a46c6ccf59b9f1fcd": "dcL;cRAvNetQ1iNesnWXNew^oKWXoya}WXj@S4f7jtjt"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Video"
+    }
+  ],
+  "TotalRecordCount": 1,
+  "StartIndex": 0
+}

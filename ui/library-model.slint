@@ -1,0 +1,251 @@
+// The library view's data: what Rust's library controller
+// (src/jellyfin/library.rs) puts in the Library global and the callbacks it
+// answers. It lives apart from library.slint so that the welcome screen can
+// read it too (for its Jellyfin… entry) without the two files importing
+// each other.
+
+// A poster, a thumbnail or a square: an item in a row or a grid.
+export struct LibraryCard {
+    id: string,
+    // movie, series, season, episode, collection, playlist, album, artist,
+    // song, genre, library, folder, video
+    kind: string,
+    title: string,
+    // The line under the title: a year, "S1 E3", an artist, a count.
+    subtitle: string,
+    image: image,
+    // Width over height of the image: 2/3 for posters, 16/9 for
+    // thumbnails, 1 for albums and artists.
+    aspect: float,
+    // How much is watched, 0 to 1; negative when nothing is.
+    progress: float,
+    played: bool,
+    favorite: bool,
+    // Unwatched episodes of a show or season; 0 for none or n/a.
+    unplayed: int,
+}
+
+// A titled row of cards on Home, or one line of a grid.
+export struct LibraryRow {
+    id: string,
+    title: string,
+    cards: [LibraryCard],
+}
+
+// An entry in the library's bar: Home, a library, Search, This Computer.
+export struct LibraryNav {
+    id: string,
+    title: string,
+    // home, movies, tvshows, music, boxsets, playlists, folders, search, local
+    kind: string,
+}
+
+// A pick in a menu: a version, an audio or subtitle track, a season, a
+// sort order, a tab, a user, a discovered server.
+export struct LibraryChoice {
+    id: string,
+    title: string,
+    // A second line, when there is one (a server's address, a user's
+    // "no password").
+    detail: string,
+}
+
+// A line in a list: an episode of a season, a song of an album or playlist.
+export struct LibraryTrack {
+    id: string,
+    // "3", "1-3", or empty.
+    number: string,
+    title: string,
+    // An episode's air date, a song's artists.
+    subtitle: string,
+    overview: string,
+    duration: string,
+    image: image,
+    progress: float,
+    played: bool,
+    favorite: bool,
+    // The one playing in this window now.
+    playing: bool,
+}
+
+export struct LibraryPerson {
+    id: string,
+    name: string,
+    role: string,
+    image: image,
+}
+
+// The detail page's item.
+export struct LibraryDetail {
+    id: string,
+    kind: string,
+    // The item's details have arrived. Until then the page shows only what
+    // the card it was opened from knew (its title, kind and image), and
+    // offers nothing to do with it.
+    loaded: bool,
+    title: string,
+    tagline: string,
+    overview: string,
+    // "2021 · 1 h 52 min · PG-13 · ★ 7.4"
+    facts: string,
+    genres: string,
+    poster: image,
+    poster-aspect: float,
+    backdrop: image,
+    logo: image,
+    progress: float,
+    played: bool,
+    favorite: bool,
+    can-play: bool,
+    // "Resume 34:12", or empty to just play.
+    resume: string,
+    // The show of an episode or season, the artist of an album.
+    parent-title: string,
+    parent-id: string,
+    parent-kind: string,
+    versions: [LibraryChoice],
+    version: string,
+    audio: [LibraryChoice],
+    audio-track: string,
+    subtitles: [LibraryChoice],
+    subtitle-track: string,
+}
+
+// Where signing in is up to.
+export struct LibrarySignIn {
+    // address: typing the address (and Scan Network)
+    // users: picking an account or typing a name
+    // password: the password for the chosen account
+    // quick-connect: showing the code to approve elsewhere
+    step: string,
+    address: string,
+    // The server being signed in to, once it has answered.
+    server-name: string,
+    server-version: string,
+    // Plain http: the password and token travel unencrypted.
+    insecure: bool,
+    users: [LibraryChoice],
+    user: string,
+    quick-connect: bool,
+    code: string,
+    scanning: bool,
+    // One per server Scan Network found: the address it fills in (id), and
+    // in the detail where else it answered.
+    found: [LibraryChoice],
+    // The servers Patina knows without a sign-in, to sign in to again
+    // (id: the server's id; detail: the account and address).
+    saved: [LibraryChoice],
+    working: bool,
+    message: string,
+    // Said beside the steps without being an error: that the server is
+    // signed in already, as whom, and what signing in again does.
+    note: string,
+}
+
+export global Library {
+    // Shown in place of the welcome screen: a server is signed in, or
+    // signing in is under way.
+    in property <bool> shown;
+    in property <bool> signed-in;
+    in property <string> server-name;
+    in property <string> user-name;
+    in property <image> user-image;
+    // Other signed-in servers, to switch to.
+    in property <[LibraryChoice]> servers;
+
+    // The bar's entries that scroll (Home and the libraries), and those
+    // that stay at its end (Search and This Computer).
+    in property <[LibraryNav]> nav;
+    in property <[LibraryNav]> nav-end;
+    in property <string> nav-current;
+    // home, grid, detail, search, local, sign-in
+    in property <string> page;
+    in property <bool> can-go-back;
+    in property <bool> loading;
+    in property <string> error;
+
+    // Home's rows, or a grid's lines (the controller splits a grid into
+    // lines of `columns` cards, and asks for more with load-more).
+    in property <[LibraryRow]> rows;
+    in property <string> title;
+    // A library's tabs (Movies / Collections; Albums / Artists /
+    // Playlists / Genres) or a show's seasons.
+    in property <[LibraryChoice]> tabs;
+    in property <string> tab;
+    in property <[LibraryChoice]> sorts;
+    in property <string> sort;
+    in property <bool> descending;
+    // Whether the grid offers the Unplayed filter: its items keep a
+    // watched state (music's don't).
+    in property <bool> unplayed-filter;
+    in property <bool> unplayed-only;
+    in property <bool> favorites-only;
+    // Whether the grid has more to load below.
+    in property <bool> more;
+
+    in property <LibraryDetail> detail;
+    // A season's episodes, an album's or playlist's songs.
+    in property <[LibraryTrack]> tracks;
+    // Under the songs when the page shows only the first of them: how many
+    // there are.
+    in property <string> tracks-note;
+    in property <[LibraryPerson]> people;
+    // Rows under the detail: a show's seasons, an artist's albums,
+    // collections, more like this.
+    in property <[LibraryRow]> detail-rows;
+
+    in-out property <string> search-text;
+
+    // How far the page on show is scrolled down, which the view sets as
+    // the user scrolls. The controller saves it with each page it stacks
+    // and sets it back before showing that page again, so that Back
+    // returns to the same place. The view sets it to 0 after asking for
+    // another page or list (open, navigate, a grid's tab, sort or filter),
+    // and a page or list goes where it says as its content arrives.
+    in-out property <length> scroll-offset;
+    // Counts the times a page was shown or loaded again. Each time, the
+    // page's list stops recording where it is scrolled to until it has
+    // gone where scroll-offset says (or the user scrolls): its content
+    // arrives a piece at a time, and the place it was left at is reached
+    // only once enough has.
+    in property <int> loads;
+
+    in property <LibrarySignIn> sign-in;
+
+    // The grid's width allows this many cards a line.
+    callback columns(int);
+    // The grid's lines in sight, first and last: only those near them keep
+    // their images.
+    callback lines-shown(int, int);
+    callback load-more();
+    callback navigate(string);
+    callback back();
+    callback open(string, string);
+    // Item id; from the beginning rather than resuming.
+    callback play(string, bool);
+    callback shuffle(string);
+    // Item id; next rather than at the end.
+    callback queue(string, bool);
+    callback set-played(string, bool);
+    callback set-favorite(string, bool);
+    callback select-tab(string);
+    callback sort-by(string, bool);
+    callback filter(bool, bool);
+    callback search(string);
+    // version, audio or subtitle; the choice's id.
+    callback choose(string, string);
+    callback retry();
+
+    callback connect(string);
+    callback scan();
+    callback pick-server(string);
+    // A saved server, by id, to sign in to again.
+    callback pick-saved(string);
+    callback pick-user(string);
+    callback sign-in-with-password(string, string);
+    callback quick-connect();
+    callback cancel-sign-in();
+    callback add-server();
+    callback switch-server(string);
+    callback sign-out();
+}

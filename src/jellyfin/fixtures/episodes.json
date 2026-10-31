@@ -1,0 +1,160 @@
+{
+  "Items": [
+    {
+      "Name": "Opening Night",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "65c8ad501e419ce8e2e9f92a3729e44f",
+      "Container": "mkv",
+      "PremiereDate": "2020-01-10T00:00:00.0000000Z",
+      "ChannelId": null,
+      "Overview": "Episode 1 of season 1 of Lantern Street.",
+      "RunTimeTicks": 200210000,
+      "ProductionYear": 2020,
+      "IndexNumber": 1,
+      "ParentIndexNumber": 1,
+      "IsFolder": false,
+      "Type": "Episode",
+      "ParentBackdropItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentBackdropImageTags": [
+        "0fa1a2a6836d16e9ac082436d529829e"
+      ],
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 1,
+        "IsFavorite": false,
+        "LastPlayedDate": "2026-10-31T03:58:36.3218111Z",
+        "Played": true,
+        "Key": "65c8ad50-1e41-9ce8-e2e9-f92a3729e44f",
+        "ItemId": "65c8ad501e419ce8e2e9f92a3729e44f"
+      },
+      "SeriesName": "Lantern Street",
+      "SeriesId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "SeasonId": "b125538ac3ad8f364cfb6fef5369fed2",
+      "PrimaryImageAspectRatio": 1.7777777777777777,
+      "SeriesPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "SeasonName": "Season 1",
+      "VideoType": "VideoFile",
+      "ImageTags": {
+        "Primary": "6bdad8031bcf51863dec50fb2363c5cf"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "6bdad8031bcf51863dec50fb2363c5cf": "WsI#s2l;+$6UX+I7xbNsbCNKbrV=kBN=kCj=ayw~t7nioNbaa#j]",
+          "fbac6553457b8c2d679f861e3c37eee9": "dpK]k|I]WXs.0:a$oLWXj]oLazjuoMWXj@fQR.j[a|az"
+        },
+        "Backdrop": {
+          "0fa1a2a6836d16e9ac082436d529829e": "WsM4vj1PI]$jNexGxGR.oLj[WXoLWXa}j[a|fQjt$%S5a#j[a#j["
+        }
+      },
+      "ParentPrimaryImageItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "LocationType": "FileSystem",
+      "MediaType": "Video"
+    },
+    {
+      "Name": "Night Market",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "43db953c68132560c5f47cf2f87097a1",
+      "Container": "mkv",
+      "PremiereDate": "2020-01-17T00:00:00.0000000Z",
+      "ChannelId": null,
+      "Overview": "Episode 2 of season 1 of Lantern Street.",
+      "RunTimeTicks": 200210000,
+      "ProductionYear": 2020,
+      "IndexNumber": 2,
+      "ParentIndexNumber": 1,
+      "IsFolder": false,
+      "Type": "Episode",
+      "ParentBackdropItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentBackdropImageTags": [
+        "0fa1a2a6836d16e9ac082436d529829e"
+      ],
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "30390605-0c0b-b52f-46ff-a3d5a2382ed3001002",
+        "ItemId": "43db953c68132560c5f47cf2f87097a1"
+      },
+      "SeriesName": "Lantern Street",
+      "SeriesId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "SeasonId": "b125538ac3ad8f364cfb6fef5369fed2",
+      "PrimaryImageAspectRatio": 1.7777777777777777,
+      "SeriesPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "SeasonName": "Season 1",
+      "VideoType": "VideoFile",
+      "ImageTags": {
+        "Primary": "ca80a2e82f1fc12cc11f17dca64fa95e"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "ca80a2e82f1fc12cc11f17dca64fa95e": "WoI}uDDN;7RHTc9WxuNaSuV_XRRhkBO8ofbEayw~t7jEsDbHjZj]",
+          "fbac6553457b8c2d679f861e3c37eee9": "dpK]k|I]WXs.0:a$oLWXj]oLazjuoMWXj@fQR.j[a|az"
+        },
+        "Backdrop": {
+          "0fa1a2a6836d16e9ac082436d529829e": "WsM4vj1PI]$jNexGxGR.oLj[WXoLWXa}j[a|fQjt$%S5a#j[a#j["
+        }
+      },
+      "ParentPrimaryImageItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "LocationType": "FileSystem",
+      "MediaType": "Video"
+    },
+    {
+      "Name": "Open House",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "c5276f0d96da248b92d8120d836b41d0",
+      "Container": "mkv",
+      "PremiereDate": "2020-01-24T00:00:00.0000000Z",
+      "ChannelId": null,
+      "Overview": "Episode 3 of season 1 of Lantern Street.",
+      "RunTimeTicks": 200210000,
+      "ProductionYear": 2020,
+      "IndexNumber": 3,
+      "ParentIndexNumber": 1,
+      "IsFolder": false,
+      "Type": "Episode",
+      "ParentBackdropItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentBackdropImageTags": [
+        "0fa1a2a6836d16e9ac082436d529829e"
+      ],
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "30390605-0c0b-b52f-46ff-a3d5a2382ed3001003",
+        "ItemId": "c5276f0d96da248b92d8120d836b41d0"
+      },
+      "SeriesName": "Lantern Street",
+      "SeriesId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "SeasonId": "b125538ac3ad8f364cfb6fef5369fed2",
+      "PrimaryImageAspectRatio": 1.7777777777777777,
+      "SeriesPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "SeasonName": "Season 1",
+      "VideoType": "VideoFile",
+      "ImageTags": {
+        "Primary": "2afc4c70bd2045f2afde9fa5cf02d49f"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "2afc4c70bd2045f2afde9fa5cf02d49f": "W.KAjWD|$dvYbd9=xaR+Svj0W?NGkCNuoMbFfPw{s;awn+bHjsj[",
+          "fbac6553457b8c2d679f861e3c37eee9": "dpK]k|I]WXs.0:a$oLWXj]oLazjuoMWXj@fQR.j[a|az"
+        },
+        "Backdrop": {
+          "0fa1a2a6836d16e9ac082436d529829e": "WsM4vj1PI]$jNexGxGR.oLj[WXoLWXa}j[a|fQjt$%S5a#j[a#j["
+        }
+      },
+      "ParentPrimaryImageItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "LocationType": "FileSystem",
+      "MediaType": "Video"
+    }
+  ],
+  "TotalRecordCount": 3,
+  "StartIndex": 0
+}

@@ -1,0 +1,84 @@
+{
+  "Items": [
+    {
+      "Name": "Season 1",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "b125538ac3ad8f364cfb6fef5369fed2",
+      "ChannelId": null,
+      "IndexNumber": 1,
+      "IsFolder": true,
+      "Type": "Season",
+      "ParentBackdropItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentBackdropImageTags": [
+        "0fa1a2a6836d16e9ac082436d529829e"
+      ],
+      "UserData": {
+        "PlayedPercentage": 33.33333333333333,
+        "UnplayedItemCount": 2,
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "30390605-0c0b-b52f-46ff-a3d5a2382ed3001",
+        "ItemId": "b125538ac3ad8f364cfb6fef5369fed2"
+      },
+      "SeriesName": "Lantern Street",
+      "SeriesId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "PrimaryImageAspectRatio": 0.6666666666666666,
+      "SeriesPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "ImageTags": {},
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Backdrop": {
+          "0fa1a2a6836d16e9ac082436d529829e": "WsM4vj1PI]$jNexGxGR.oLj[WXoLWXa}j[a|fQjt$%S5a#j[a#j["
+        },
+        "Primary": {
+          "fbac6553457b8c2d679f861e3c37eee9": "dpK]k|I]WXs.0:a$oLWXj]oLazjuoMWXj@fQR.j[a|az"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Unknown"
+    },
+    {
+      "Name": "Season 2",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "f348f6f3116f716f8044acde8289d822",
+      "ChannelId": null,
+      "IndexNumber": 2,
+      "IsFolder": true,
+      "Type": "Season",
+      "ParentBackdropItemId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "ParentBackdropImageTags": [
+        "0fa1a2a6836d16e9ac082436d529829e"
+      ],
+      "UserData": {
+        "PlayedPercentage": 0,
+        "UnplayedItemCount": 2,
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "30390605-0c0b-b52f-46ff-a3d5a2382ed3002",
+        "ItemId": "f348f6f3116f716f8044acde8289d822"
+      },
+      "SeriesName": "Lantern Street",
+      "SeriesId": "303906050c0bb52f46ffa3d5a2382ed3",
+      "PrimaryImageAspectRatio": 0.6666666666666666,
+      "SeriesPrimaryImageTag": "fbac6553457b8c2d679f861e3c37eee9",
+      "ImageTags": {},
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Backdrop": {
+          "0fa1a2a6836d16e9ac082436d529829e": "WsM4vj1PI]$jNexGxGR.oLj[WXoLWXa}j[a|fQjt$%S5a#j[a#j["
+        },
+        "Primary": {
+          "fbac6553457b8c2d679f861e3c37eee9": "dpK]k|I]WXs.0:a$oLWXj]oLazjuoMWXj@fQR.j[a|az"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Unknown"
+    }
+  ],
+  "TotalRecordCount": 2,
+  "StartIndex": 0
+}

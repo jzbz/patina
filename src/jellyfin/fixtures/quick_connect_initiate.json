@@ -1,0 +1,10 @@
+{
+  "Authenticated": false,
+  "Secret": "SECRET",
+  "Code": "961311",
+  "DeviceId": "fixture-device",
+  "DeviceName": "Patina on Linux",
+  "AppName": "Patina",
+  "AppVersion": "0.1.0",
+  "DateAdded": "2026-10-31T03:59:05.1631252Z"
+}

@@ -1,0 +1,54 @@
+{
+  "Items": [
+    {
+      "Name": "Low Tide",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "1636303b56ebc4e255c11a0280cf350c",
+      "PremiereDate": "2022-06-03T00:00:00.0000000Z",
+      "ChannelId": null,
+      "Overview": "Four short tones, one for each hour of the tide going out.",
+      "RunTimeTicks": 480000000,
+      "ProductionYear": 2022,
+      "IsFolder": true,
+      "Type": "MusicAlbum",
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Mira Vale-Low Tide",
+        "ItemId": "1636303b56ebc4e255c11a0280cf350c"
+      },
+      "PrimaryImageAspectRatio": 1,
+      "Artists": [
+        "Mira Vale"
+      ],
+      "ArtistItems": [
+        {
+          "Name": "Mira Vale",
+          "Id": "87a731ca1a13a2dd7619c1bd04321bcd"
+        }
+      ],
+      "AlbumArtist": "Mira Vale",
+      "AlbumArtists": [
+        {
+          "Name": "Mira Vale",
+          "Id": "87a731ca1a13a2dd7619c1bd04321bcd"
+        }
+      ],
+      "ImageTags": {
+        "Primary": "45b472a23de17c7247877043d753924a"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "45b472a23de17c7247877043d753924a": "eVEYuhD6MdkDVtMeMej?oyjsV@j?ozj[aeo#aefPafayaeayj[fjfk"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Unknown"
+    }
+  ],
+  "TotalRecordCount": 1,
+  "StartIndex": 0
+}

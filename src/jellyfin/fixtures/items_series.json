@@ -1,0 +1,47 @@
+{
+  "Items": [
+    {
+      "Name": "Lantern Street",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "303906050c0bb52f46ffa3d5a2382ed3",
+      "PremiereDate": "2020-01-10T00:00:00.0000000Z",
+      "OfficialRating": "TV-PG",
+      "ChannelId": null,
+      "Overview": "The shopkeepers of one narrow street keep their lights on through a long winter.",
+      "ProductionYear": 2020,
+      "IsFolder": true,
+      "Type": "Series",
+      "UserData": {
+        "PlayedPercentage": 20,
+        "UnplayedItemCount": 4,
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "30390605-0c0b-b52f-46ff-a3d5a2382ed3",
+        "ItemId": "303906050c0bb52f46ffa3d5a2382ed3"
+      },
+      "Status": "Ended",
+      "AirDays": [],
+      "PrimaryImageAspectRatio": 0.6666666666666666,
+      "ImageTags": {
+        "Primary": "fbac6553457b8c2d679f861e3c37eee9"
+      },
+      "BackdropImageTags": [
+        "0fa1a2a6836d16e9ac082436d529829e"
+      ],
+      "ImageBlurHashes": {
+        "Backdrop": {
+          "0fa1a2a6836d16e9ac082436d529829e": "WsM4vj1PI]$jNexGxGR.oLj[WXoLWXa}j[a|fQjt$%S5a#j[a#j["
+        },
+        "Primary": {
+          "fbac6553457b8c2d679f861e3c37eee9": "dpK]k|I]WXs.0:a$oLWXj]oLazjuoMWXj@fQR.j[a|az"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Unknown"
+    }
+  ],
+  "TotalRecordCount": 1,
+  "StartIndex": 0
+}

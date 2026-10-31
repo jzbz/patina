@@ -71,6 +71,8 @@ pub struct App {
     /// when a failure to draw makes Patina start again in software; None
     /// once the first window has shown.
     accepted: RefCell<Option<Vec<Request>>>,
+    /// The Jellyfin servers signed in, which every window's library shows.
+    jellyfin: Rc<crate::jellyfin::session::Session>,
 }
 
 impl App {
@@ -78,6 +80,9 @@ impl App {
         let prefs = settings::load_preferences(&paths.settings_file());
         let history: History = settings::load_json(&paths.history_file());
         let conf = binding_conf(&paths, &prefs.key_bindings);
+        let jellyfin =
+            crate::jellyfin::session::Session::new(&paths.data, paths.jellyfin_images_dir());
+        jellyfin.set_image_limit(prefs.jellyfin_image_cache_mb.saturating_mul(1 << 20));
         let app = Rc::new(Self {
             paths,
             prefs: RefCell::new(Rc::new(prefs)),
@@ -108,8 +113,12 @@ impl App {
             quitting: Cell::new(false),
             last_open: RefCell::new(None),
             accepted: RefCell::new(Some(Vec::new())),
+            jellyfin,
         });
         CURRENT.with(|current| *current.borrow_mut() = Rc::downgrade(&app));
+        // The saved sign-ins come back from the keyring while the first
+        // window opens.
+        app.jellyfin.start();
         app
     }
 
@@ -178,10 +187,44 @@ impl App {
         if prefs.recent_limit != old.recent_limit {
             self.history_changed();
         }
+        if prefs.jellyfin_image_cache_mb != old.jellyfin_image_cache_mb {
+            self.jellyfin
+                .set_image_limit(prefs.jellyfin_image_cache_mb.saturating_mul(1 << 20));
+        }
     }
 
     pub fn paths(&self) -> &Paths {
         &self.paths
+    }
+
+    pub fn jellyfin(&self) -> Rc<crate::jellyfin::session::Session> {
+        self.jellyfin.clone()
+    }
+
+    /// A Jellyfin entry's title: as the library or the load hook knows it,
+    /// or as the history kept it from the last time it played.
+    pub fn entry_title(&self, entry: &str) -> Option<String> {
+        self.jellyfin.entry_title(entry).or_else(|| {
+            self.history
+                .borrow()
+                .entries
+                .iter()
+                .find(|history| history.path == entry)
+                .map(|history| history.title.clone())
+                .filter(|title| !title.is_empty() && title != entry)
+        })
+    }
+
+    /// Where a file is, as lists show it under its name: its folder, a
+    /// stream's host, or a Jellyfin item's server by name.
+    pub fn source_place(&self, path: &str) -> String {
+        match crate::jellyfin::session::parse_entry(path) {
+            Some((server, _)) => self
+                .jellyfin
+                .server(server)
+                .map_or_else(|| "Jellyfin".to_owned(), |server| server.name),
+            None => crate::util::parent_directory(path),
+        }
     }
 
     pub fn bindings(&self) -> Rc<Bindings> {
@@ -618,23 +661,27 @@ impl App {
         if let Some(downloads) = self.existing_downloads() {
             downloads.stop_all();
         }
-        // OpenSubtitles asks clients to sign out; not worth more than a
-        // moment of quitting.
+        // OpenSubtitles asks clients to sign out, and the Jellyfin servers
+        // hear where playback stopped as the windows close; neither is worth
+        // more than a moment of quitting, which they share.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let (signed_out, done) = std::sync::mpsc::channel();
-        if std::thread::Builder::new()
+        let signing_out = std::thread::Builder::new()
             .name("opensubtitles".into())
             .spawn(move || {
                 crate::opensubtitles::sign_out_shared();
                 let _ = signed_out.send(());
             })
-            .is_ok()
-        {
-            let _ = done.recv_timeout(std::time::Duration::from_secs(2));
-        }
+            .is_ok();
         let windows = self.windows.borrow().clone();
         for window in windows {
             window.close();
         }
+        if signing_out {
+            let _ =
+                done.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
+        }
+        self.jellyfin.flush_reports(deadline);
         self.stop_serving();
         let _ = slint::quit_event_loop();
     }
@@ -1069,9 +1116,13 @@ impl App {
                 .iter()
                 .find(|entry| &entry.path == source)
                 .cloned();
+            let title = self
+                .jellyfin
+                .entry_title(source)
+                .unwrap_or_else(|| file_name(source));
             history.record(previous.unwrap_or_else(|| HistoryEntry {
                 path: source.clone(),
-                title: file_name(source),
+                title,
                 played_at: settings::now(),
                 duration: 0.0,
                 position: 0.0,

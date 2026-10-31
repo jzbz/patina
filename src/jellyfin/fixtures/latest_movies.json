@@ -1,0 +1,117 @@
+[
+  {
+    "Name": "The Long Field",
+    "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+    "Id": "853911ffcbd536db7ac23dc25f283bde",
+    "Container": "mkv",
+    "PremiereDate": "2017-05-19T00:00:00.0000000Z",
+    "OfficialRating": "G",
+    "ChannelId": null,
+    "Overview": "Two farmers disagree about where one field ends and the next begins.",
+    "RunTimeTicks": 200210000,
+    "ProductionYear": 2017,
+    "IsFolder": false,
+    "Type": "Movie",
+    "UserData": {
+      "PlaybackPositionTicks": 0,
+      "PlayCount": 0,
+      "IsFavorite": false,
+      "Played": false,
+      "Key": "853911ff-cbd5-36db-7ac2-3dc25f283bde",
+      "ItemId": "853911ffcbd536db7ac23dc25f283bde"
+    },
+    "PrimaryImageAspectRatio": 0.6666666666666666,
+    "VideoType": "VideoFile",
+    "ImageTags": {
+      "Primary": "098f9bb3a3bd9a46403c415794906f6d"
+    },
+    "BackdropImageTags": [],
+    "ImageBlurHashes": {
+      "Primary": {
+        "098f9bb3a3bd9a46403c415794906f6d": "dzM7#rt7fQt701WBfQWBoMfQfQfQkBfQfQfQRkazfQay"
+      }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Video"
+  },
+  {
+    "Name": "Paper Harbor",
+    "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+    "Id": "c45f7bfd1380494ec3fc6830fae86c2f",
+    "HasSubtitles": true,
+    "Container": "mov,mp4,m4a,3gp,3g2,mj2",
+    "PremiereDate": "2019-08-30T00:00:00.0000000Z",
+    "OfficialRating": "PG",
+    "ChannelId": null,
+    "Overview": "A town builds its fishing fleet out of paper and waits for a dry summer.",
+    "RunTimeTicks": 240000000,
+    "ProductionYear": 2019,
+    "IsFolder": false,
+    "Type": "Movie",
+    "UserData": {
+      "PlayedPercentage": 50,
+      "PlaybackPositionTicks": 120000000,
+      "PlayCount": 1,
+      "IsFavorite": false,
+      "LastPlayedDate": "2026-10-31T03:58:36.4738006Z",
+      "Played": false,
+      "Key": "c45f7bfd-1380-494e-c3fc-6830fae86c2f",
+      "ItemId": "c45f7bfd1380494ec3fc6830fae86c2f"
+    },
+    "PrimaryImageAspectRatio": 0.6666666666666666,
+    "VideoType": "VideoFile",
+    "ImageTags": {
+      "Primary": "9033af39ca09ce3a46c6ccf59b9f1fcd"
+    },
+    "BackdropImageTags": [],
+    "ImageBlurHashes": {
+      "Primary": {
+        "9033af39ca09ce3a46c6ccf59b9f1fcd": "dcL;cRAvNetQ1iNesnWXNew^oKWXoya}WXj@S4f7jtjt"
+      }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Video"
+  },
+  {
+    "Name": "Night Signal",
+    "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+    "Id": "cb1430d9303e472cf6565e0133c51ee4",
+    "HasSubtitles": true,
+    "Container": "mkv",
+    "PremiereDate": "2021-03-12T00:00:00.0000000Z",
+    "OfficialRating": "PG-13",
+    "ChannelId": null,
+    "Overview": "A radio operator on a remote coast hears a signal that repeats every thirty seconds.",
+    "CommunityRating": 7.1,
+    "RunTimeTicks": 300210000,
+    "ProductionYear": 2021,
+    "IsFolder": false,
+    "Type": "Movie",
+    "UserData": {
+      "PlaybackPositionTicks": 0,
+      "PlayCount": 0,
+      "IsFavorite": false,
+      "Played": false,
+      "Key": "cb1430d9-303e-472c-f656-5e0133c51ee4",
+      "ItemId": "cb1430d9303e472cf6565e0133c51ee4"
+    },
+    "PrimaryImageAspectRatio": 0.6666666666666666,
+    "VideoType": "VideoFile",
+    "ImageTags": {
+      "Primary": "86fab463637e3f7e4c9f06f7393c2db0"
+    },
+    "BackdropImageTags": [
+      "d287a85fe2290d9f6f5117cff964287e"
+    ],
+    "ImageBlurHashes": {
+      "Backdrop": {
+        "d287a85fe2290d9f6f5117cff964287e": "WOP72-E24nWrD%%M.89ZD%M{M{ayM{M{Rjayoft6~qRkRjoff6s:"
+      },
+      "Primary": {
+        "86fab463637e3f7e4c9f06f7393c2db0": "dDSySi^MNK}:$$I@NKR-EjI@NKR-$$I@NdS4EjI@NdR-"
+      }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Video"
+  }
+]

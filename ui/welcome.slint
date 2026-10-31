@@ -2,6 +2,7 @@ import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Media, Actions, Platform } from "globals.slint";
 import { TextButton } from "widgets.slint";
+import { Library } from "library-model.slint";
 
 component WelcomeAction inherits Rectangle {
     in property <image> icon;
@@ -119,6 +120,16 @@ export component WelcomeView inherits Rectangle {
                 detail: "Streams and online video";
                 clicked => {
                     Actions.patina("open-url");
+                }
+            }
+            // Once a server is signed in the library takes this screen's
+            // place, and adds others from its account menu.
+            if !Library.signed-in: WelcomeAction {
+                icon: @image-url("icons/server.svg");
+                title: "Jellyfin…";
+                detail: "Browse a Jellyfin server";
+                clicked => {
+                    Actions.patina("jellyfin-sign-in");
                 }
             }
         }

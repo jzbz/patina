@@ -1,0 +1,1011 @@
+// The Jellyfin library, drawn in an idle player window in place of the
+// welcome screen while a server is signed in (docs/jellyfin.md). Rust's
+// library controller (src/jellyfin/library.rs) fills the Library global
+// (library-model.slint) and answers its callbacks; these files only draw.
+//
+// The view has a bar under Patina's title bar (Back, the server's
+// libraries, the account) and below it the page Library.page names: Home,
+// a library's grid, an item, Search, This Computer (the welcome screen) or
+// signing in.
+
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { IconButton, TextButton, Spinner } from "widgets.slint";
+import { WelcomeView } from "welcome.slint";
+import { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn } from "library-model.slint";
+import { LibraryUi, Avatar, Card, CardRow, ChoiceTabs, MenuButton, Chip, Notice, KeyFocus } from "library-parts.slint";
+import { DetailPage } from "library-detail.slint";
+import { SignInPage } from "library-sign-in.slint";
+
+export { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn }
+
+// An entry in the bar: Home, a library, Search, This Computer. A long
+// library name is cut short, the whole of it going to screen readers.
+component NavEntry inherits Rectangle {
+    in property <LibraryNav> entry;
+    in property <int> index;
+    in property <int> count;
+    property <bool> current: root.entry.id == Library.nav-current;
+
+    // As wide as the title in bold, so that the entries beside don't move
+    // when this one becomes the current one.
+    width: min(bold.preferred-width, 180px) + 22px;
+    height: 28px;
+    border-radius: Theme.control-radius;
+    background: root.current ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+    accessible-role: tab;
+    accessible-label: root.entry.title;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.current;
+    accessible-item-index: root.index;
+    accessible-item-count: root.count;
+    accessible-action-default => {
+        LibraryUi.navigate(root.entry.id);
+    }
+
+    bold := Text {
+        visible: false;
+        text: root.entry.title;
+        font-size: Theme.font-normal;
+        font-weight: 600;
+    }
+    Text {
+        x: 11px;
+        width: parent.width - 22px;
+        text: root.entry.title;
+        color: root.current || touch.has-hover ? Theme.text : Theme.secondary-text;
+        font-size: Theme.font-normal;
+        font-weight: root.current ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    KeyFocus {
+        reveals: false;
+        activated => {
+            LibraryUi.navigate(root.entry.id);
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            LibraryUi.navigate(root.entry.id);
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+    }
+}
+
+// The account at the bar's right: who is signed in where, opening a menu
+// with the other servers, Add Server and Sign Out.
+component AccountButton inherits Rectangle {
+    // Just the portrait, when the bar is short of room.
+    in property <bool> compact;
+
+    height: 32px;
+    min-width: layout.preferred-width;
+    max-width: layout.preferred-width;
+    border-radius: Theme.control-radius;
+    background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: Library.user-name + " on " + Library.server-name;
+    accessible-action-default => {
+        root.open();
+    }
+
+    function open() {
+        // Estimated so that the menu ends under the button rather than
+        // past the window's edge.
+        menu.show({ x: min(0px, root.width - 200px), y: root.height + 4px });
+    }
+
+    layout := HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 8px;
+        spacing: 8px;
+        Avatar {
+            y: (parent.height - self.height) / 2;
+            size: 24px;
+            source: Library.user-image;
+        }
+        if !root.compact: VerticalLayout {
+            alignment: center;
+            Text {
+                max-width: 180px;
+                text: Library.user-name;
+                color: Theme.text;
+                font-size: Theme.font-small;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                max-width: 180px;
+                text: Library.server-name;
+                color: Theme.secondary-text;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+        }
+        Image {
+            y: (parent.height - self.height) / 2;
+            source: @image-url("icons/chevron-down.svg");
+            width: 12px;
+            height: 12px;
+            colorize: Theme.secondary-text;
+        }
+    }
+
+    KeyFocus {
+        reveals: false;
+        activated => {
+            root.open();
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.open();
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            for server in Library.servers: MenuItem {
+                title: server.title;
+                activated => {
+                    Library.switch-server(server.id);
+                }
+            }
+            if Library.servers.length > 0: MenuSeparator { }
+            MenuItem {
+                title: "Add Server…";
+                activated => {
+                    Library.add-server();
+                }
+            }
+            MenuItem {
+                title: "Sign Out";
+                activated => {
+                    Library.sign-out();
+                }
+            }
+        }
+    }
+}
+
+// Back, the entries, and the account. Home and the libraries scroll
+// sideways when there are more than fit, with the wheel too; Search and
+// This Computer stay in sight at the end.
+component LibraryBar inherits HorizontalLayout {
+    property <int> count: Library.nav.length + Library.nav-end.length;
+    height: 32px;
+    padding-left: 16px;
+    padding-right: 16px;
+    spacing: 8px;
+
+    IconButton {
+        y: 2px;
+        icon: @image-url("icons/chevron-left.svg");
+        icon-size: 18px;
+        hover-background: true;
+        enabled: Library.can-go-back;
+        tooltip: "Back";
+        clicked => {
+            Library.back();
+        }
+    }
+
+    // A wheel turned up or down over the entries scrolls them sideways,
+    // which is the only way they go.
+    TouchArea {
+        horizontal-stretch: 1;
+        max-width: entries.preferred-width;
+        accessible-role: tab-list;
+        accessible-label: "Libraries";
+        scroll-event(event) => {
+            if event.delta-y != 0 && event.delta-x == 0 && nav.content-width > nav.width {
+                nav.content-x = clamp(nav.content-x + event.delta-y, nav.width - nav.content-width, 0px);
+                return accept;
+            }
+            reject
+        }
+
+        nav := Flickable {
+            width: parent.width;
+            height: parent.height;
+            content-width: entries.preferred-width;
+            content-height: self.height;
+            mouse-drag-pan-enabled: false;
+
+            entries := HorizontalLayout {
+                width: self.preferred-width;
+                height: nav.height;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                spacing: 2px;
+                for entry[index] in Library.nav: NavEntry {
+                    entry: entry;
+                    index: index;
+                    count: root.count;
+                }
+            }
+
+            // Fades the entries out at either end while more of them are
+            // past it, rather than cutting one in half. They stay at the
+            // view's edges as the entries scroll under them.
+            if nav.content-x < -1px: Rectangle {
+                x: -nav.content-x;
+                width: 40px;
+                height: nav.height;
+                background: @linear-gradient(90deg, #141416 15%, #14141600 100%);
+            }
+            if nav.content-x > nav.width - nav.content-width + 1px: Rectangle {
+                x: nav.width - self.width - nav.content-x;
+                width: 40px;
+                height: nav.height;
+                background: @linear-gradient(90deg, #14141600 0%, #141416 85%);
+            }
+        }
+    }
+
+    ends := HorizontalLayout {
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 2px;
+        for entry[index] in Library.nav-end: NavEntry {
+            entry: entry;
+            index: Library.nav.length + index;
+            count: root.count;
+        }
+    }
+
+    Rectangle {
+        horizontal-stretch: 0.001;
+    }
+
+    if Library.signed-in: AccountButton {
+        compact: entries.preferred-width + ends.preferred-width + 320px > root.width;
+    }
+}
+
+// The list sits in a layout, as on the other pages: filling a plain
+// Rectangle, it took Slint more passes to set up than it makes at once,
+// which it logs.
+component HomePage inherits VerticalLayout {
+    // The load (Library.loads) the list has gone where scroll-offset
+    // says for, and whether it is there now: once it has stayed there a
+    // moment, or the user scrolls, it records where it is.
+    property <int> settled: -1;
+    property <bool> in-place;
+    settle-timer := Timer {
+        interval: 250ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.in-place {
+                root.settled = Library.loads;
+            }
+        }
+    }
+
+    Rectangle {
+        if Library.rows.length > 0: ListView {
+            // Until it has gone where scroll-offset says for this load (see
+            // Library.loads and the page's settled), it is placed as its
+            // content grows, and doesn't record where it is.
+            property <int> loads: Library.loads;
+            property <bool> busy: Library.loading;
+            property <int> reveal: LibraryUi.focus-serial;
+            function restore() {
+                self.content-y = LibraryUi.place(self.content-height, self.visible-height);
+                self.check-place();
+            }
+            // Whether the list is where it should be with the page loaded;
+            // if it stays there a moment it has settled (the list moves
+            // itself once more as it makes its rows).
+            function check-place() {
+                root.in-place = !Library.loading && LibraryUi.reached(self.content-y, self.content-height, self.visible-height);
+                if root.in-place {
+                    settle-timer.restart();
+                    settle-timer.running = true;
+                }
+            }
+            init => {
+                self.restore();
+            }
+            changed loads => {
+                self.restore();
+            }
+            changed busy => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+            }
+            changed content-height => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+            }
+            changed visible-height => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+            }
+            changed content-y => {
+                if root.settled != Library.loads {
+                    if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
+                        self.check-place();
+                    } else {
+                        // The list moved itself (its rows were replaced).
+                        self.restore();
+                    }
+                } else if self.content-height > 0 {
+                    Library.scroll-offset = -self.content-y;
+                }
+            }
+            scrolled => {
+                root.settled = Library.loads;
+            }
+            // Scrolls what the keyboard moved to into sight.
+            changed reveal => {
+                let top = LibraryUi.focus-top - self.absolute-position.y;
+                let bottom = LibraryUi.focus-bottom - self.absolute-position.y;
+                root.settled = Library.loads;
+                if top < 0 {
+                    self.content-y = min(0px, self.content-y - top + 8px);
+                } else if bottom > self.visible-height {
+                    self.content-y = max(min(0px, self.visible-height - self.content-height), self.content-y - (bottom - self.visible-height) - 8px);
+                }
+            }
+            for row in Library.rows: VerticalLayout {
+                padding-bottom: 22px;
+                CardRow {
+                    content: row;
+                }
+            }
+        }
+        if Library.rows.length == 0 && !Library.loading: Notice {
+            icon: @image-url("icons/folder.svg");
+            text: Library.nav.length <= 1 ? "This account has no libraries on " + Library.server-name + "." : "Nothing here yet. Once the server's libraries have something in them, it shows up here.";
+        }
+    }
+}
+
+// The grid's sort order and direction, in one menu.
+component SortMenu inherits Rectangle {
+    height: 28px;
+    min-width: button.min-width;
+    preferred-width: button.preferred-width;
+
+    button := MenuButton {
+        width: parent.width;
+        reveals: false;
+        label: "Sort";
+        icon: Library.descending ? @image-url("icons/arrow-down-wide-narrow.svg") : @image-url("icons/arrow-up-narrow-wide.svg");
+        clicked => {
+            menu.show({ x: 0, y: root.height + 4px });
+        }
+
+        // The chosen order's title (see ChoiceMenu).
+        for choice in Library.sorts: HorizontalLayout {
+            if choice.id == Library.sort: Text {
+                max-width: 220px;
+                text: choice.title;
+                color: Theme.text;
+                font-size: Theme.font-normal;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            for choice in Library.sorts: MenuItem {
+                title: choice.title;
+                checked: choice.id == Library.sort;
+                activated => {
+                    Library.sort-by(choice.id, Library.descending);
+                    Library.scroll-offset = 0;
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Ascending";
+                checked: !Library.descending;
+                activated => {
+                    Library.sort-by(Library.sort, false);
+                    Library.scroll-offset = 0;
+                }
+            }
+            MenuItem {
+                title: "Descending";
+                checked: Library.descending;
+                activated => {
+                    Library.sort-by(Library.sort, true);
+                    Library.scroll-offset = 0;
+                }
+            }
+        }
+    }
+}
+
+// A library: its title, tabs, sort order and filters, and its items as a
+// grid. The grid is a ListView of lines, so only the lines in sight exist;
+// the controller splits the items into lines of as many cards as fit
+// (columns) and is asked for more as the end comes into sight.
+component GridPage inherits VerticalLayout {
+    property <float> aspect: Library.rows.length > 0 ? LibraryUi.row-aspect(Library.rows[0].cards) : 2 / 3;
+    property <length> available: root.width - 2 * LibraryUi.inset;
+    // Rounded, so that cards stay within about an eighth of their size.
+    property <int> columns: max(1, round((root.available + LibraryUi.card-gap) / (LibraryUi.card-width(root.aspect) + LibraryUi.card-gap)));
+    property <length> card-width: (root.available - (root.columns - 1) * LibraryUi.card-gap) / root.columns;
+    property <length> line-height: root.card-width / root.aspect + LibraryUi.caption-height + 18px;
+    property <bool> filtered: Library.unplayed-only || Library.favorites-only;
+    // Sorting and filtering an empty library would change nothing.
+    property <bool> has-controls: Library.rows.length > 0 || Library.loading || root.filtered;
+    // The list's end is within a screen of sight while there is more.
+    property <bool> near-end;
+    // The load (Library.loads) the list has gone where scroll-offset
+    // says for, and whether it is there now: once it has stayed there a
+    // moment, or the user scrolls, it records where it is.
+    property <int> settled: -1;
+    property <bool> in-place;
+    settle-timer := Timer {
+        interval: 250ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.in-place {
+                root.settled = Library.loads;
+            }
+        }
+    }
+
+    spacing: 10px;
+
+    init => {
+        if root.width > 0 {
+            Library.columns(root.columns);
+        }
+    }
+    changed columns => {
+        if root.width > 0 {
+            Library.columns(root.columns);
+        }
+    }
+    // Asks again now and then while the end is in sight: the controller
+    // ignores the asks while a page is on its way, and when that page
+    // lands with the end still in sight nothing may scroll to say so.
+    Timer {
+        interval: 300ms;
+        running: Library.more && root.near-end;
+        triggered => {
+            Library.load-more();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: LibraryUi.inset;
+        padding-right: LibraryUi.inset;
+        spacing: 16px;
+        Text {
+            text: Library.title;
+            color: Theme.text;
+            font-size: 20px;
+            font-weight: 700;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if Library.tabs.length > 1: VerticalLayout {
+            alignment: center;
+            ChoiceTabs {
+                reveals: false;
+                choices: Library.tabs;
+                selected: Library.tab;
+                activated(id) => {
+                    Library.select-tab(id);
+                    Library.scroll-offset = 0;
+                }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+    }
+
+    if root.has-controls: HorizontalLayout {
+        padding-left: LibraryUi.inset;
+        padding-right: LibraryUi.inset;
+        spacing: 8px;
+        if Library.sorts.length > 0: SortMenu { }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+        if Library.unplayed-filter: Chip {
+            reveals: false;
+            text: "Unplayed";
+            checked: Library.unplayed-only;
+            toggled(value) => {
+                Library.filter(value, Library.favorites-only);
+                Library.scroll-offset = 0;
+            }
+        }
+        Chip {
+            reveals: false;
+            text: "Favourites";
+            checked: Library.favorites-only;
+            toggled(value) => {
+                Library.filter(Library.unplayed-only, value);
+                Library.scroll-offset = 0;
+            }
+        }
+    }
+
+    Rectangle {
+        vertical-stretch: 1;
+
+        // Made again for each load (the lines go when a page loads), as
+        // the other pages' lists are: a ListView hidden while its model
+        // was emptied and filled again kept its old layout, and put the
+        // new lines elsewhere than where it was told.
+        if Library.rows.length > 0: ListView {
+            // Until it has gone where scroll-offset says for this load (see
+            // Library.loads and the page's settled), it is placed as its
+            // content grows, and doesn't record where it is.
+            property <length> line-height: root.line-height;
+            property <int> loads: Library.loads;
+            property <bool> busy: Library.loading;
+            property <int> reveal: LibraryUi.focus-serial;
+            function restore() {
+                self.content-y = LibraryUi.place(self.content-height, self.visible-height);
+                self.check-place();
+            }
+            // Whether the list is where it should be with the page loaded;
+            // if it stays there a moment it has settled (the list moves
+            // itself once more as it makes its rows).
+            function check-place() {
+                root.in-place = !Library.loading && LibraryUi.reached(self.content-y, self.content-height, self.visible-height);
+                if root.in-place {
+                    settle-timer.restart();
+                    settle-timer.running = true;
+                }
+            }
+            init => {
+                self.restore();
+                self.report-lines();
+            }
+            changed loads => {
+                self.restore();
+            }
+            changed busy => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+            }
+            changed content-height => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+                self.check-more();
+                self.report-lines();
+            }
+            changed visible-height => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+                self.check-more();
+                self.report-lines();
+            }
+            changed content-y => {
+                if root.settled != Library.loads {
+                    if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
+                        self.check-place();
+                    } else {
+                        // The list moved itself (its rows were replaced).
+                        self.restore();
+                    }
+                } else if self.content-height > 0 {
+                    Library.scroll-offset = -self.content-y;
+                }
+                self.check-more();
+                self.report-lines();
+            }
+            scrolled => {
+                root.settled = Library.loads;
+            }
+            // Scrolls what the keyboard moved to into sight.
+            changed reveal => {
+                let top = LibraryUi.focus-top - self.absolute-position.y;
+                let bottom = LibraryUi.focus-bottom - self.absolute-position.y;
+                root.settled = Library.loads;
+                if top < 0 {
+                    self.content-y = min(0px, self.content-y - top + 8px);
+                } else if bottom > self.visible-height {
+                    self.content-y = max(min(0px, self.visible-height - self.content-height), self.content-y - (bottom - self.visible-height) - 8px);
+                }
+            }
+            changed line-height => {
+                self.report-lines();
+            }
+
+            // Asks for the next page once the end is within a screen of
+            // sight. The controller ignores the asks while a page is on its
+            // way.
+            function check-more() {
+                root.near-end = Library.more && self.content-height > 0 && self.content-height + self.content-y < self.visible-height * 2;
+                if root.near-end {
+                    Library.load-more();
+                }
+            }
+
+            // Tells the controller which lines are in sight, so that those
+            // far from them give up their images.
+            function report-lines() {
+                if root.line-height > 0 {
+                    Library.lines-shown(floor(-self.content-y / root.line-height), floor((-self.content-y + self.visible-height) / root.line-height));
+                }
+            }
+
+
+            for line[index] in Library.rows: Rectangle {
+                height: root.line-height + (index == Library.rows.length - 1 ? 12px : 0px);
+                for card[index] in line.cards: Card {
+                    x: LibraryUi.inset + index * (root.card-width + LibraryUi.card-gap);
+                    y: 4px;
+                    width: root.card-width;
+                    card: card;
+                    slot-aspect: root.aspect;
+                }
+            }
+        }
+
+        if Library.rows.length == 0 && !Library.loading: Notice {
+            icon: root.filtered ? @image-url("icons/search.svg") : LibraryUi.tab-icon(Library.tab);
+            text: root.filtered ? "Nothing here matches the filters." : "This library is empty.";
+            if root.filtered: HorizontalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Clear Filters";
+                    clicked => {
+                        Library.filter(false, false);
+                        Library.scroll-offset = 0;
+                    }
+                }
+            }
+        }
+    }
+}
+
+component SearchPage inherits VerticalLayout {
+    // The load (Library.loads) the list has gone where scroll-offset
+    // says for, and whether it is there now: once it has stayed there a
+    // moment, or the user scrolls, it records where it is.
+    property <int> settled: -1;
+    property <bool> in-place;
+    settle-timer := Timer {
+        interval: 250ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.in-place {
+                root.settled = Library.loads;
+            }
+        }
+    }
+    spacing: 14px;
+
+    // Back from an item restores the query: typing goes on at its end.
+    init => {
+        field.focus();
+        field.set-selection-offsets(1000000, 1000000);
+    }
+
+    HorizontalLayout {
+        padding-left: LibraryUi.inset;
+        padding-right: LibraryUi.inset;
+        field := LineEdit {
+            max-width: 560px;
+            text <=> Library.search-text;
+            placeholder-text: "Search movies, shows, episodes and music";
+            // Escape, or Backspace with nothing left to delete, goes back.
+            key-pressed(event) => {
+                if Library.can-go-back && (event.text == Key.Escape || (event.text == Key.Backspace && self.text == "")) {
+                    Library.back();
+                    return accept;
+                }
+                reject
+            }
+            // Another search's results start at the top.
+            edited(text) => {
+                Library.search(text);
+                Library.scroll-offset = 0;
+            }
+            accepted(text) => {
+                Library.search(text);
+                Library.scroll-offset = 0;
+            }
+        }
+    }
+
+    Rectangle {
+        vertical-stretch: 1;
+        if Library.rows.length > 0: ListView {
+            // Until it has gone where scroll-offset says for this load (see
+            // Library.loads and the page's settled), it is placed as its
+            // content grows, and doesn't record where it is.
+            property <int> loads: Library.loads;
+            property <bool> busy: Library.loading;
+            property <int> reveal: LibraryUi.focus-serial;
+            function restore() {
+                self.content-y = LibraryUi.place(self.content-height, self.visible-height);
+                self.check-place();
+            }
+            // Whether the list is where it should be with the page loaded;
+            // if it stays there a moment it has settled (the list moves
+            // itself once more as it makes its rows).
+            function check-place() {
+                root.in-place = !Library.loading && LibraryUi.reached(self.content-y, self.content-height, self.visible-height);
+                if root.in-place {
+                    settle-timer.restart();
+                    settle-timer.running = true;
+                }
+            }
+            init => {
+                self.restore();
+            }
+            changed loads => {
+                self.restore();
+            }
+            changed busy => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+            }
+            changed content-height => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+            }
+            changed visible-height => {
+                if root.settled != Library.loads {
+                    self.restore();
+                }
+            }
+            changed content-y => {
+                if root.settled != Library.loads {
+                    if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
+                        self.check-place();
+                    } else {
+                        // The list moved itself (its rows were replaced).
+                        self.restore();
+                    }
+                } else if self.content-height > 0 {
+                    Library.scroll-offset = -self.content-y;
+                }
+            }
+            scrolled => {
+                root.settled = Library.loads;
+            }
+            // Scrolls what the keyboard moved to into sight.
+            changed reveal => {
+                let top = LibraryUi.focus-top - self.absolute-position.y;
+                let bottom = LibraryUi.focus-bottom - self.absolute-position.y;
+                root.settled = Library.loads;
+                if top < 0 {
+                    self.content-y = min(0px, self.content-y - top + 8px);
+                } else if bottom > self.visible-height {
+                    self.content-y = max(min(0px, self.visible-height - self.content-height), self.content-y - (bottom - self.visible-height) - 8px);
+                }
+            }
+            for row in Library.rows: VerticalLayout {
+                padding-bottom: 22px;
+                CardRow {
+                    content: row;
+                }
+            }
+        }
+        if Library.rows.length == 0 && !Library.loading: Notice {
+            icon: @image-url("icons/search.svg");
+            text: Library.search-text == "" ? "Type to search " + Library.server-name + "." : "Nothing matches “" + Library.search-text + "”.";
+        }
+    }
+}
+
+// What a file dragged over the window shows, as the welcome screen does.
+component DropOverlay inherits Rectangle {
+    background: #000000a0;
+    Rectangle {
+        x: 16px;
+        y: 44px;
+        width: parent.width - 32px;
+        height: parent.height - 60px;
+        border-radius: 14px;
+        border-width: 2px;
+        border-color: Theme.playing;
+        VerticalLayout {
+            alignment: center;
+            spacing: 10px;
+            Image {
+                source: @image-url("icons/file-down.svg");
+                height: 40px;
+                colorize: Theme.playing;
+            }
+            Text {
+                text: "Drop to play";
+                color: Theme.text;
+                font-size: 18px;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+
+export component LibraryView inherits Rectangle {
+    in property <bool> drop-active;
+    callback clear-recent;
+    // Where the bar starts: under Patina's title bar, which is drawn over
+    // the window's top.
+    property <length> bar-top: Theme.titlebar-height + 6px;
+    property <length> content-top: root.bar-top + 32px + 12px;
+    property <length> content-height: root.height - root.content-top;
+    property <bool> failed: Library.error != "" && Library.page != "sign-in" && Library.page != "local";
+    background: #141416;
+
+    // Takes the keyboard for Backspace (Back), and for Enter, which opens
+    // or plays what has the focus and should never reach the window's
+    // binding for full screen; every other key goes on to the window's
+    // shortcuts, except while signing in. A page with a field to type in
+    // focuses it.
+    function take-focus() {
+        if !keys.has-focus {
+            keys.focus();
+        }
+    }
+
+    // Presses no card or button takes, for the mouse's back button. The
+    // pointer coming back to it says a card's menu has closed.
+    TouchArea {
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+        changed has-hover => {
+            if self.has-hover {
+                LibraryUi.menu-card = "";
+            }
+        }
+    }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        init => {
+            self.focus();
+        }
+        key-pressed(event) => {
+            if event.text == Key.Backspace && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && Library.can-go-back {
+                Library.back();
+                return accept;
+            }
+            if event.text == Key.Return {
+                return accept;
+            }
+            // Signing in, what is typed is no shortcut: a name or password
+            // typed where no field has the keyboard would quit Patina at its
+            // first "q". Shortcuts with a modifier still work.
+            if Library.page == "sign-in" && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && event.text != Key.Tab && event.text != Key.Escape {
+                return accept;
+            }
+            reject
+        }
+
+        // The backdrop of the item on show, behind everything, the bar too.
+        if Library.page == "detail" && !root.failed && Library.detail.backdrop.width > 0: Rectangle {
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: Library.detail.backdrop;
+                image-fit: cover;
+                opacity: 0.32;
+            }
+            Rectangle {
+                background: @linear-gradient(180deg, #14141600 0%, #14141640 35%, #141416f0 85%, #141416 100%);
+            }
+            Rectangle {
+                background: @linear-gradient(90deg, #141416e0 0%, #14141680 45%, #14141600 100%);
+            }
+        }
+
+        // The welcome screen pads its top for the title bar; it is moved
+        // up so that its content starts under the library's bar, which is
+        // drawn over its padding.
+        if Library.page == "local": WelcomeView {
+            y: root.content-top - 52px;
+            height: root.height - self.y;
+            drop-active: root.drop-active;
+            init => {
+                root.take-focus();
+            }
+            clear-recent => {
+                root.clear-recent();
+            }
+        }
+
+        if root.failed: Notice {
+            y: root.content-top;
+            height: root.content-height;
+            icon: @image-url("icons/circle-alert.svg");
+            icon-color: Theme.danger;
+            text: Library.error;
+            init => {
+                root.take-focus();
+            }
+            HorizontalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Try Again";
+                    clicked => {
+                        Library.retry();
+                    }
+                }
+            }
+        }
+
+        if !root.failed && Library.page == "home": HomePage {
+            y: root.content-top;
+            height: root.content-height;
+            init => {
+                root.take-focus();
+            }
+        }
+        if !root.failed && Library.page == "grid": GridPage {
+            y: root.content-top;
+            height: root.content-height;
+            init => {
+                root.take-focus();
+            }
+        }
+        if !root.failed && Library.page == "detail": DetailPage {
+            y: root.content-top;
+            height: root.content-height;
+            init => {
+                root.take-focus();
+            }
+        }
+        if !root.failed && Library.page == "search": SearchPage {
+            y: root.content-top;
+            height: root.content-height;
+        }
+        if Library.page == "sign-in": SignInPage {
+            y: root.content-top;
+            height: root.content-height;
+            focus-view => {
+                root.take-focus();
+            }
+        }
+
+        // On a plate, since what is loading may draw under it.
+        if Library.loading && !root.failed && Library.page != "sign-in" && Library.page != "local": Rectangle {
+            x: (root.width - self.width) / 2;
+            y: root.content-top + (root.content-height - self.height) / 2;
+            width: 56px;
+            height: 56px;
+            border-radius: Theme.osc-radius;
+            background: Theme.osd-background;
+            Spinner { }
+        }
+
+        LibraryBar {
+            y: root.bar-top;
+            width: root.width;
+        }
+
+        if root.drop-active && Library.page != "local": DropOverlay { }
+    }
+}

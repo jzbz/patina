@@ -12,11 +12,13 @@ build = "build.rs"
 [dependencies]
 arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 async-channel = "2.5.0"
+blurhash = "0.2.3"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 directories = "6.0.0"
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
+getrandom = "0.4.3"
 glow = "0.18.0"
-image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 jiff = "0.2.38"
 keyring-core = "1.0.1"
 libloading = "0.9.0"
@@ -35,7 +37,8 @@ slint = { version = "1.18.1", default-features = false, features = [
     "unstable-winit-030",
 ] }
 trash = "5.2.9"
-ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+ureq = { version = "3.5.0", default-features = false, features = ["rustls", "platform-verifier"] }
+url = "2.5.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"

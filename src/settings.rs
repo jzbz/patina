@@ -65,6 +65,11 @@ impl Paths {
     pub fn history_file(&self) -> PathBuf {
         self.data.join("history.json")
     }
+
+    /// Posters and backdrops from Jellyfin servers.
+    pub fn jellyfin_images_dir(&self) -> PathBuf {
+        self.data.join("jellyfin").join("images")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +201,24 @@ pub struct Preferences {
     pub ytdl_format: String,
     pub download_dir: String,
 
+    // Jellyfin.
+    /// What a playing intro, credits, recap, preview or commercial the
+    /// server marks brings: "ask" (a Skip button), "skip" or "none".
+    pub jellyfin_skip_intro: String,
+    pub jellyfin_skip_outro: String,
+    pub jellyfin_skip_recap: String,
+    pub jellyfin_skip_preview: String,
+    pub jellyfin_skip_commercial: String,
+    /// Have the server transcode what mpv could play but this computer
+    /// may not decode well.
+    pub jellyfin_transcode_hevc: bool,
+    pub jellyfin_transcode_av1: bool,
+    pub jellyfin_transcode_hdr: bool,
+    /// Anything wider than 1920 or taller than 1080.
+    pub jellyfin_transcode_over_1080p: bool,
+    /// The most the servers' posters and backdrops may take on disk.
+    pub jellyfin_image_cache_mb: u64,
+
     // Control.
     pub single_click: String,
     pub double_click: String,
@@ -308,6 +331,16 @@ impl Default for Preferences {
             ytdl_quality: "best".into(),
             ytdl_format: String::new(),
             download_dir: String::new(),
+            jellyfin_skip_intro: "ask".into(),
+            jellyfin_skip_outro: "ask".into(),
+            jellyfin_skip_recap: "ask".into(),
+            jellyfin_skip_preview: "ask".into(),
+            jellyfin_skip_commercial: "none".into(),
+            jellyfin_transcode_hevc: false,
+            jellyfin_transcode_av1: false,
+            jellyfin_transcode_hdr: false,
+            jellyfin_transcode_over_1080p: false,
+            jellyfin_image_cache_mb: 256,
             single_click: "toggle-osc".into(),
             double_click: "fullscreen".into(),
             // IINA pauses on right click; without a global menu bar, Linux

@@ -509,6 +509,7 @@ const DEFAULT_CONF: &str = r##"# Patina key bindings, in mpv input.conf format.
 #@patina Alt+PRIMARY+m toggle-music-mode
 #@patina F1 show-shortcuts
 #@patina F11 toggle-fullscreen
+#@patina s skip-segment
 
 SECONDARY+v cycle video
 SECONDARY+s cycle sub

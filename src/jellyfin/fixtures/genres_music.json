@@ -1,0 +1,35 @@
+{
+  "Items": [
+    {
+      "Name": "Ambient",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "7566ee57563df93ee76cce4f2c4349a7",
+      "ChannelId": null,
+      "Type": "MusicGenre",
+      "ChildCount": 6,
+      "PrimaryImageAspectRatio": 1,
+      "ImageTags": {
+        "Primary": "55daa3fd1aa17040df6f6bcc1a2e4405"
+      },
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {
+        "Primary": {
+          "55daa3fd1aa17040df6f6bcc1a2e4405": "eQEYuhMKfQD5MKR6V[fQVtj[fQfQfQfQfQMKV@fQR6oeV@j[fQj[oz"
+        }
+      },
+      "LocationType": "FileSystem",
+      "MediaType": "Unknown",
+      "TrailerCount": 0,
+      "MovieCount": 0,
+      "SeriesCount": 0,
+      "ProgramCount": 0,
+      "EpisodeCount": 0,
+      "SongCount": 4,
+      "AlbumCount": 1,
+      "ArtistCount": 1,
+      "MusicVideoCount": 0
+    }
+  ],
+  "TotalRecordCount": 1,
+  "StartIndex": 0
+}

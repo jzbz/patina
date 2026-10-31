@@ -1,0 +1,29 @@
+{
+  "Items": [
+    {
+      "Name": "Mira Vale",
+      "ServerId": "39814d1fca0f4c7f9c52837283c0a6aa",
+      "Id": "87a731ca1a13a2dd7619c1bd04321bcd",
+      "ChannelId": null,
+      "Overview": "Mira Vale records sine waves near the sea.",
+      "RunTimeTicks": 0,
+      "IsFolder": true,
+      "Type": "MusicArtist",
+      "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Artist-Mira Vale",
+        "ItemId": "87a731ca1a13a2dd7619c1bd04321bcd"
+      },
+      "ImageTags": {},
+      "BackdropImageTags": [],
+      "ImageBlurHashes": {},
+      "LocationType": "FileSystem",
+      "MediaType": "Unknown"
+    }
+  ],
+  "TotalRecordCount": 1,
+  "StartIndex": 0
+}

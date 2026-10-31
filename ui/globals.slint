@@ -112,6 +112,15 @@ export global Playback {
     in property <image> preview-image;
     in property <bool> preview-ready;
     in property <string> preview-chapter;
+    // A Jellyfin item's intro, credits or the like plays: the words of its
+    // Skip button ("Skip Intro"); empty for none. The key bound to it, as
+    // the button names it ("S"); empty for none.
+    in property <string> skip-label;
+    in property <string> skip-key;
+    // What a file opening waits for, when that is worth saying ("Waiting
+    // for Home Server…"): a Jellyfin item waits for its server. Empty for
+    // nothing in particular.
+    in property <string> loading-text;
 
     // Video.
     in property <int> aspect-index;
@@ -165,6 +174,8 @@ export global Media {
     in property <[QualityItem]> video-qualities;
     in property <[QualityItem]> audio-qualities;
     in property <bool> online;
+    // A Jellyfin item's versions, the one playing selected.
+    in property <[QualityItem]> video-versions;
     // The subtitle showing is one downloaded from OpenSubtitles.
     in property <bool> downloaded-subtitle;
     in property <[ChapterItem]> chapters;
@@ -221,6 +232,7 @@ export global MenuMedia {
     in-out property <[DeviceItem]> audio-devices;
     in-out property <[QualityItem]> video-qualities;
     in-out property <[QualityItem]> audio-qualities;
+    in-out property <[QualityItem]> video-versions;
     in-out property <bool> online;
     in-out property <bool> downloaded-subtitle;
 }
