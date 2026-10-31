@@ -94,6 +94,13 @@ pub fn keyring<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     done: impl FnOnce(T) + 'static,
 ) {
+    // Tests have no event loop to answer on, and can't make one off the
+    // main thread on macOS; their keyring is store's stand-in in memory,
+    // which doesn't block.
+    if cfg!(test) {
+        done(work());
+        return;
+    }
     static QUEUE: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
     let queue = QUEUE.get_or_init(|| {
         let (sender, receiver) = mpsc::channel::<Job>();

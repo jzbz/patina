@@ -252,19 +252,57 @@ pub fn token_account(server_id: &str, user_id: &str) -> String {
     format!("{server_id}/{user_id}")
 }
 
+#[cfg(test)]
+use self::memory as secrets;
+/// Where tokens are kept: the system's store, or for tests a stand-in in
+/// memory, so that no test reads, writes or deletes anything in the keyring
+/// of whoever runs it.
+#[cfg(not(test))]
+use crate::credentials as secrets;
+
 /// The saved token for an account, if there is one. Blocks.
 pub fn load_token(server_id: &str, user_id: &str) -> Result<Option<String>, String> {
-    crate::credentials::get(TOKEN_SERVICE, &token_account(server_id, user_id))
+    secrets::get(TOKEN_SERVICE, &token_account(server_id, user_id))
 }
 
 /// Blocks.
 pub fn save_token(server_id: &str, user_id: &str, token: &str) -> Result<(), String> {
-    crate::credentials::set(TOKEN_SERVICE, &token_account(server_id, user_id), token)
+    secrets::set(TOKEN_SERVICE, &token_account(server_id, user_id), token)
 }
 
 /// Blocks; deleting a token that isn't there succeeds.
 pub fn delete_token(server_id: &str, user_id: &str) -> Result<(), String> {
-    crate::credentials::delete(TOKEN_SERVICE, &token_account(server_id, user_id))
+    secrets::delete(TOKEN_SERVICE, &token_account(server_id, user_id))
+}
+
+/// The tests' keyring, with crate::credentials' calls.
+#[cfg(test)]
+mod memory {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+
+    type Kept = HashMap<(String, String), String>;
+
+    fn kept() -> MutexGuard<'static, Kept> {
+        static KEPT: OnceLock<Mutex<Kept>> = OnceLock::new();
+        KEPT.get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn get(service: &str, account: &str) -> Result<Option<String>, String> {
+        Ok(kept().get(&(service.into(), account.into())).cloned())
+    }
+
+    pub fn set(service: &str, account: &str, password: &str) -> Result<(), String> {
+        kept().insert((service.into(), account.into()), password.into());
+        Ok(())
+    }
+
+    pub fn delete(service: &str, account: &str) -> Result<(), String> {
+        kept().remove(&(service.into(), account.into()));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
