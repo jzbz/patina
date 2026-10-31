@@ -16,6 +16,33 @@ explains the design.
   Tests that need libmpv or ffmpeg skip without them; set
   `PATINA_TEST_REQUIRE_MPV=1` and `PATINA_TEST_REQUIRE_FFMPEG=1` to make
   them fail instead, as CI does.
+- The Jellyfin client's live tests need a Jellyfin server, and skip
+  without one. `tools/jellyfin-server.sh` runs a throwaway server on
+  127.0.0.1 (x86_64 Linux only) with a small generated library, keeping
+  everything it downloads and makes in the folder it is given, here `DIR`,
+  which belongs outside the repository:
+
+  ```sh
+  tools/jellyfin-server.sh setup DIR    # once: 150 MB of downloads
+  eval "$(tools/jellyfin-server.sh start DIR)"
+  PATINA_TEST_REQUIRE_JELLYFIN=1 cargo test jellyfin::
+  tools/jellyfin-server.sh stop DIR
+  ```
+
+  `start` listens on port 18096 unless given another after `DIR`, sets
+  the server up the first time, and prints `export` lines for
+  `PATINA_TEST_JELLYFIN_URL`, `_USER`, `_PASSWORD` and `_LIBRARY`
+  (`generated`, which lets the tests count on that library). With
+  `PATINA_TEST_REQUIRE_JELLYFIN=1` a live test that finds no server fails
+  rather than skips, as in CI. The same variables pointed at a real server
+  and a test account run the live tests there, with `_LIBRARY` unset: they
+  need a film nobody has started, and put back everything they change
+  except that film's play count. To try the client by hand, sign in to
+  `http://127.0.0.1:18096` as `patina`, whose password is in
+  `DIR/admin-password`, or as `viewer` (password `viewer-test`).
+  `tools/jellyfin-server.sh fixtures DIR src/jellyfin/fixtures` saves the
+  running server's answers again as the tests' fixtures. docs/jellyfin.md's
+  Tests section says what the tests cover.
 - `release.yml` builds every package: the Flatpak bundles
   (`packaging/video.patina.Patina.yml`), a universal Patina.app (with IINA's
   libmpv, pinned in `packaging/macos-libmpv.txt`), and a Windows folder
@@ -36,8 +63,10 @@ explains the design.
   `packaging/linux/video.patina.Patina.desktop`; a test fails with the line
   it expects until then.
 - CI (`.github/workflows/ci.yml`) runs formatting, clippy, a build and the
-  tests on Ubuntu 26.04, macOS and Windows. Its header comments explain each
-  choice, including how to bump the Windows libmpv pin.
+  tests on Ubuntu 26.04, macOS and Windows, and on Ubuntu the Jellyfin
+  tests against the test server above. Its comments explain each choice,
+  including how to bump the Windows libmpv pin; the Jellyfin server's pins
+  are in `tools/jellyfin-server.sh`, and CI caches its downloads by them.
 - `cargo clippy --all-targets -- -D warnings` must stay clean.
 - `cargo fmt` after editing Rust.
 - `cargo build` also compiles the Slint UI (`build.rs`); Slint errors show
@@ -61,7 +90,7 @@ skips the single instance altogether),
 online subtitles at a stand-in for the OpenSubtitles API (the URL that
 `/subtitles` and the rest hang off). Run inside `dbus-run-session`, Patina
 uses whatever Secret Service that session has, so a stand-in keeps a test's
-password out of your own keyring.
+password, or a test server's Jellyfin token, out of your own keyring.
 
 ## Releases
 
@@ -103,9 +132,12 @@ its `/privacy/` page) to answer.
   system.
 - `src/wayland.rs`: bringing a window to the front with an activation
   token.
-- `src/app.rs`: preferences, history, key bindings, windows, file dialogs.
+- `src/app.rs`: preferences, history, key bindings, windows, file dialogs,
+  the Jellyfin session.
 - `src/window.rs`: one player window: events into state, state into the
-  UI, Patina actions, OSD, window sizing, picture-in-picture.
+  UI, Patina actions, OSD, window sizing, picture-in-picture, and the
+  window's side of Jellyfin playback (the load hook, reports, tracks,
+  quality and versions, skipping segments, trickplay previews, lyrics).
 - `src/player/`: mpv core startup and options, the event thread,
   observed properties (`props.rs`), and the typed playback state
   (`state.rs`).
@@ -126,7 +158,18 @@ its `/privacy/` page) to answer.
 - `src/downloads.rs`: downloads with yt-dlp, and the Downloads window.
 - `src/opensubtitles.rs`: the OpenSubtitles.com client: hash, search,
   download, sign-in.
-- `src/credentials.rs`: passwords in the system's password store.
+- `src/credentials.rs`: passwords and Jellyfin tokens in the system's
+  password store.
+- `src/jellyfin/`: the Jellyfin client ([jellyfin.md](jellyfin.md)):
+  `session.rs` the app-wide state, signing in and the threads requests
+  run on; `api.rs` the HTTP client; `models.rs` the server's JSON;
+  `auth.rs` addresses and the `Authorization` header; `store.rs`
+  `jellyfin.json` and the tokens; `discovery.rs` Scan Network; `images.rs`
+  the poster cache; `library.rs` the library view's controller;
+  `playback.rs` streams, the load hook, tracks and the reports;
+  `segments.rs` skipping intros and credits; `trickplay.rs` the seek bar's
+  previews; `lyrics.rs` a song's lyrics and the line being sung; `tests.rs`
+  and `fixtures/` the tests across them.
 - `src/probe.rs`: playlist durations and tags from a headless mpv core.
 - `src/playlist.rs`: playlist selection, multi-row moves, series-prefix
   folding and pasted sources, without mpv.
@@ -137,10 +180,13 @@ its `/privacy/` page) to answer.
 - `src/media_controls/`: MPRIS, SMTC and MediaPlayer integration.
 - `src/inhibit.rs`: keeping the screen awake during playback.
 - `src/cli.rs`, `src/util.rs`, `src/platform.rs`.
-- `ui/`: the Slint interface (`app.slint` is the window; see
-  architecture.md); `ui/icons/` are Lucide's SVG icons
-  (lucide-static, ISC; `ui/icons/LICENSE`), white for Slint to tint, the
-  transport controls filled.
+- `tools/`: `menubar.py` and `smoke.sh` (see above), and
+  `jellyfin-server.sh`, the Jellyfin test server, with
+  `jellyfin-media.sh`, which makes its library.
+- `ui/`: the Slint interface (`app.slint` is the window, `library*.slint`
+  the Jellyfin library; see architecture.md); `ui/icons/` are Lucide's
+  SVG icons (lucide-static, ISC; `ui/icons/LICENSE`), white for Slint to
+  tint, the transport controls filled.
 
 ## Rules
 
@@ -166,5 +212,16 @@ its `/privacy/` page) to answer.
   wrong; record the difference as "adapted" in parity.md.
 - Patina contains no IINA code, artwork or text (IINA is GPL-3.0). Describe
   and reimplement behaviour; don't copy.
+- The same holds for Jellyfin's own clients, which are GPL too: none of
+  their code is copied.
+- The interface thread doesn't wait on the network or the keyring either:
+  the Jellyfin client asks them through `session::background`,
+  `session::load` and `session::keyring`, the reporter and the image
+  cache's workers, and drops an answer the user has moved on from.
+- A Jellyfin token lives in the keyring, in memory and in the
+  `Authorization` header of its own server's requests, and nowhere else:
+  not in a URL, a log, a file or any mpv option but the header, which goes
+  through `Mpv::set_property_secret` (docs/jellyfin.md, Keeping the token
+  secret).
 - Generated files (builds, logs, screenshots, test media) stay out of the
   repository.

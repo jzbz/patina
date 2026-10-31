@@ -227,7 +227,8 @@ JavaScript, load from the `scripts` folder of Patina's `mpv` configuration
 and cover much of what IINA's plugins are used for; the rest of IINA's
 plugin system (a JavaScript runtime with the `iina.*` API, web views for
 overlays, sidebar tabs and windows, and a plugin manager) would cost more
-than it brings.
+than it brings. A Jellyfin client, which IINA's plugin catalogue offers
+from the community, is built into Patina (see Beyond IINA).
 
 ## 19–20. Platform, accessibility, localization
 
@@ -241,8 +242,16 @@ than it brings.
 | PLAT-09 | Rendering | done: libmpv OpenGL render API into a texture composited by Slint. Where OpenGL fails (no GPU driver, a virtual machine, a remote desktop), Patina draws with Slint's software renderer and mpv's software renderer on a thread of its own. Tested on a Windows 11 VM with only the basic display adapter, an Intel macOS VM whose only OpenGL is Apple's software renderer, and Linux without GLX or EGL |
 | PLAT-10 | HDR | planned |
 | PLAT-11 | Live Text | not planned (no equivalent) |
-| PLAT-12 | Credential storage | done: the Secret Service on Linux (GNOME Keyring, KWallet), the Keychain on macOS and Credential Manager on Windows, through the keyring crates; used for the OpenSubtitles password. HTTP authentication planned |
+| PLAT-12 | Credential storage | done: the Secret Service on Linux (GNOME Keyring, KWallet), the Keychain on macOS and Credential Manager on Windows, through the keyring crates; used for the OpenSubtitles password and Jellyfin sign-in tokens. HTTP authentication planned |
 | A11Y-* | Accessibility and localization | partial: accessible roles and labels on controls; localization planned |
+
+## Beyond IINA
+
+What Patina has that IINA itself doesn't.
+
+| Feature | IINA | Patina |
+| --- | --- | --- |
+| Jellyfin client | none built in; Jellyfin is among the community plugins in IINA's catalogue (PLG-07) | done: built in, as [jellyfin.md](jellyfin.md) describes: the library in the idle player window (Home, each library, shows and their seasons, collections, music, search, an item's page, played and favourite marks), servers found by address or Scan Network, signing in with a password or Quick Connect, several servers at once; direct play, or a transcode the server makes for a lower quality or what the preferences rule out; resuming where the server says and reporting progress to it; the server's tracks and subtitle files, versions, the next episodes queued; skipping intros, credits, recaps and previews where a plugin on the server marks them; the server's trickplay images in the seek bar's previews; albums, artists, playlists and genres playing in music mode, with the server's lyrics (timed ones following the song). Servers from 10.10.7. Tried on Linux (X11, on a virtual framebuffer) against a local Jellyfin 12.4 server with a generated library, which CI runs for the client's tests too, and segments against a stand-in, since that server makes none. Not yet tried against 10.10 or 10.11, over https, with a real server's library, with a real keyring, on Wayland, macOS or Windows |
 
 ## Known issues
 

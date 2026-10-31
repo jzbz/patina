@@ -78,6 +78,13 @@ and its state in Patina.
 - Subtitles from OpenSubtitles.com, found by the file's hash and name in
   your languages, with your own API key and, if you like, your account,
   whose password stays in the system's password store
+- Your Jellyfin server's library in the player window, which IINA leaves
+  to a plugin: films, shows and music to browse and play, played straight
+  from the server or converted by it when you ask for a lower quality,
+  with your place and what you've watched kept on the server, the next
+  episode lined up, intros and credits skipped where the server marks
+  them, and its previews in the seek bar
+  ([docs/jellyfin.md](docs/jellyfin.md))
 
 Written but not yet tested: drag and drop, playing from standard input,
 saving playlists, and pausing when minimized.
@@ -217,6 +224,9 @@ drag the controller to move it.
   run Patina actions, so IINA's binding files can be copied in as they are.
 - An `mpv` folder holds mpv's own `mpv.conf`, `scripts/`, `script-opts/`
   and `fonts/`.
+- In the data folder, `jellyfin.json` lists the Jellyfin servers you've
+  added, and `jellyfin/images` caches their posters; the sign-ins
+  themselves stay in the system's password store.
 
 `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` override the locations.
 

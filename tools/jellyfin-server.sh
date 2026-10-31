@@ -210,14 +210,16 @@ launch() {
   echo $! >"$DIR/server.pid"
 }
 
-# Waits for /health to say Healthy. While the server starts, a stand-in on the
-# same port answers /health with "Degraded" and /System/Info/Public with
-# StartupWizardCompleted false whatever the truth, so neither of those is
-# enough; "Unhealthy" means startup failed, and the server would then wait ten
-# minutes before exiting.
+# Waits for /health to say Healthy, for three minutes by the clock (a server
+# that takes connections and never answers makes each try last its curl's two
+# seconds). While the server starts, a stand-in on the same port answers
+# /health with "Degraded" and /System/Info/Public with StartupWizardCompleted
+# false whatever the truth, so neither of those is enough; "Unhealthy" means
+# startup failed, and the server would then wait ten minutes before exiting.
 wait_until_ready() {
-  local pid=$1 i health=
-  for ((i = 0; i < 360; i++)); do
+  local pid=$1 deadline health
+  deadline=$(($(date +%s) + 180))
+  while :; do
     if ! alive "$pid"; then
       tail -n 20 "$DIR/log/console.log" >&2
       die "the server exited while starting; its logs are in $DIR/log"
@@ -230,12 +232,12 @@ wait_until_ready() {
         die "the server could not start; its logs are in $DIR/log"
         ;;
     esac
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      stop
+      die "the server was not ready after three minutes"
+    fi
     sleep 0.5
   done
-  [ "$health" = Healthy ] || {
-    stop
-    die "the server was not ready after three minutes"
-  }
   api GET /System/Info/Public >/dev/null
 }
 
@@ -299,7 +301,14 @@ stop() {
   if alive "$pid"; then
     say "still running after 30 s; killing it"
     kill -KILL "$pid"
-    while alive "$pid"; do sleep 0.1; done
+    # Only a process stuck in the kernel outlives that for long.
+    for ((i = 0; i < 100; i++)); do
+      alive "$pid" || break
+      sleep 0.1
+    done
+    if alive "$pid"; then
+      die "still running 10 s after it was killed (pid $pid)"
+    fi
   fi
   rm -f "$DIR/server.pid"
   say "stopped"
@@ -307,15 +316,15 @@ stop() {
 
 # --- The API ----------------------------------------------------------------
 
-# api METHOD PATH [BODY]: prints the answer and fails on an HTTP error. BODY
-# is JSON, or "-" for JSON on stdin. AUTH and TOKEN make the Authorization
-# header.
+# api METHOD PATH [BODY]: prints the answer and fails on an HTTP error, or
+# when none has come in a minute. BODY is JSON, or "-" for JSON on stdin.
+# AUTH and TOKEN make the Authorization header.
 AUTH=$TOOL_AUTH
 TOKEN=
 api() {
   local auth=$AUTH
   [ -z "$TOKEN" ] || auth+=", Token=\"$TOKEN\""
-  local -a args=(-sS --fail-with-body -A Patina-dev -X "$1" -H "Authorization: $auth")
+  local -a args=(-sS --fail-with-body --max-time 60 -A Patina-dev -X "$1" -H "Authorization: $auth")
   if [ $# -gt 2 ]; then
     args+=(-H 'Content-Type: application/json')
     if [ "$3" = - ]; then args+=(--data-binary @-); else args+=(--data-binary "$3"); fi
@@ -418,13 +427,14 @@ add_library() { # NAME COLLECTION_TYPE FOLDER IS_VIDEO ITEM_TYPE...
   }' | api POST "/Library/VirtualFolders?name=$name&collectionType=$kind&refreshLibrary=false" -
 }
 
-# Scans every library and waits for the scan task to finish. Trickplay is set
-# to block the scan, so its images are done too.
+# Scans every library and waits for the scan task to finish, for ten minutes
+# by the clock. Trickplay is set to block the scan, so its images are done
+# too.
 scan() {
-  local since i result
+  local since result
   since=$(date -u +%s)
   api POST /Library/Refresh
-  for ((i = 0; i < 1200; i++)); do
+  while [ "$(date -u +%s)" -lt $((since + 600)) ]; do
     sleep 0.5
     result=$(api GET '/ScheduledTasks?isHidden=false' | jq -r --argjson since "$since" '
       .[] | select(.Key == "RefreshLibrary") | .LastExecutionResult as $r

@@ -53,7 +53,8 @@ playlist entries and video parameters), and `PlayerController::sync` copies
 only what changed into the Slint globals.
 
 Patina's `on_load` hook (subtitle matching, the yt-dlp format chosen from
-the quality menus) holds mpv until a thread of Patina's continues it. Shutting
+the quality menus, a Jellyfin entry's stream) holds mpv until a thread of
+Patina's continues it. Shutting
 a core down lets go of a hook it is waiting in first, and the event thread
 lets any later one go at once: mpv can't quit from inside a hook, and the
 thread that would continue it waits for the UI thread, which may be the one
@@ -143,10 +144,13 @@ The Slint files mirror IINA's window:
 - `ui/app.slint`: `PlayerWindow`: video, welcome view, title bar,
   floating controller, OSD, sidebar, dialogs, auto-hide timers and mouse
   actions.
-- `ui/controls.slint`: the controller, the seek preview, the title bar and
-  the OSD.
-- `ui/sidebar.slint`: playlist and chapters, and the video, audio and
-  subtitle quick settings.
+- `ui/controls.slint`: the controller, the seek preview, the title bar,
+  the OSD, and the Skip button for a Jellyfin item's intros and credits.
+- `ui/library.slint`, with `library-detail.slint`, `library-sign-in.slint`,
+  `library-parts.slint` and `library-model.slint`: the Jellyfin library,
+  shown where the welcome view is (see Jellyfin).
+- `ui/sidebar.slint`: the playlist, chapters and a Jellyfin song's
+  lyrics, and the video, audio and subtitle quick settings.
 - `ui/music.slint`: music mode's strip of controls, its close and back
   buttons, and the artwork for audio without a cover.
 - `ui/menus.slint`: the application menu.
@@ -222,7 +226,8 @@ and the preferences window can edit any of them by key.
 `Preferences::mpv_options` maps them onto mpv options: they are set before
 each core starts, and when preferences change, `App` sets the ones that
 changed on every running core, as IINA's option observers do. Resume
-positions use mpv's own watch-later files.
+positions use mpv's own watch-later files, except a Jellyfin item's, which
+the server keeps.
 
 ## Preferences window
 
@@ -312,6 +317,51 @@ and Patina signs out when it quits. The window runs each search and
 download on a thread of its own; a newer one makes an older one's answer
 moot. Downloads go to the data folder's `online-subtitles` and are added
 with `sub-add`.
+
+## Jellyfin
+
+Patina browses and plays a Jellyfin server's library in the player window.
+[jellyfin.md](jellyfin.md) is the design, with the API it uses and the
+rules about the account's token; this is how it sits among the rest.
+
+- **The session.** `App` owns one `jellyfin::session::Session`, on the UI
+  thread: the servers kept in `jellyfin.json`, the accounts signed in on
+  them with a ureq client each (their tokens asked of the keyring on a
+  thread of its own as Patina starts), the image cache, the reporter, and
+  the registry of what the library opened. Windows subscribe as
+  `Listener`s and hear of sign-ins, sign-outs, tokens the server no longer
+  takes, and a playback's end that the server has taken.
+- **The library.** Each player window has a `LibraryController`
+  (`jellyfin/library.rs`), which fills the window's `Library` global and
+  answers its callbacks. While a server is signed in, an idle window shows
+  the library where the welcome view would be, and its This Computer tab
+  is the welcome view's Open, Open URL and Recent. Page loads, from every
+  window, share six threads (`session::load`), and an answer for a page
+  the user has left is dropped.
+- **Playing.** What the library plays goes into mpv's playlist as
+  `jellyfin://<server id>/<item id>`, so the playlist, the history, Recent
+  and the system's media controls see neither the token nor a stream's
+  address. Patina's `on_load` hook resolves such an entry on its thread
+  (`playback::prepare`): it asks the server for the item and how to play
+  it, sets `stream-open-filename` to the stream, and sets the file's
+  tracks, title and subtitles (and for a transcode, the `Authorization`
+  header) as file-local options, which end with the file. The window takes
+  what the hook planned once mpv has opened the file, and selects the
+  server's tracks once mpv lists them.
+- **Reports.** The window reports the playback's start, progress and stop
+  from mpv's changes, and one reporter thread for the app sends them in
+  order, dropping progress that a later report of the same playback has
+  overtaken; quitting waits for them, sharing the moment the OpenSubtitles
+  sign-out has. The server keeps a Jellyfin item's resume position, so no
+  watch-later file is written for one.
+- **Images.** The image cache's workers fetch posters and backdrops
+  through the client of the server they come from and decode them into
+  pixel buffers, which become `slint::Image`s on the UI thread; they are
+  kept in memory and in the data folder's `jellyfin/images`, the least
+  recently used removed past a size limit, as thumbnails are. A playing
+  item's trickplay tiles (the seek bar's previews), its media segments
+  (the Skip button) and a song's lyrics (the playlist's Lyrics tab) are
+  fetched on the load threads.
 
 ## History and inspector windows
 
@@ -449,10 +499,13 @@ named on the command line don't arrive a second time as an event.
 
 ## System media controls
 
-`media_controls/` publishes what the active window plays (the window focused
-most recently) and turns media keys into `Command`s: MPRIS over D-Bus on
-Linux, the System Media Transport Controls on Windows, and MediaPlayer's
-remote command and now-playing centers on macOS. zbus is async, so the MPRIS
+`media_controls/` publishes what a window plays and turns media keys into
+`Command`s for it: the window focused most recently of those with something
+to play, or the one focused most recently when none has
+(`App::retarget_media`), so that a window opened to browse or queue in
+doesn't take the controls from the one playing. It uses MPRIS over D-Bus
+on Linux, the System Media Transport Controls on Windows, and
+MediaPlayer's remote command and now-playing centers on macOS. zbus is async, so the MPRIS
 service and the screen-saver inhibitor each run `zbus::block_on` on a thread
 of their own. The MPRIS name is
 `org.mpris.MediaPlayer2.video.patina.Patina.instance<pid>_<token>`: under the
@@ -476,6 +529,12 @@ user's binding for it (`PLAYPAUSE`, `NEXT`, ...) when one exists.
 - Tests also check that every preference-driven mpv option is accepted by
   mpv, that the schema matches `Preferences`, and that thumbnails are made
   and cached for a generated clip (when ffmpeg is installed).
+- The Jellyfin client's tests read answers saved from a real server and
+  talk to stand-ins of their own; its live tests need a server, which
+  `tools/jellyfin-server.sh` runs on 127.0.0.1 with a library it makes,
+  and skip without one unless `PATINA_TEST_REQUIRE_JELLYFIN=1`. CI's Linux
+  job runs that server and the Jellyfin tests against it
+  (development.md has the commands, jellyfin.md what the tests cover).
 - `tools/smoke.sh` runs Patina on a private Xvfb display, sends input with
   xdotool and saves screenshots, for checking the interface end to end. Xvfb
   only has software OpenGL, so it uses software decoding.

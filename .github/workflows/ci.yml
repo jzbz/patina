@@ -1,5 +1,6 @@
 # Formatting, lints, a build and the whole test suite on Linux, macOS and
-# Windows.
+# Windows, and on Linux the Jellyfin client's tests against a Jellyfin server
+# that the job runs for them.
 #
 # Until this workflow Patina had only ever run on a Linux desktop. macOS and
 # Windows were known to compile, through `cargo clippy --target`, which proves
@@ -51,9 +52,12 @@ jobs:
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # Well above a cold build on the slowest runner. A run still going at an
-    # hour is wedged, not busy; GitHub's own ceiling is six.
-    timeout-minutes: 60
+    # Well above a cold build on the slowest runner plus, on Linux, the
+    # bounds of the Jellyfin steps (47 minutes together): one of those that
+    # hangs then fails as a step, and the build cache is still saved, which a
+    # job cancelled at its own timeout skips. A run still going at an hour and
+    # a half is wedged, not busy; GitHub's own ceiling is six.
+    timeout-minutes: 90
     strategy:
       # One platform failing should not hide what the others would have said.
       fail-fast: false
@@ -271,6 +275,133 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+      # The Jellyfin client's live tests need a Jellyfin server; without one
+      # they skip. tools/jellyfin-server.sh runs a throwaway one on 127.0.0.1,
+      # with a small library it makes, and says where it is (docs/jellyfin.md,
+      # Tests). x86_64 Linux only, since the script runs the server's
+      # linux-amd64 build (the steps after this one follow its outcome, and
+      # the stop step checks the same); and after the suite rather than before
+      # it, so that a server that fails to download or start costs these tests
+      # alone. Each step goes on past a failure above, as the build cache's
+      # save does: tests failing elsewhere shouldn't hide what these would say.
+      #
+      # The script pins the server (the official portable build, which carries
+      # its own .NET) and jellyfin-ffmpeg by digest. The downloads, 150 MB, are
+      # cached by those digests, as the Windows ones are by their pins. Besides
+      # them it needs curl, jq, tar, xz and setsid, which the image has.
+      - name: Jellyfin test server pins (Linux)
+        id: jellyfin-pins
+        if: >-
+          runner.os == 'Linux' && runner.arch == 'X64'
+          && !cancelled() && steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          pin() { sed -n "s/^$1_SHA256=\([0-9a-f]\{64\}\)\$/\1/p" tools/jellyfin-server.sh; }
+          server=$(pin SERVER)
+          ffmpeg=$(pin FFMPEG)
+          if [ -z "$server" ] || [ -z "$ffmpeg" ]; then
+            echo "::error::no SERVER_SHA256 or FFMPEG_SHA256 line in tools/jellyfin-server.sh"
+            exit 1
+          fi
+          echo "key=jellyfin-downloads-$server-$ffmpeg" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Jellyfin test server downloads (Linux)
+        id: jellyfin-downloads
+        if: >-
+          !cancelled() && steps.jellyfin-pins.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/jellyfin/downloads
+          key: ${{ steps.jellyfin-pins.outputs.key }}
+
+      # Downloads what the cache didn't have, checks both against their
+      # digests, unpacks them, and makes the library with jellyfin-ffmpeg (a
+      # few seconds of video or audio an item), so the ffmpeg installed above
+      # plays no part.
+      - name: Set up the Jellyfin test server (Linux)
+        id: jellyfin-setup
+        if: >-
+          !cancelled() && steps.jellyfin-pins.outcome == 'success'
+        timeout-minutes: 10
+        run: tools/jellyfin-server.sh setup "$RUNNER_TEMP/jellyfin"
+
+      # Saved straight away and only from master, as the Windows downloads are.
+      - name: Save the Jellyfin test server downloads (Linux)
+        if: >-
+          !cancelled() && steps.jellyfin-setup.outcome == 'success'
+          && github.ref == 'refs/heads/master' && steps.jellyfin-downloads.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/jellyfin/downloads
+          key: ${{ steps.jellyfin-downloads.outputs.cache-primary-key }}
+
+      # The first start sets the server up through its API (an administrator
+      # with a random password, the libraries, a scan that makes trickplay
+      # images too) and prints the variables the tests read, as `export`
+      # lines. They reach the steps below through GITHUB_ENV, the password
+      # masked in the log, although all it opens is a server on this runner's
+      # loopback that ends with the job. The server runs on after this step:
+      # the runner ends what a job left running only when the job ends.
+      # Backstop above the script's own bounds (three minutes for the server
+      # to answer, ten for the scan, a minute for any request), so that its
+      # message is what fails rather than a bare step timeout.
+      - name: Start the Jellyfin test server (Linux)
+        id: jellyfin-server
+        if: >-
+          !cancelled() && steps.jellyfin-setup.outcome == 'success'
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          exports=$(tools/jellyfin-server.sh start "$RUNNER_TEMP/jellyfin")
+          eval "$exports"
+          echo "::add-mask::$PATINA_TEST_JELLYFIN_PASSWORD"
+          for name in URL USER PASSWORD LIBRARY; do
+            name=PATINA_TEST_JELLYFIN_$name
+            echo "$name=${!name}" >> "$GITHUB_ENV"
+          done
+
+      # The Jellyfin tests alone, on the test binary that Test built and ran,
+      # where their live ones skipped for want of a server. Set to 1,
+      # PATINA_TEST_REQUIRE_JELLYFIN makes a live test that finds none fail,
+      # as the libmpv and ffmpeg ones do, and PATINA_TEST_JELLYFIN_LIBRARY
+      # (from the script) has them check what only its library is sure to
+      # hold. A step's timeout fails the step rather than cancelling the job,
+      # so a hung server still leaves the build cache saved, as long as the
+      # job's own timeout leaves room for every step's (see timeout-minutes
+      # above).
+      - name: Jellyfin tests (Linux)
+        id: jellyfin-tests
+        if: >-
+          !cancelled() && steps.jellyfin-server.outcome == 'success'
+        timeout-minutes: 15
+        env:
+          PATINA_TEST_REQUIRE_JELLYFIN: "1"
+        run: cargo test --locked 'jellyfin::'
+
+      # Whatever happened above, once there is a server to stop: stopped the
+      # script's way rather than left for the runner to kill. When it failed
+      # to start, or its tests failed, its console output comes first, folded.
+      - name: Stop the Jellyfin test server (Linux)
+        if: always() && runner.os == 'Linux' && runner.arch == 'X64'
+        # The script waits 30 s for the server to exit, and 10 s more once
+        # it has killed it.
+        timeout-minutes: 2
+        env:
+          STARTED: ${{ steps.jellyfin-server.outcome }}
+          TESTED: ${{ steps.jellyfin-tests.outcome }}
+        run: |
+          set -euo pipefail
+          dir=$RUNNER_TEMP/jellyfin
+          if [ ! -d "$dir" ]; then
+            exit 0
+          fi
+          if { [ "$STARTED" = failure ] || [ "$TESTED" = failure ]; } && [ -f "$dir/log/console.log" ]; then
+            echo "::group::The Jellyfin server's console output"
+            tail -n 300 "$dir/log/console.log"
+            echo "::endgroup::"
+          fi
+          tools/jellyfin-server.sh stop "$dir"
 
       # Only from master, and only when the restore missed: on a hit the entry
       # is already what this job would save. Kept when the tests fail, since

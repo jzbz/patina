@@ -44,33 +44,45 @@ Servers from 10.10.7 on are supported: one code path covers 10.10.7,
 
 | File | What it does |
 | --- | --- |
-| `mod.rs` | The app-wide Jellyfin state: signed-in servers, the registry of what is playing, the image cache, the reporter. |
-| `api.rs` | A blocking client for one server and account: the requests below, typed, on ureq. |
-| `models.rs` | The server's JSON, as serde structs that take what they know and ignore the rest. |
-| `auth.rs` | The `Authorization` header, address normalising, password and Quick Connect sign-in. |
+| `session.rs` | The app-wide Jellyfin state, on the interface thread: the servers Patina knows and the accounts signed in on them, each with its client; the image cache; the registry of what the library opened; the reporter; signing in (`SignIn`); and the threads requests run on. Windows follow it as `Listener`s. |
+| `api.rs` | A blocking client for one server and account: the requests below, typed, on ureq, the password and Quick Connect sign-in among them; and `Clients`, through which the image cache fetches each image with the client of the server it is on. |
+| `models.rs` | The server's JSON, as serde structs that take what they know and ignore the rest, and the device profile Patina sends (`DeviceProfile::patina`). |
+| `auth.rs` | The `Authorization` header, address normalising, and the URLs built on the server's address (and the token taken out of the ones it hands out). |
 | `store.rs` | `jellyfin.json` in the data folder (servers, accounts, the device id) and the tokens in the keyring. |
 | `discovery.rs` | Scan Network: the UDP broadcast and its answers. |
-| `images.rs` | Fetching, decoding and caching posters and backdrops, off the interface thread, each through the client of the server it comes from (`api::Clients`). |
-| `playback.rs` | Choosing a stream, the device profile, what the load hook sets, mapping tracks, and reporting progress. |
+| `images.rs` | Fetching, decoding and caching posters and backdrops, off the interface thread. |
+| `playback.rs` | Choosing a stream, what the load hook sets, mapping tracks, and the reporter. |
 | `segments.rs` | Media segments: which span plays, and whether to offer skipping it or skip it. |
 | `trickplay.rs` | The seek bar's previews from the server's trickplay tiles. |
-| `library.rs` | The library view's controller: pages, rows, navigation, search. |
+| `lyrics.rs` | A song's lyrics as the Lyrics tab shows them, and the line being sung. |
+| `library.rs` | The library view's controller, one per window: pages, rows, navigation, search, signing in, and opening what the user plays. |
+| `tests.rs`, `fixtures/` | Tests across the modules, against answers saved from a real server and against a live one (see Tests). |
 
-`ui/library.slint` is the library view, drawn in the player window where
-the welcome view is, with its pages as components.
+A player window meets it in `src/window.rs`: the load hook hands a
+`jellyfin://` entry to `playback::prepare`, and the window reports
+playback as mpv's state changes, selects the server's tracks, fills the
+Video Quality and Version menus, and drives the Skip button, the
+trickplay previews and the Lyrics tab. `ui/library.slint` is the library
+view, drawn in the player window where the welcome view is; its pages are
+in `library-detail.slint`, `library-sign-in.slint` and
+`library-parts.slint`, and `library-model.slint` holds the `Library`
+global and the structs the controller fills. The Lyrics tab is in
+`sidebar.slint`. Preferences › Jellyfin has the settings below.
 
-Network requests run on worker threads, never on the interface thread,
-and their results come back through `async_channel` and
-`slint::spawn_local`, with a request counter so that a stale answer (from
-a page the user has left) is dropped, as `search_online` does. The
-library's page loads, a playing item's segments and its trickplay tiles
-share six threads (`session::load`), so that a server that stalls while
-the user clicks on fills those six rather than a thread per request until
-each times out; a load whose page was left meanwhile skips its request.
-The keyring has one thread of its own, which does what it is asked in
-order (`session::keyring`): a token saved and then deleted, by signing out
-while the keyring waits to be unlocked, must not be deleted first and
-saved after.
+Network requests run on threads other than the interface's, and their
+results come back through `async_channel` and `slint::spawn_local`, with a
+request counter so that a stale answer (from a page the user has left) is
+dropped, as `search_online` does. The library's page loads, a playing
+item's segments, its trickplay tiles and a song's lyrics share six
+threads (`session::load`), so that a server that stalls while the user
+clicks on fills those six rather than a thread per request until each
+times out; a load whose page was left meanwhile skips its request. The
+keyring has one thread of its own, which does what it is asked in order
+(`session::keyring`): a token saved and then deleted, by signing out while
+the keyring waits to be unlocked, must not be deleted first and saved
+after. Reports go out on a thread of their own too (see Reporting), the
+image cache has its own workers, and the load hook's requests run on a
+thread each (see What the hook sets).
 
 ## Connecting
 
@@ -82,7 +94,9 @@ address it ends at together with the server's id, name and version. When
 https was only assumed and what answers speaks plain http, as most servers
 at home do, it is asked again over http at the same port, and signing in
 says that the address is plain http; when the TLS handshake fails, the
-message suggests typing `http://`. API
+message suggests typing `http://`. An address copied from the server's
+web interface (`…/web/index.html#/home`) is asked again above its `web`.
+A server older than 10.10.7 is refused, with its version named. API
 requests after that follow a redirect only to the same server (scheme,
 host and port), with the header; a redirect anywhere else is an error
 rather than a request without credentials, or with them sent to another
@@ -118,10 +132,15 @@ a space). The token is never put into a URL. The legacy headers and the
   the same, since the server overwrites what it stored when it changes.
 
 **Keeping it.** `jellyfin.json` keeps each server's id, name, address,
-optional CA file and the account's id and name. The token goes into the
+optional CA file (see Certificates) and the account's id and name. The token goes into the
 keyring, under the service "Patina Jellyfin" and the account
 `<server id>/<user id>`. Without a keyring the token lives only as long as
-Patina runs, and the next start asks to sign in again. A 401 from a server
+Patina runs, and the next start asks to sign in again. A `jellyfin.json`
+that can't be read (written by a later Patina, say) is copied aside as
+`jellyfin.json.bad` and saved over only when something changes, keeping
+what can be read of it: a new device id would make Patina a new device on
+every server, and the servers it lists would be lost with their tokens
+left in the keyring. A 401 from a server
 means the token is gone (signed out elsewhere, the password changed, the
 device removed): Patina forgets it and asks again. Signing out stops
 what any window plays from that server, after reporting where it
@@ -131,9 +150,13 @@ and deletes the token. Playing on would report nothing more, and the
 episodes queued after it couldn't open.
 
 **Certificates.** Requests trust what the system trusts (ureq's platform
-verifier). A server can also be given a CA file, whose certificates are
-then trusted for that server. A server's own self-signed certificate can
-be its CA file, which pins it: it then has to be given again when the
+verifier). A server can instead be given a CA file, whose certificates are
+then the only ones trusted for that server. There is no setting for it
+yet: it is the `ca_file` of the server's entry in `jellyfin.json`, put
+there by hand. Connecting to that server's address trusts it, and signing
+in again keeps it; a server the system doesn't trust can't be added from
+the sign-in screen alone. A server's own self-signed certificate can be
+its CA file, which pins it: the file has to be replaced when the
 certificate changes. That works for a certificate made for the server;
 one made as a CA (as `openssl req -x509` does by default) is refused when
 the server presents it, and such a server needs a small CA of its own,
@@ -158,22 +181,39 @@ changed. Signing in, the keys typed where no field has the keyboard are no
 shortcuts (a name typed there would quit at its first "q"), and the user
 name field has it even with the server's accounts listed.
 
+When a playback ends, in its window or another, and the server has taken
+the report, a library showing that server loads its page again if the page
+can show what changed: after a film or an episode, any of the server's
+pages; after a song, only those that may show a song's card (search, a
+folder's items, a collection), since Continue Watching and Next Up list
+videos, an album's or playlist's songs show no played mark, and the server
+marks no album or artist played. The page keeps the version, audio and
+subtitle chosen on it, and a grid asks for as many cards as it had. A
+window still stopping when the server answered loads its page once it
+shows the library.
+
 | Page | Requests |
 | --- | --- |
 | Home | `GET /UserItems/Resume?mediaTypes=Video`, `GET /Shows/NextUp`, `GET /Items/Latest?parentId=…` per library, `GET /UserViews` |
 | A library | `GET /Items?parentId=…&includeItemTypes=…&recursive=true&sortBy=…&startIndex=…&limit=…`, in pages as it scrolls |
 | A show | `GET /Shows/{id}/Seasons`, `GET /Shows/{id}/Episodes?seasonId=…` |
-| An item | `GET /Items/{id}` (every field: media sources, chapters, people) |
-| Music | albums, `GET /Artists/AlbumArtists?parentId=…`, playlists, `GET /Genres?parentId=…&includeItemTypes=MusicAlbum`; an album's tracks sorted `ParentIndexNumber,IndexNumber,SortName`; `GET /Playlists/{id}/Items` in the playlist's own order |
+| An item | `GET /Items/{id}` (every field: media sources, chapters, people); for a film or a show, More Like This from `GET /Items/{id}/Similar` |
+| A collection | `GET /Items?parentId=…` |
+| A person, a genre | `GET /Items?personIds=…` (films, shows, episodes) or `GET /Items?genreIds=…` (albums, films, shows) |
+| Music | albums, `GET /Artists/AlbumArtists?parentId=…`, playlists, `GET /Genres?parentId=…&includeItemTypes=MusicAlbum`; an album's tracks sorted `ParentIndexNumber,IndexNumber,SortName`; `GET /Playlists/{id}/Items` in the playlist's own order; an artist's albums, `GET /Items?albumArtistIds=…`, and songs, `GET /Items?artistIds=…&includeItemTypes=Audio` in the order playing the artist plays them |
 | Search | `GET /Items?searchTerm=…` for movies, shows, episodes, albums and songs, and `GET /Artists?searchTerm=…` |
+| The account | `GET /Users/Me`, and its picture from `GET /UserImage` |
 | Played, favourite | `POST`/`DELETE /UserPlayedItems/{id}`, `POST`/`DELETE /UserFavoriteItems/{id}` |
 
 Queries name the item types and `recursive=true` (an untyped library query
 is slow on a large library) and the image types they will show. Grids are
-rows of posters in a `ListView`, loaded a page at a time. Lists whose rows
-are made all at once (an album's or playlist's songs, a collection's
-items, an artist's albums) stop at 300, since thousands of rows held the
-interface up for seconds; playing the page still queues up to 1000.
+rows of posters in a `ListView`, loaded a page of 100 at a time; lines
+more than two screens out of sight give up their images, which come back
+(from the cache, mostly) as they scroll into view. Lists whose rows are
+made all at once (an album's or playlist's songs, a collection's items,
+an artist's albums and songs) stop at 300 (a list of songs says how many
+it left out), since thousands of rows held the interface up for seconds;
+playing the page still queues up to 1000.
 
 **Images.** `GET /Items/{id}/Images/{type}?tag=…&maxWidth=…&format=Jpg`,
 with widths rounded to a few fixed sizes (the server caches each size it
@@ -200,11 +240,13 @@ for what the media controls show) and its playback info, picks the stream
 and sets mpv's `stream-open-filename` to it. The same entry therefore
 reopens after a restart, from History or Recent, and resumes where the
 server says. While it waits for the server the window says so, with a
-Stop button. An entry that fails for want of a sign-in has the library
-ask for one, saying why. An entry that a playlist file lists (mpv's `playlist-path`
-is set) is refused: only what Patina's own library, History and Recent
-open is asked of a server with the account's token, never what a file
-from elsewhere names.
+Stop button. An entry opened as Patina starts waits up to 20 seconds for
+the keyring to give back the saved sign-ins, since it may be asking to be
+unlocked. An entry that fails for want of a sign-in has the library ask
+for one, saying why. An entry that a playlist file lists (mpv's
+`playlist-path` is set) is refused: only what Patina's own library,
+History and Recent open is asked of a server with the account's token,
+never what a file from elsewhere names.
 
 **Choosing a stream.** `POST /Items/{id}/PlaybackInfo` with a JSON body
 holding the device profile, the media source if the user chose a version,
@@ -250,7 +292,8 @@ that they end with the file:
 - `start`: the server's resume position, unless the user chose to play
   from the beginning (which holds for that one load: the entry opened
   again from History, Recent or the playlist resumes where the server
-  says), and `none` otherwise. mpv reads a watch-later file before the
+  says) or the item is music, which always starts at the beginning, and
+  `none` otherwise. mpv reads a watch-later file before the
   load hook runs, so `start` is always set, and none is written for a
   Jellyfin entry, playing or still opening; `save-position-on-quit` is
   off. An item watched before keeps its played mark when it is watched
@@ -258,6 +301,9 @@ that they end with the file:
   Continue Watching lists it, and its card shows both.
 - `aid` and `sid`: the server's audio and subtitle (see Tracks).
 - `force-media-title`, `ytdl` off, `tls-verify` and `tls-ca-file`.
+- `cover-art-files`: for a song whose stream has no picture (no cover in
+  the file, or a transcode, which carries none), its album's image from
+  the server, which the media controls show too and which needs no token.
 - The external subtitles (`sub-files`), each from its `DeliveryUrl` with
   `ApiKey` removed.
 
@@ -358,7 +404,8 @@ second long.
 item's `Trickplay` field, by media source and width), the seek bar's
 previews come from those tiles
 (`GET /Videos/{id}/Trickplay/{width}/{index}.jpg?mediaSourceId=…`), the
-narrowest at least twice the preview's width. Patina never makes its own
+narrowest at least twice the preview's width, as long as Preferences ›
+Interface shows seek-bar thumbnails at all. Patina never makes its own
 thumbnails of a stream, so without trickplay images a Jellyfin item's
 preview shows the time and chapter alone. A tile is a grid of thumbnails,
 one every `Interval` milliseconds; the last holds only those left, and
@@ -389,16 +436,48 @@ loads another one where it was.
 
 ## Music
 
-Albums, artists, playlists and genres are pages of the music library. An
-album or playlist plays as a playlist of its tracks, which is the queue:
-Play Next and Add to Queue insert into it. Tracks play through the same
-`jellyfin://` entries and hook, in Patina's music mode (whether an item is
-audio is the server's to say, since the stream is remote, which Patina
-never counts as music by itself). Gapless playback
-needs mpv's playlist prefetch, which per-file options defeat, so tracks
-play one after another with mpv's usual gap. Lyrics come from
-`GET /Audio/{id}/Lyrics` and show in music mode's drawer, the current line
-highlighted when they are timed.
+Albums, artists, playlists and genres are pages of the music library; an
+artist's page lists the artist's albums and, under them, the songs from
+all of them. An album, artist or playlist plays as a playlist of its
+songs, which is the queue. A song on such a page (double-clicked, or
+played from its menu) plays the page's list from that song, with the
+songs before it in the playlist too. Play opens the list in order with
+the playlist's Shuffle off; Shuffle has mpv shuffle it, as the playlist's
+Shuffle does, so that the playlist says it is shuffled and turning that
+off puts the songs back in order. Play Next and Add to Queue, on a song, a
+card or the "…" button of an item's page, insert into the queue of the
+window used last of those playing something, since the library shows only
+in a window that plays nothing, and the library says "Playing Next" or
+"Added to Queue"; with nothing playing elsewhere they play in the
+library's window, as Play would. A Jellyfin song in the playlist has Go to
+Album and Go to Artist in its menu, which open that page in an idle
+window, or a new one. The desktop's media controls and media keys follow
+the window used last of those playing something too, so that browsing or
+queueing in the library's window leaves them with the music.
+
+Songs play through the same `jellyfin://` entries and hook, in Patina's
+music mode (whether an item is audio is the server's to say, since the
+stream is remote, which Patina never counts as music by itself), each
+from its beginning, with the pause it takes to open each between them:
+mpv's playlist prefetch, which would open the next one early, opens an
+entry's own URL before its load hook has run, and a `jellyfin://` entry's
+stream is known only once the hook has asked the server. A song whose
+file has no cover shows its album's from the server (`cover-art-files`,
+above).
+
+**Lyrics.** For a song the server says has lyrics, the window asks
+`GET /Audio/{id}/Lyrics` on a load thread once it has opened, and the
+playlist's tabs become Playlist, Chapters and Lyrics, in music mode's
+drawer and in the sidebar alike; a song without lyrics has no Lyrics tab,
+and the playlist shows in its place until a song with lyrics plays. Empty
+lines at either end are dropped and runs of them become one break. Timed
+lyrics highlight the line being sung, counted from a quarter of a second
+before its start (after a seek made while paused mpv says the position is
+short of where it went, by nearly its audio buffer), and scroll to keep it
+a little above the middle, except for four seconds after the user scrolls
+them; clicking a line plays from its start (a line that synced lyrics
+from a provider give no start can't be clicked). Untimed lyrics are plain
+text.
 
 ## Keeping the token secret
 
@@ -409,6 +488,10 @@ or logs. The server writes it into the URLs it hands out (a transcode's,
 a subtitle's); the models remove it as they read them, and a transcode
 asks for no trickplay rendition in its HLS playlist, whose URI 12.4 would
 write the token into. The structs that hold a token print it as hidden.
+ureq's trace output is the raw HTTP exchange, every `Authorization`
+header and sign-in answer included, so Patina's log takes ureq's messages
+no further than debug, where ureq hides headers, whatever `RUST_LOG`
+asks for.
 
 mpv gets the header for a transcode only (see What the hook sets), and
 never one that a redirect, the next entry or a transcode on another host
@@ -426,17 +509,36 @@ debug. The Inspector's Watch tab shows `http-header-fields` as hidden.
 
 ## Tests
 
+The client's tests sit beside its code, those across modules in
+`tests.rs`. Most need no server: they read answers saved from a real one
+(`fixtures/`, which `tools/jellyfin-server.sh fixtures` writes with the
+server's folder, the token and the Quick Connect secret replaced, as a
+test checks), or talk to stand-ins they run themselves on 127.0.0.1 (a
+server that redirects, one that never answers, Scan Network's replies).
+
+The live tests talk to the server `PATINA_TEST_JELLYFIN_URL` names,
+signed in as `PATINA_TEST_JELLYFIN_USER` with
+`PATINA_TEST_JELLYFIN_PASSWORD`; without them they are skipped, unless
+`PATINA_TEST_REQUIRE_JELLYFIN` is 1. They sign in on device ids of their
+own, put back what they change (a played mark, a favourite) and look
+closely at only a few items, so that they can run against a real server
+too. What only the generated library below is sure to hold they assert
+when `PATINA_TEST_JELLYFIN_LIBRARY` is `generated`, and elsewhere only
+note when it is missing.
+
 `tools/jellyfin-server.sh` downloads a pinned Jellyfin server (the
 official portable build, which carries its own .NET) and jellyfin-ffmpeg,
-makes a small library with ffmpeg (movies, a show with two seasons and
-subtitles, an album), starts the server on 127.0.0.1 with all its state in
-one folder (its discovery and UPnP off, its outgoing requests sent
-nowhere), completes its setup through the API with a random admin
-password, and waits for the scan. `start` prints the variables the tests
-read. The Jellyfin tests run against it when `PATINA_TEST_JELLYFIN_URL`
-names it, as CI's Linux job does; without it they are skipped, unless
-`PATINA_TEST_REQUIRE_JELLYFIN` is set. Checks that only hold for the
-generated library run when `PATINA_TEST_JELLYFIN_LIBRARY` is `generated`,
-so the suite can also run against a real server. The test server has no
-media segments, which 12.4 makes only with a plugin, so what Patina does
-with them is checked by unit tests of the timing alone.
+makes a small library with that ffmpeg (movies, a show with two seasons
+and subtitles, an album with lyrics), starts the server on 127.0.0.1 with
+all its state in one folder (its discovery and UPnP off, its outgoing
+requests sent nowhere), completes its setup through the API with a random
+admin password, and waits for the scan, trickplay images included.
+`start` prints the variables above, for `eval`; development.md has the
+commands. CI's Linux job runs the same server after the rest of the
+suite, with its downloads cached by their digests, and the Jellyfin tests
+against it with `PATINA_TEST_REQUIRE_JELLYFIN=1`, so that a live test
+that finds no server fails there.
+
+The test server has no media segments, which 12.4 makes only with a
+plugin, so what Patina does with them is checked by unit tests of the
+timing alone.
