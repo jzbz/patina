@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, QualityItem, MenuPlayback, MenuMedia, OnlineSubs, OnlineSubtitle } from "globals.slint";
+import { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, LyricItem, RecentItem, DeviceItem, QualityItem, MenuPlayback, MenuMedia, OnlineSubs, OnlineSubtitle } from "globals.slint";
 import { ControlBar, TitleBar, OsdView, SeekPreview, SkipButton } from "controls.slint";
 import { Sidebar } from "sidebar.slint";
 import { MainMenu } from "menus.slint";
@@ -14,7 +14,7 @@ import { DownloadsWindow, DownloadRow } from "downloads.slint";
 import { InspectorWindow, InspectorRow } from "inspector.slint";
 
 export { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn }
-export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
+export { Platform, Playback, Media, Osd, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, LyricItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
 
 export component PlayerWindow inherits Window {
     title: !Playback.has-media ? "Patina" : root.music-mode && Playback.music-title != "" ? Playback.music-title : Playback.title;
@@ -119,12 +119,14 @@ export component PlayerWindow inherits Window {
     }
 
     public function toggle-sidebar(tab: string) {
-        // Music mode's drawer holds the playlist and chapters only.
-        if root.music-mode && tab != "playlist" && tab != "chapters" {
+        // Music mode's drawer holds the playlist, chapters and lyrics only.
+        if root.music-mode && tab != "playlist" && tab != "chapters" && tab != "lyrics" {
             return;
         }
-        let same-group = (tab == "playlist" || tab == "chapters") == (root.sidebar-tab == "playlist" || root.sidebar-tab == "chapters");
-        if root.sidebar-open && (tab == root.sidebar-tab || (tab == "settings" && same-group)) {
+        // The Lyrics tab shows the playlist while what plays has none.
+        let shown = root.sidebar-tab == "lyrics" && !Media.has-lyrics ? "playlist" : root.sidebar-tab;
+        let same-group = (tab == "playlist" || tab == "chapters" || tab == "lyrics") == (shown == "playlist" || shown == "chapters" || shown == "lyrics");
+        if root.sidebar-open && (tab == shown || (tab == "settings" && same-group)) {
             root.sidebar-open = false;
         } else {
             if tab != "settings" || !same-group {

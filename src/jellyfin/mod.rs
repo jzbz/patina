@@ -6,6 +6,7 @@ pub mod auth;
 pub mod discovery;
 pub mod images;
 pub mod library;
+pub mod lyrics;
 pub mod models;
 pub mod playback;
 pub mod segments;

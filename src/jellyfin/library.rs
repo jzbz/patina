@@ -5,12 +5,13 @@
 //! window.
 //!
 //! Pages stack, Back popping them, and each page is loaded afresh when it
-//! shows. Every load runs on a thread of its own and comes back through the
-//! event loop with the page's ticket: an answer for a page the user has
-//! left is dropped, as are the images it asked for (the page's
-//! `Generation`). Models are kept and changed in place, so that an image
-//! arriving, a played mark or another page of a grid changes one row
-//! rather than everything the view draws.
+//! shows. Every load runs on one of the session's load threads
+//! (`session::load`) and comes back through the event loop with the page's
+//! ticket: a load whose page the user has left by its turn asks nothing,
+//! and an answer for such a page is dropped, as are the images it asked for
+//! (the page's `Generation`). Models are kept and changed in place, so that
+//! an image arriving, a played mark or another page of a grid changes one
+//! row rather than everything the view draws.
 
 use super::api::{Client, Error, ItemsQuery, SortOrder};
 use super::images::{self, Generation};
@@ -442,6 +443,30 @@ fn similar_query() -> ItemsQuery {
         .fields(CARD_FIELDS)
         .images(&[ImageType::Primary], 1)
         .limit(ROW_LIMIT)
+}
+
+/// Songs in the order they play: by album, oldest first, then by disc and
+/// number.
+fn songs_query(query: ItemsQuery) -> ItemsQuery {
+    query.types(&[ItemKind::Audio]).recursive().sort(
+        &[
+            "PremiereDate",
+            "Album",
+            "ParentIndexNumber",
+            "IndexNumber",
+            "SortName",
+        ],
+        SortOrder::Ascending,
+    )
+}
+
+/// An artist's songs as the artist's page lists them, in the order that
+/// playing the artist plays them.
+fn artist_songs_query(artist: &str) -> ItemsQuery {
+    songs_query(ItemsQuery::new().artists(&[artist]))
+        .fields(CARD_FIELDS)
+        .images(&[ImageType::Primary], 1)
+        .limit(PAGE_LIMIT)
 }
 
 fn artist_albums_query(artist: &str) -> ItemsQuery {
@@ -1164,6 +1189,8 @@ enum Tracks {
     Episodes,
     Album,
     Playlist,
+    /// An artist's songs, each with its album.
+    Artist,
 }
 
 /// A track's number: an episode's, a song's ("1-3" on an album of several
@@ -1180,7 +1207,7 @@ fn track_number(item: &BaseItemDto, style: Tracks, discs: bool, place: usize) ->
             (_, Some(track)) => track.to_string(),
             _ => String::new(),
         },
-        Tracks::Playlist => (place + 1).to_string(),
+        Tracks::Playlist | Tracks::Artist => (place + 1).to_string(),
     }
 }
 
@@ -1207,6 +1234,7 @@ fn track_subtitle(item: &BaseItemDto, style: Tracks, album_artist: &str) -> Stri
             ItemKind::Episode => card_lines(item, Lines::Own).1,
             _ => artists(item),
         },
+        Tracks::Artist => item.album.clone().unwrap_or_default(),
     }
 }
 
@@ -1478,25 +1506,22 @@ enum Mode {
     Queue { next: bool },
 }
 
+/// Where what is opened starts playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// At this item of the list: a song of an album's page plays the
+    /// album from it, with the songs before it in the playlist too.
+    At(usize),
+    /// At the first, which the rest follow as they would of themselves:
+    /// the next episodes after the one asked for, each resuming where the
+    /// server says.
+    Lead,
+}
+
 /// What a show, season, album or playlist plays: what it holds that can be
 /// played, in order. Blocks.
 fn children(client: &Client, item: &BaseItemDto) -> Result<Vec<BaseItemDto>, Error> {
-    let songs = |query: ItemsQuery| {
-        query
-            .types(&[ItemKind::Audio])
-            .recursive()
-            .sort(
-                &[
-                    "PremiereDate",
-                    "Album",
-                    "ParentIndexNumber",
-                    "IndexNumber",
-                    "SortName",
-                ],
-                SortOrder::Ascending,
-            )
-            .limit(MAX_PLAYLIST)
-    };
+    let songs = |query: ItemsQuery| songs_query(query).limit(MAX_PLAYLIST);
     let all = || ItemsQuery::new().limit(MAX_PLAYLIST);
     let page = match item.kind {
         ItemKind::Series => client.episodes(&item.id, &all())?,
@@ -1536,31 +1561,8 @@ fn from_next_unplayed(items: &mut Vec<BaseItemDto>) {
     }
 }
 
-/// Shuffles in place, with the system's random numbers.
-fn shuffle<T>(items: &mut [T]) {
-    if items.len() < 2 {
-        return;
-    }
-    let mut random = vec![0u8; items.len() * 8];
-    if getrandom::fill(&mut random).is_err() {
-        // Not worth failing over: any order other than the given one.
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |time| time.as_nanos() as u64);
-        for (index, byte) in random.iter_mut().enumerate() {
-            *byte = (seed.rotate_left(index as u32 % 64) as u8) ^ index as u8;
-        }
-    }
-    for index in (1..items.len()).rev() {
-        let bytes: [u8; 8] = random[index * 8..index * 8 + 8]
-            .try_into()
-            .unwrap_or_default();
-        let other = (u64::from_le_bytes(bytes) % (index as u64 + 1)) as usize;
-        items.swap(index, other);
-    }
-}
-
-/// What playing `item` plays, in order. Blocks.
+/// What playing `item` plays, in order: shuffled too, since the window
+/// shuffles it (`PlayerController::open_shuffled`). Blocks.
 fn playable_list(
     client: &Client,
     item: &BaseItemDto,
@@ -1573,14 +1575,14 @@ fn playable_list(
     };
     // Missing episodes the server knows of only from metadata.
     items.retain(|item| is_playable(item.kind) && item.location_type != LocationType::Virtual);
-    match mode {
-        Mode::Play { shuffle: true, .. } => shuffle(&mut items),
-        Mode::Play {
-            from_start: false, ..
-        } if matches!(item.kind, ItemKind::Series | ItemKind::Season) => {
-            from_next_unplayed(&mut items)
-        }
-        _ => {}
+    if mode
+        == (Mode::Play {
+            from_start: false,
+            shuffle: false,
+        })
+        && matches!(item.kind, ItemKind::Series | ItemKind::Season)
+    {
+        from_next_unplayed(&mut items);
     }
     Ok(items)
 }
@@ -1742,6 +1744,10 @@ pub struct LibraryController {
     this: Weak<LibraryController>,
     /// The server this window shows, by id.
     server: RefCell<Option<String>>,
+    /// A playback's end changed what the page shows while the window
+    /// still played: it loads again once the window shows it
+    /// (`shown_again`).
+    stale: Cell<bool>,
     me: RefCell<Option<UserDto>>,
     /// The account's libraries, as the bar lists them.
     views: RefCell<Vec<BaseItemDto>>,
@@ -1809,6 +1815,7 @@ impl LibraryController {
             player,
             this: this.clone(),
             server: RefCell::new(None),
+            stale: Cell::new(false),
             me: RefCell::new(None),
             views: RefCell::new(Vec::new()),
             pages: RefCell::new(Pages::default()),
@@ -2168,6 +2175,11 @@ impl LibraryController {
     /// Shows the page on top, loading it afresh. The page's list goes
     /// where `scroll-offset` says as its content arrives (`loads`).
     fn show_page(&self) {
+        self.show_page_keeping(Kept::default());
+    }
+
+    /// `show_page`, keeping what `kept` holds of the page as it was.
+    fn show_page_keeping(&self, kept: Kept) {
         self.next_ticket();
         let library = self.library();
         library.set_loads(library.get_loads().wrapping_add(1));
@@ -2193,7 +2205,7 @@ impl LibraryController {
         self.rank.borrow_mut().clear();
         *self.grid.borrow_mut() = GridState::default();
         self.detail.borrow_mut().take();
-        *self.choice.borrow_mut() = Choice::default();
+        *self.choice.borrow_mut() = kept.choice;
         let Some(page) = page else {
             return;
         };
@@ -2204,7 +2216,7 @@ impl LibraryController {
         }
         match page {
             Page::Home => self.load_home(),
-            Page::Grid(page) => self.load_grid(&page),
+            Page::Grid(page) => self.load_grid(&page, kept.cards),
             Page::Detail(page) => self.load_detail(&page),
             Page::Search => {
                 library.set_title("Search".into());
@@ -2240,13 +2252,39 @@ impl LibraryController {
     }
 
     /// Loads the page again, as it may have changed: after something
-    /// played in this window, whose progress the server now has.
+    /// played, whose progress the server now has. What the user chose on
+    /// an item's page (its version, audio and subtitle) stays, and the
+    /// item shows as it was until it comes again; a grid asks at once for
+    /// as many cards as it had, so that it can stay where it was scrolled
+    /// to.
     pub fn refresh(&self) {
-        if matches!(
-            self.top(),
-            Some(Page::Home | Page::Grid(_) | Page::Detail(_) | Page::Search)
+        let Some(page) = self.top() else {
+            return;
+        };
+        if !matches!(
+            page,
+            Page::Home | Page::Grid(_) | Page::Detail(_) | Page::Search
         ) {
-            self.show_page();
+            return;
+        }
+        let kept = Kept {
+            choice: self.choice.borrow().clone(),
+            cards: self.grid.borrow().cards.len(),
+        };
+        *self.opening.borrow_mut() = self.detail.borrow().clone();
+        self.show_page_keeping(kept);
+        self.opening.borrow_mut().take();
+    }
+
+    /// The window has nothing to play again, and shows the library: the
+    /// page loads again, as what played may have moved on the server, once
+    /// the server has taken the report of a Jellyfin item's end
+    /// (`stopping`), which `Change::Played` says. That may have come while
+    /// the window was still stopping, as mpv's stop takes longer than a
+    /// server near by takes to answer.
+    pub fn shown_again(&self, stopping: bool) {
+        if self.stale.replace(false) || !stopping {
+            self.refresh();
         }
     }
 
@@ -2274,8 +2312,8 @@ impl LibraryController {
         ticket
     }
 
-    /// Runs `work` with this window's client on a thread of its own, as a
-    /// load of the page shown now: the spinner shows until every load is
+    /// Runs `work` with this window's client on a load thread, as a load
+    /// of the page shown now: the spinner shows until every load is
     /// done, and an answer that comes after the page was left (or, with
     /// `tracks`, after another season was chosen) is dropped.
     fn load<T: Send + 'static>(
@@ -2416,6 +2454,56 @@ impl LibraryController {
     /// page until something else is played.
     fn leave_error(&self) {
         self.window.set_error(SharedString::new());
+    }
+
+    /// Opens an item's page of a server's, over the page shown: the album
+    /// or artist of a song that plays in another window (Go to Album).
+    pub fn go_to(&self, server_id: &str, id: &str, kind: &str) {
+        if self.server.borrow().as_deref() != Some(server_id) {
+            self.switch_server(server_id);
+        }
+        if self.server.borrow().as_deref() != Some(server_id) {
+            return;
+        }
+        self.open(id, kind);
+        if self.views.borrow().is_empty() {
+            self.load_views();
+        }
+    }
+
+    /// The account's libraries for the bar, when the first page shown is
+    /// not Home, which asks for them itself, and whose loads stop when it
+    /// is left (a new window opened at an album).
+    fn load_views(&self) {
+        let Some(account) = self.account() else {
+            return;
+        };
+        let weak = self.this.clone();
+        let server_id = account.server.id;
+        let client = account.client;
+        session::load(
+            move || client.views(),
+            move |result| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let known = !this.views.borrow().is_empty();
+                if known || this.server.borrow().as_deref() != Some(server_id.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(views) => {
+                        *this.views.borrow_mut() = views
+                            .items
+                            .into_iter()
+                            .filter(|view| Collection::of(view.collection_type).is_some())
+                            .collect();
+                        this.set_nav();
+                    }
+                    Err(error) => log::debug!("no libraries for the bar: {error}"),
+                }
+            },
+        );
     }
 
     fn open(&self, id: &str, kind: &str) {
@@ -2803,7 +2891,9 @@ impl LibraryController {
 
     // Grids.
 
-    fn load_grid(&self, page: &GridPage) {
+    /// A grid's first cards: a page of them, or as many as `cards` when
+    /// it loads again.
+    fn load_grid(&self, page: &GridPage, cards: usize) {
         let library = self.library();
         library.set_title(page.title.clone().into());
         let choice = |id: &str, title: &str| LibraryChoice {
@@ -2831,25 +2921,25 @@ impl LibraryController {
         library.set_unplayed_filter(page.tab.keeps_played());
         library.set_unplayed_only(page.unplayed && page.tab.keeps_played());
         library.set_favorites_only(page.favorites);
-        self.load_grid_page(page, 0);
+        self.load_grid_page(page, 0, first_cards(cards));
     }
 
-    fn load_grid_page(&self, page: &GridPage, start: usize) {
-        let request = grid_request(page, start as u32, GRID_PAGE);
+    fn load_grid_page(&self, page: &GridPage, start: usize, limit: u32) {
+        let request = grid_request(page, start as u32, limit);
         self.load(
             false,
             move |client| request.fetch(client),
-            move |this, result| this.grid_arrived(start, result),
+            move |this, result| this.grid_arrived(start, limit, result),
         );
     }
 
-    fn grid_arrived(&self, start: usize, result: QueryResult<BaseItemDto>) {
+    fn grid_arrived(&self, start: usize, limit: u32, result: QueryResult<BaseItemDto>) {
         if self.grid.borrow().cards.len() != start {
             return;
         }
         let count = result.items.len();
         // A short page is the last, whatever the count said.
-        let total = if count < GRID_PAGE as usize {
+        let total = if count < limit as usize {
             start + count
         } else {
             usize::try_from(result.total_record_count)
@@ -2994,7 +3084,7 @@ impl LibraryController {
             (grid.cards.len(), grid.total)
         };
         if self.pending.get() == 0 && loaded < total {
-            self.load_grid_page(&page, loaded);
+            self.load_grid_page(&page, loaded, GRID_PAGE);
         }
     }
 
@@ -3146,21 +3236,33 @@ impl LibraryController {
                     this.note_tracks(&page);
                 },
             ),
-            // The artist is the page's: each album says its year instead.
-            ItemKind::MusicArtist => self.load(
-                false,
-                move |client| client.items(&artist_albums_query(&id)),
-                move |this, page| {
-                    this.add_row(
-                        "albums",
-                        "Albums",
-                        &page.items,
-                        Art::Poster,
-                        Lines::Artist,
-                        true,
-                    )
-                },
-            ),
+            // The artist is the page's: each album says its year instead,
+            // and each song its album.
+            ItemKind::MusicArtist => {
+                let artist = id.clone();
+                self.load(
+                    false,
+                    move |client| client.items(&artist_albums_query(&artist)),
+                    move |this, page| {
+                        this.add_row(
+                            "albums",
+                            "Albums",
+                            &page.items,
+                            Art::Poster,
+                            Lines::Artist,
+                            true,
+                        )
+                    },
+                );
+                self.load(
+                    false,
+                    move |client| client.items(&artist_songs_query(&id)),
+                    |this, page| {
+                        this.set_tracks(&page.items, Tracks::Artist);
+                        this.note_tracks(&page);
+                    },
+                );
+            }
             ItemKind::BoxSet => self.load(
                 false,
                 move |client| client.items(&collection_items_query(&id)),
@@ -3490,7 +3592,7 @@ impl LibraryController {
             .and_then(|path| session::parse_entry(&path).map(|(_, id)| id.to_owned()));
         let art = match style {
             Tracks::Episodes => Some(Art::Thumb),
-            Tracks::Playlist => Some(Art::Poster),
+            Tracks::Playlist | Tracks::Artist => Some(Art::Poster),
             // The album's cover is the page's.
             Tracks::Album => None,
         };
@@ -3759,11 +3861,37 @@ impl LibraryController {
 
     // Playing.
 
+    /// The item of the page shown when `id` is one of the songs it lists,
+    /// as an album's, a playlist's or an artist's page does: playing the
+    /// song plays the list from it.
+    fn listing(&self, id: &str) -> Option<BaseItemDto> {
+        let page = match self.top() {
+            Some(Page::Detail(page)) => page,
+            _ => return None,
+        };
+        let item = self
+            .detail
+            .borrow()
+            .clone()
+            .filter(|item| item.id == page.id && item.id != id)?;
+        let lists = matches!(
+            item.kind,
+            ItemKind::MusicAlbum | ItemKind::Playlist | ItemKind::MusicArtist
+        );
+        let listed = self.tracks.iter().any(|track| track.id == id);
+        (lists && listed).then_some(item)
+    }
+
     /// Plays an item in this window, or adds it to the playlist: a show,
-    /// season, album or playlist as the list of what it holds.
+    /// season, album or playlist as the list of what it holds, and a song
+    /// of the page's list as that list, from the song on.
     fn start_playing(&self, id: &str, mode: Mode) {
         let Some(account) = self.account() else {
             return;
+        };
+        let listing = match mode {
+            Mode::Play { shuffle: false, .. } => self.listing(id),
+            _ => None,
         };
         // An answer that comes after the user asked for something else, or
         // after the window opened something else, would replace it.
@@ -3798,6 +3926,13 @@ impl LibraryController {
                     Some(item) => item,
                     None => client.item(&id)?,
                 };
+                if let Some(listing) = listing {
+                    let items = playable_list(&client, &listing, mode)?;
+                    // Past the most a list plays, the song plays alone.
+                    if let Some(start) = items.iter().position(|song| song.id == item.id) {
+                        return Ok((item, items, Start::At(start)));
+                    }
+                }
                 let mut items = playable_list(&client, &item, mode)?;
                 let plays_on = play_on && item.kind == ItemKind::Episode && items.len() == 1;
                 if plays_on {
@@ -3807,9 +3942,10 @@ impl LibraryController {
                         Err(error) => log::warn!("no next episodes: {error}"),
                     }
                 }
-                Ok((item, items, plays_on))
+                let start = if plays_on { Start::Lead } else { Start::At(0) };
+                Ok((item, items, start))
             },
-            move |result: Result<(BaseItemDto, Vec<BaseItemDto>, bool), Error>| {
+            move |result: Result<(BaseItemDto, Vec<BaseItemDto>, Start), Error>| {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
@@ -3823,10 +3959,9 @@ impl LibraryController {
                         "Nothing to Play",
                         &format!("{} has nothing Patina can play.", item.name),
                     ),
-                    Ok((item, items, plays_on)) => {
+                    Ok((item, items, start)) => {
                         let choice = choice.as_ref().map(|choice| (item.id.as_str(), choice));
-                        let lead = plays_on.then_some(item.id.as_str());
-                        this.open_items(&server_id, &items, mode, choice, lead);
+                        this.open_items(&server_id, &item, &items, mode, choice, start);
                     }
                     Err(Error::Unauthorized) => this.session.unauthorized(&server_id, &asked),
                     Err(error) => this.notify("Can't Play", &error.about(Some(&server_name))),
@@ -3836,25 +3971,32 @@ impl LibraryController {
     }
 
     /// Opens items as `jellyfin://` entries in this window's playlist,
-    /// noting each in the registry for the load hook. The choices made on
-    /// an item's page go with that item. With `lead`, the item asked for,
-    /// the rest play on after it (the next episodes).
+    /// noting each in the registry for the load hook, or adds them to the
+    /// playlist of the window playing. The choices made on an item's page
+    /// go with that item, `asked`. With `Start::Lead`, the rest play on
+    /// after it (the next episodes).
     fn open_items(
         &self,
         server_id: &str,
+        asked: &BaseItemDto,
         items: &[BaseItemDto],
         mode: Mode,
         choice: Option<(&str, &Choice)>,
-        lead: Option<&str>,
+        start: Start,
     ) {
         let registry = self.session.registry();
+        let lead = matches!(start, Start::Lead).then_some(asked.id.as_str());
         let mut entries = Vec::new();
         let mut infos = Vec::new();
-        for item in items {
+        let mut first = 0;
+        for (index, item) in items.iter().enumerate() {
             let Some(url) = session::entry_url(server_id, &item.id) else {
                 log::warn!("Jellyfin item {:?} can't be opened", item.id);
                 continue;
             };
+            if start == Start::At(index) {
+                first = entries.len();
+            }
             let choice = choice
                 .filter(|(id, _)| *id == item.id)
                 .map(|(_, choice)| choice);
@@ -3881,10 +4023,36 @@ impl LibraryController {
         let Some(player) = self.player.upgrade() else {
             return;
         };
-        player.jellyfin_opened(&entries);
         match mode {
-            Mode::Play { .. } => player.open(entries, false),
-            Mode::Queue { next } => player.queue(entries, next),
+            // Shuffled by mpv, as the playlist's Shuffle does, so that the
+            // playlist says it is and turning that off puts the list back
+            // in order.
+            Mode::Play { shuffle: true, .. } => {
+                player.jellyfin_opened(&entries);
+                player.open_shuffled(entries);
+            }
+            Mode::Play { .. } => {
+                player.jellyfin_opened(&entries);
+                player.open_from(entries, first);
+            }
+            // The library shows while this window has nothing to play, so
+            // the queue is another's, when one plays.
+            Mode::Queue { next } => match player.queue_window() {
+                Some(playing) => {
+                    playing.jellyfin_opened(&entries);
+                    playing.queue(entries, next);
+                    let text = if next {
+                        "Playing Next"
+                    } else {
+                        "Added to Queue"
+                    };
+                    self.notify(text, &asked.name);
+                }
+                None => {
+                    player.jellyfin_opened(&entries);
+                    player.queue(entries, next);
+                }
+            },
         }
     }
 
@@ -4043,11 +4211,19 @@ impl Listener for LibraryController {
             }
             Change::SignedIn(_) | Change::SignedOut(_) => self.refresh_session(),
             // A playback in some window ended, and the server has its
-            // progress: an idle window showing that server shows it again.
-            Change::Played(id) => {
+            // progress: an idle window showing that server shows it again,
+            // when its page shows what that changes.
+            Change::Played { server_id, audio } => {
+                if self.server.borrow().as_deref() != Some(server_id)
+                    || !self.top().is_some_and(|page| shows_played(&page, *audio))
+                {
+                    return;
+                }
                 let idle = self.player.upgrade().is_some_and(|player| player.is_idle());
-                if idle && self.server.borrow().as_deref() == Some(id) {
+                if idle {
                     self.refresh();
+                } else {
+                    self.stale.set(true);
                 }
             }
             Change::Expired(id) => {
@@ -4072,6 +4248,40 @@ impl Drop for LibraryController {
         if let Some(flow) = self.sign_in.borrow_mut().take() {
             flow.cancel();
         }
+    }
+}
+
+/// What `LibraryController::refresh` keeps of a page it loads again.
+#[derive(Default)]
+struct Kept {
+    choice: Choice,
+    /// The grid's cards loaded so far.
+    cards: usize,
+}
+
+/// How many cards a grid asks for first: a page, or as many as it had,
+/// in whole pages.
+fn first_cards(had: usize) -> u32 {
+    let had = u32::try_from(had).unwrap_or(u32::MAX);
+    had.div_ceil(GRID_PAGE).max(1).saturating_mul(GRID_PAGE)
+}
+
+/// Whether `page` may show what the end of a playback changed: an item's
+/// played mark, resume position and play count, and what Home lists to
+/// resume or watch next. After something played as audio, only a song's
+/// card can: Continue Watching and Next Up list videos alone, an album's,
+/// artist's or playlist's songs show no played mark, and the server marks
+/// no album, artist or playlist played. Songs show as cards in search
+/// results, a folder's items and a collection's. Songs end every few
+/// minutes, and loading a page again empties it until it comes.
+fn shows_played(page: &Page, audio: bool) -> bool {
+    match page {
+        Page::Local | Page::SignIn => false,
+        _ if !audio => true,
+        Page::Search => true,
+        Page::Grid(grid) => grid.tab == Tab::Items,
+        Page::Detail(detail) => matches!(detail.kind, ItemKind::BoxSet | ItemKind::Unknown),
+        Page::Home => false,
     }
 }
 
@@ -4552,6 +4762,13 @@ mod tests {
                 "AlbumArtist": "Mira Vale"}"#,
         );
         assert_eq!(track_subtitle(&solo, Tracks::Album, ""), "");
+        // An artist's songs: their place in the list, and their albums.
+        let listed = item(
+            r#"{"Id": "t3", "Name": "Swell", "Type": "Audio", "IndexNumber": 9, "Album": "Tides",
+                "Artists": ["Mira Vale"]}"#,
+        );
+        assert_eq!(track_number(&listed, Tracks::Artist, false, 2), "3");
+        assert_eq!(track_subtitle(&listed, Tracks::Artist, ""), "Tides");
         assert_eq!(display_title(&song), "Drift");
         let episode = item(
             r#"{"Id": "e1", "Name": "Pilot", "Type": "Episode", "SeriesName": "Show",
@@ -4617,6 +4834,69 @@ mod tests {
     }
 
     #[test]
+    fn a_song_ending_loads_again_only_pages_that_show_song_cards() {
+        let detail = |kind: ItemKind| {
+            Page::Detail(DetailPage {
+                id: "i1".into(),
+                kind,
+                root: "lib".into(),
+                season: None,
+            })
+        };
+        let folders = grid(Collection::Folders);
+        assert_eq!(folders.tab, Tab::Items);
+        let mut music = grid(Collection::Music);
+        // After a video, any page with the server's items.
+        for page in [
+            Page::Home,
+            Page::Search,
+            Page::Grid(music.clone()),
+            detail(ItemKind::Movie),
+            detail(ItemKind::MusicAlbum),
+        ] {
+            assert!(shows_played(&page, false), "{page:?}");
+        }
+        // After a song, only those with song cards.
+        for page in [
+            Page::Search,
+            Page::Grid(folders),
+            detail(ItemKind::BoxSet),
+            detail(ItemKind::Unknown),
+        ] {
+            assert!(shows_played(&page, true), "{page:?}");
+        }
+        for tab in [Tab::Albums, Tab::Artists, Tab::Playlists, Tab::Genres] {
+            music.tab = tab;
+            assert!(!shows_played(&Page::Grid(music.clone()), true), "{tab:?}");
+        }
+        for kind in [
+            ItemKind::MusicAlbum,
+            ItemKind::MusicArtist,
+            ItemKind::Playlist,
+            ItemKind::MusicGenre,
+            ItemKind::Movie,
+            ItemKind::Series,
+            ItemKind::Episode,
+        ] {
+            assert!(!shows_played(&detail(kind), true), "{kind:?}");
+        }
+        assert!(!shows_played(&Page::Home, true));
+        for audio in [false, true] {
+            assert!(!shows_played(&Page::Local, audio));
+            assert!(!shows_played(&Page::SignIn, audio));
+        }
+    }
+
+    #[test]
+    fn a_grid_loaded_again_asks_for_the_cards_it_had() {
+        assert_eq!(first_cards(0), GRID_PAGE);
+        assert_eq!(first_cards(37), GRID_PAGE);
+        assert_eq!(first_cards(100), GRID_PAGE);
+        assert_eq!(first_cards(101), 2 * GRID_PAGE);
+        assert_eq!(first_cards(450), 5 * GRID_PAGE);
+    }
+
+    #[test]
     fn playing_notes_where_to_start() {
         let started = item(
             r#"{"Id": "m1", "Name": "Film", "Type": "Movie", "MediaType": "Video",
@@ -4678,12 +4958,6 @@ mod tests {
         let mut watched = vec![episode("1", true), episode("2", true)];
         from_next_unplayed(&mut watched);
         assert_eq!(watched.len(), 2, "all watched plays from the start");
-
-        let mut numbers: Vec<u32> = (0..200).collect();
-        shuffle(&mut numbers);
-        assert_ne!(numbers, (0..200).collect::<Vec<_>>());
-        numbers.sort_unstable();
-        assert_eq!(numbers, (0..200).collect::<Vec<_>>());
         assert!(is_playable(ItemKind::Episode) && !is_playable(ItemKind::Series));
         assert!(plays_children(ItemKind::Series) && !plays_children(ItemKind::Person));
     }
@@ -4820,7 +5094,7 @@ mod tests {
         };
         let identity =
             super::super::auth::Identity::new(super::super::store::DEVICE_NAME, device_id);
-        let connected = session::connect(&address, &identity).unwrap();
+        let connected = session::connect(&address, &identity, None).unwrap();
         let auth = connected
             .client
             .authenticate_by_name(&name, &password)
@@ -4990,14 +5264,25 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(shuffled.len(), all.len());
+            // All of them in order: the window shuffles them.
+            assert!(
+                shuffled
+                    .iter()
+                    .map(|item| &item.id)
+                    .eq(all.iter().map(|item| &item.id))
+            );
         }
+        // A song of a page's list plays the list from it: the page lists
+        // the songs in the order the list plays them.
+        let ids = |items: &[BaseItemDto]| -> Vec<String> {
+            items.iter().map(|item| item.id.clone()).collect()
+        };
         if let Some(album) = first(Collection::Music, Tab::Albums) {
             let songs = client.items(&album_tracks_query(&album.id)).unwrap().items;
             assert!(!songs.is_empty());
             assert_eq!(
-                playable_list(&client, &album, resume).unwrap().len(),
-                songs.len()
+                ids(&playable_list(&client, &album, resume).unwrap()),
+                ids(&songs)
             );
             let artist = first(Collection::Music, Tab::Artists).unwrap();
             let albums = client
@@ -5005,6 +5290,23 @@ mod tests {
                 .unwrap()
                 .items;
             assert!(!albums.is_empty());
+            let listed = client.items(&artist_songs_query(&artist.id)).unwrap().items;
+            assert!(!listed.is_empty());
+            assert_eq!(
+                ids(&playable_list(&client, &artist, resume).unwrap()),
+                ids(&listed)
+            );
+            if generated() {
+                // The artist's one album, its songs by number.
+                assert_eq!(ids(&listed), ids(&songs));
+                let tracks: Vec<LibraryTrack> = listed
+                    .iter()
+                    .enumerate()
+                    .map(|(index, song)| track_of(song, Tracks::Artist, false, index, ""))
+                    .collect();
+                assert_eq!(tracks[1].number, "2");
+                assert_eq!(tracks[1].subtitle, "Low Tide");
+            }
             let genre = first(Collection::Music, Tab::Genres).unwrap();
             assert_eq!(card_kind(&genre), "genre");
             let by_genre = client
@@ -5019,8 +5321,8 @@ mod tests {
                 .unwrap()
                 .items;
             assert_eq!(
-                playable_list(&client, &playlist, resume).unwrap().len(),
-                entries.len()
+                ids(&playable_list(&client, &playlist, resume).unwrap()),
+                ids(&entries)
             );
         }
         if let Some(collection) = first(Collection::BoxSets, Tab::Collections) {

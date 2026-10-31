@@ -284,8 +284,11 @@ pub enum Change {
     Expired(String),
     /// The server took the report of a playback's end: what the library
     /// shows of that server (played marks, resume positions, Next Up) may
-    /// have changed.
-    Played(String),
+    /// have changed, less of it when what ended was played as audio.
+    Played {
+        server_id: String,
+        audio: bool,
+    },
 }
 
 pub trait Listener {
@@ -491,9 +494,29 @@ impl Session {
     fn reported(&self, sent: playback::Sent) {
         match sent.result {
             Err(Error::Unauthorized) => self.unauthorized(&sent.server_id, &sent.client),
-            Ok(()) if sent.stopped => self.notify(&Change::Played(sent.server_id)),
+            Ok(()) if sent.stopped => {
+                let audio = self.played_as_audio(&sent.server_id, &sent.item_id);
+                self.notify(&Change::Played {
+                    server_id: sent.server_id,
+                    audio,
+                });
+            }
             _ => {}
         }
+    }
+
+    /// Whether an item was played as audio, as the registry has it (the
+    /// load hook notes what the library didn't open); not when it is
+    /// unknown, so that the library loads all it might show of it again.
+    fn played_as_audio(&self, server_id: &str, item_id: &str) -> bool {
+        let Some(entry) = entry_url(server_id, item_id) else {
+            return false;
+        };
+        self.registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&entry)
+            .is_some_and(|info| info.audio)
     }
 
     /// Waits for the reports still on their way, at most until `deadline`:
@@ -716,6 +739,20 @@ impl Session {
 
     /// The servers Patina knows that have no account signed in now, to
     /// sign in to again.
+    /// The CA file of the saved server at `address`, as typed or as
+    /// Patina keeps it: what signing in to it again trusts, and keeps.
+    /// There is no setting for it; it is added to the server's entry in
+    /// `jellyfin.json` by hand.
+    pub fn ca_file_at(&self, address: &str) -> Option<PathBuf> {
+        let wanted = auth::normalize_address(address).ok()?;
+        self.store
+            .borrow()
+            .servers()
+            .iter()
+            .find(|server| auth::normalize_address(&server.address).is_ok_and(|url| url == wanted))
+            .and_then(|server| server.ca_file.clone())
+    }
+
     pub fn known_servers(&self) -> Vec<Server> {
         self.store
             .borrow()
@@ -945,12 +982,17 @@ pub struct Connected {
 }
 
 /// Finds the server at `address` (`api::probe`, which keeps the address
-/// it ends at) and what its sign-in screen offers. A server may list no
-/// accounts or have Quick Connect off; signing in with a typed name works
-/// either way, so neither failing stops it. Blocks.
-pub fn connect(address: &str, identity: &Identity) -> Result<Connected, Error> {
-    let probed = api::probe(address, identity, None)?;
-    let client = Client::new(probed.address, identity.clone(), None)?;
+/// it ends at) and what its sign-in screen offers, trusting `ca_file`'s
+/// certificates when given. A server may list no accounts or have Quick
+/// Connect off; signing in with a typed name works either way, so neither
+/// failing stops it. Blocks.
+pub fn connect(
+    address: &str,
+    identity: &Identity,
+    ca_file: Option<&Path>,
+) -> Result<Connected, Error> {
+    let probed = api::probe(address, identity, ca_file)?;
+    let client = Client::new(probed.address, identity.clone(), ca_file)?;
     let users = client.public_users().unwrap_or_else(|error| {
         log::debug!("the server lists no accounts: {error}");
         Vec::new()
@@ -964,8 +1006,14 @@ pub fn connect(address: &str, identity: &Identity) -> Result<Connected, Error> {
     })
 }
 
-/// The server to keep for a sign-in's answer.
-pub fn server_for(client: &Client, info: &PublicSystemInfo, auth: &AuthenticationResult) -> Server {
+/// The server to keep for a sign-in's answer, made through a client that
+/// trusts `ca_file`.
+pub fn server_for(
+    client: &Client,
+    info: &PublicSystemInfo,
+    auth: &AuthenticationResult,
+    ca_file: Option<PathBuf>,
+) -> Server {
     Server {
         id: if info.id.is_empty() {
             auth.server_id.clone()
@@ -975,7 +1023,7 @@ pub fn server_for(client: &Client, info: &PublicSystemInfo, auth: &Authenticatio
         name: info.server_name.clone(),
         address: auth::display_address(client.base()),
         version: info.version.clone(),
-        ca_file: None,
+        ca_file,
         user_id: auth.user.id.clone(),
         user_name: auth.user.name.clone(),
     }
@@ -1008,6 +1056,9 @@ pub struct SignIn {
     /// Signing in again as this account, once the server has answered
     /// (`renew`).
     renewing: RefCell<Option<String>>,
+    /// The CA file of the saved server at the address connected to, which
+    /// the connection trusts and the server keeps (`Session::ca_file_at`).
+    ca_file: RefCell<Option<PathBuf>>,
     /// Shared with the keyring's answer, which comes after the flow has
     /// ended.
     events: Rc<dyn Fn(SignInEvent)>,
@@ -1026,6 +1077,7 @@ impl SignIn {
             code_since: Cell::new(None),
             polling: Cell::new(false),
             renewing: RefCell::new(None),
+            ca_file: RefCell::new(None),
             events: Rc::new(events),
             this: this.clone(),
         })
@@ -1116,8 +1168,10 @@ impl SignIn {
             state.message.clear();
         });
         let identity = session.identity();
+        let ca_file = session.ca_file_at(&address);
+        self.ca_file.replace(ca_file.clone());
         self.ask(
-            move || connect(&address, &identity),
+            move || connect(&address, &identity, ca_file.as_deref()),
             |this, connected| match connected {
                 Ok(connected) => this.connected(connected),
                 Err(error) => {
@@ -1385,7 +1439,7 @@ impl SignIn {
         let Some(session) = self.session.upgrade() else {
             return;
         };
-        let server = server_for(client, info, &auth);
+        let server = server_for(client, info, &auth, self.ca_file.borrow().clone());
         let id = server.id.clone();
         let events = self.events.clone();
         let signed_in = session.signed_in_with(server, auth.access_token, move || {
@@ -1592,6 +1646,38 @@ mod tests {
         session.remove_account("s2", false);
         assert!(!session.signed_in());
         assert!(!Store::load(&folder.0).server("s2").unwrap().signed_in());
+    }
+
+    #[test]
+    fn a_servers_ca_file_goes_with_its_address() {
+        let folder = Folder::new("ca-file");
+        {
+            let mut store = Store::load(&folder.0);
+            store.add(Server {
+                address: "https://s1.example.org:8920/jellyfin".into(),
+                ca_file: Some(PathBuf::from("/srv/ca.pem")),
+                ..server("s1", "")
+            });
+            store.add(server("s2", ""));
+        }
+        let session = session(&folder);
+        // As kept, and as the user may type it again.
+        for typed in [
+            "https://s1.example.org:8920/jellyfin",
+            "s1.example.org:8920/jellyfin/",
+            "https://S1.example.org:8920/jellyfin?x=1#/home",
+        ] {
+            assert_eq!(
+                session.ca_file_at(typed).as_deref(),
+                Some(Path::new("/srv/ca.pem")),
+                "{typed}"
+            );
+        }
+        // Another address of the same host, a server without one, and
+        // what isn't an address.
+        assert_eq!(session.ca_file_at("https://s1.example.org"), None);
+        assert_eq!(session.ca_file_at("https://s2.example.org"), None);
+        assert_eq!(session.ca_file_at(""), None);
     }
 
     #[test]
@@ -1847,7 +1933,7 @@ mod tests {
         // A device id of the test's own, as tests.rs keeps them: signing in
         // again on one revokes the account's other tokens for it.
         let identity = Identity::new(store::DEVICE_NAME, "patina-tests-session");
-        let connected = connect(&address, &identity).unwrap();
+        let connected = connect(&address, &identity, None).unwrap();
         assert!(!connected.info.id.is_empty());
         assert_eq!(connected.client.base().scheme(), "http");
         if std::env::var("PATINA_TEST_JELLYFIN_LIBRARY").is_ok_and(|library| library == "generated")
@@ -1862,13 +1948,13 @@ mod tests {
             assert!(!listed.contains(&"patina"), "{listed:?}");
         }
         assert!(matches!(
-            connect("http://127.0.0.1:9", &identity),
+            connect("http://127.0.0.1:9", &identity, None),
             Err(Error::Network(_))
         ));
 
         let client = connected.client.clone();
         let auth = client.authenticate_by_name(&name, &password).unwrap();
-        let server = server_for(&client, &connected.info, &auth);
+        let server = server_for(&client, &connected.info, &auth, None);
         assert_eq!(server.id, connected.info.id);
         assert_eq!(server.user_name, name);
         assert!(!server.address.ends_with('/'));

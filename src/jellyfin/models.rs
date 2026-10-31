@@ -1224,20 +1224,15 @@ impl MediaSegmentDto {
     }
 }
 
-// The lyrics below are for music mode's lyrics drawer, which will show
-// them (`Client::lyrics`).
-
 /// A track's lyrics, timed when each line has a start.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
-#[allow(dead_code)]
 pub struct LyricDto {
     pub metadata: LyricMetadata,
     pub lyrics: Vec<LyricLine>,
 }
 
 impl LyricDto {
-    #[allow(dead_code)]
     pub fn is_timed(&self) -> bool {
         self.metadata.is_synced.unwrap_or(false)
             || (!self.lyrics.is_empty() && self.lyrics.iter().all(|line| line.start.is_some()))
@@ -1246,7 +1241,6 @@ impl LyricDto {
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
-#[allow(dead_code)]
 pub struct LyricMetadata {
     pub artist: Option<String>,
     pub album: Option<String>,
@@ -1261,7 +1255,6 @@ pub struct LyricMetadata {
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
-#[allow(dead_code)]
 pub struct LyricLine {
     pub text: String,
     /// In ticks.
@@ -1272,7 +1265,6 @@ pub struct LyricLine {
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
-#[allow(dead_code)]
 pub struct LyricLineCue {
     /// Characters into the line.
     pub position: i32,

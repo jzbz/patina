@@ -439,9 +439,37 @@ component PeopleRow inherits VerticalLayout {
     }
 }
 
+// The songs of an album, a playlist or an artist, and the note under them
+// when they are only the first of more.
+component SongList inherits VerticalLayout {
+    // A playlist's and an artist's songs come from different albums, so
+    // each shows its art.
+    in property <bool> show-images;
+    padding-left: LibraryUi.inset - 8px;
+    padding-right: LibraryUi.inset - 8px;
+    for track in Library.tracks: SongRow {
+        track: track;
+        show-image: root.show-images;
+    }
+    if Library.tracks-note != "": HorizontalLayout {
+        padding-left: 8px;
+        Text {
+            height: 32px;
+            text: Library.tracks-note;
+            color: Theme.secondary-text;
+            font-size: Theme.font-normal;
+            vertical-alignment: center;
+        }
+    }
+}
+
 export component DetailPage inherits ScrollView {
     property <bool> episodes: Library.detail.kind == "series" || Library.detail.kind == "season";
     property <bool> songs: !root.episodes && Library.tracks.length > 0;
+    // An artist's albums come first, under them the songs from all of
+    // them.
+    property <bool> artist: Library.detail.kind == "artist";
+    property <bool> queues: Library.detail.can-play && (LibraryUi.playable(Library.detail.kind) || LibraryUi.shuffles(Library.detail.kind));
     property <bool> wide: root.visible-width >= 640px;
     // Round for an artist or a person, as their cards and portraits are.
     property <bool> round: Library.detail.kind == "artist" || Library.detail.kind == "person";
@@ -688,6 +716,36 @@ export component DetailPage inherits ScrollView {
                             Library.shuffle(Library.detail.id);
                         }
                     }
+                    // What the page's item can also do, as its card's menu
+                    // offers.
+                    if root.queues: more := ContextMenuArea {
+                        width: 32px;
+                        height: 28px;
+                        enabled: false;
+
+                        Menu {
+                            MenuItem {
+                                title: "Play Next";
+                                activated => {
+                                    Library.queue(Library.detail.id, true);
+                                }
+                            }
+                            MenuItem {
+                                title: "Add to Queue";
+                                activated => {
+                                    Library.queue(Library.detail.id, false);
+                                }
+                            }
+                        }
+
+                        SquareButton {
+                            icon: @image-url("icons/ellipsis.svg");
+                            label: "More";
+                            clicked => {
+                                more.show({ x: 0, y: self.height + 4px });
+                            }
+                        }
+                    }
                     if LibraryUi.watchable(Library.detail.kind): ToggleButton {
                         icon: @image-url("icons/check.svg");
                         label: "Played";
@@ -778,23 +836,8 @@ export component DetailPage inherits ScrollView {
             }
         }
 
-        if root.songs: VerticalLayout {
-            padding-left: LibraryUi.inset - 8px;
-            padding-right: LibraryUi.inset - 8px;
-            for track in Library.tracks: SongRow {
-                track: track;
-                show-image: Library.detail.kind == "playlist";
-            }
-            if Library.tracks-note != "": HorizontalLayout {
-                padding-left: 8px;
-                Text {
-                    height: 32px;
-                    text: Library.tracks-note;
-                    color: Theme.secondary-text;
-                    font-size: Theme.font-normal;
-                    vertical-alignment: center;
-                }
-            }
+        if root.songs && !root.artist: SongList {
+            show-images: Library.detail.kind == "playlist";
         }
 
         if Library.people.length > 0: PeopleRow {
@@ -803,6 +846,16 @@ export component DetailPage inherits ScrollView {
 
         for row in Library.detail-rows: CardRow {
             content: row;
+        }
+
+        if root.songs && root.artist: VerticalLayout {
+            spacing: 8px;
+            StripHeader {
+                title: "Songs";
+            }
+            SongList {
+                show-images: true;
+            }
         }
     }
 }

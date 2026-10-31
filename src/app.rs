@@ -39,8 +39,13 @@ pub struct App {
     media_started: std::cell::Cell<bool>,
     /// What the system media controls show now.
     now_playing: RefCell<NowPlaying>,
-    /// The window media keys act on: the one focused most recently.
+    /// The window focused most recently.
     active: RefCell<Weak<PlayerController>>,
+    /// Counts the times a window was focused (`PlayerController::set_focus_serial`).
+    focus_serial: Cell<u64>,
+    /// The window the system's media controls show and media keys act on
+    /// (`retarget_media`).
+    media_target: RefCell<Weak<PlayerController>>,
     preferences: RefCell<Option<Rc<crate::preferences::PreferencesController>>>,
     history_window: RefCell<Option<Rc<crate::history::HistoryController>>>,
     downloads: RefCell<Option<Rc<crate::downloads::Downloads>>>,
@@ -96,6 +101,8 @@ impl App {
             media_started: std::cell::Cell::new(false),
             now_playing: RefCell::new(NowPlaying::default()),
             active: RefCell::new(Weak::new()),
+            focus_serial: Cell::new(0),
+            media_target: RefCell::new(Weak::new()),
             preferences: RefCell::new(None),
             history_window: RefCell::new(None),
             downloads: RefCell::new(None),
@@ -570,6 +577,12 @@ impl App {
         Some(target)
     }
 
+    /// Where the library opens a page for a window that plays (Go to
+    /// Album): a window with nothing to play, or a new one.
+    pub fn library_window(self: &Rc<Self>) -> Option<Rc<PlayerController>> {
+        self.idle_or_new_window(&[])
+    }
+
     fn idle_or_new_window(
         self: &Rc<Self>,
         mpv_options: &[(String, String)],
@@ -644,6 +657,8 @@ impl App {
                 Some(next) => self.set_active(&next),
                 None => self.publish_now_playing(NowPlaying::default()),
             }
+        } else {
+            self.retarget_media();
         }
         // The last window has saved its place by now, so the next launch
         // may start afresh.
@@ -1023,12 +1038,16 @@ impl App {
         *self.media.borrow_mut() = MediaControls::start(handler, window);
         // Whatever was published before they started.
         *self.now_playing.borrow_mut() = NowPlaying::default();
-        if let Some(active) = self.active.borrow().upgrade() {
-            active.publish_now_playing();
+        let target = self.media_target.borrow().upgrade();
+        if let Some(target) = target {
+            target.publish_now_playing();
         }
     }
 
     pub fn set_active(&self, controller: &Rc<PlayerController>) {
+        let serial = self.focus_serial.get() + 1;
+        self.focus_serial.set(serial);
+        controller.set_focus_serial(serial);
         let changed = self
             .active
             .borrow()
@@ -1036,19 +1055,67 @@ impl App {
             .is_none_or(|active| !Rc::ptr_eq(&active, controller));
         if changed {
             *self.active.borrow_mut() = Rc::downgrade(controller);
-            controller.publish_now_playing();
             let inspector = self.inspector.borrow().clone();
             if let Some(inspector) = inspector {
                 inspector.follow(controller);
             }
         }
+        self.retarget_media();
     }
 
-    pub fn is_active(&self, controller: &PlayerController) -> bool {
-        self.active
+    /// The window used last of those with something in their playlist,
+    /// other than `except`: where Play Next and Add to Queue from the
+    /// library in `except` go.
+    pub fn queue_window(&self, except: &PlayerController) -> Option<Rc<PlayerController>> {
+        let windows = self.windows.borrow();
+        used_last(
+            windows
+                .iter()
+                .filter(|window| !std::ptr::eq(Rc::as_ptr(window), except))
+                .map(|window| (window, window.is_idle(), window.focus_serial())),
+        )
+        .cloned()
+    }
+
+    /// Points the media controls and media keys at the window used last
+    /// of those with something in their playlist, or at the active window
+    /// when none has, and shows what it plays if that is another window.
+    /// The library shows only in a window with nothing to play, and Play
+    /// Next and Go to Album send the user to one: browsing there must not
+    /// take the controls from the window playing the music. Called when
+    /// the active window changes, a window closes, and a window starts or
+    /// stops having something to play.
+    pub fn retarget_media(&self) {
+        let target = {
+            let windows = self.windows.borrow();
+            used_last(
+                windows
+                    .iter()
+                    .map(|window| (window, window.is_idle(), window.focus_serial())),
+            )
+            .cloned()
+        }
+        .or_else(|| self.active_window());
+        let changed = match (&target, self.media_target.borrow().upgrade()) {
+            (Some(target), Some(current)) => !Rc::ptr_eq(target, &current),
+            (target, current) => target.is_some() != current.is_some(),
+        };
+        if !changed {
+            return;
+        }
+        *self.media_target.borrow_mut() = target.as_ref().map_or_else(Weak::new, Rc::downgrade);
+        match target {
+            Some(target) => target.publish_now_playing(),
+            None => self.publish_now_playing(NowPlaying::default()),
+        }
+    }
+
+    /// Whether `controller` is the window the media controls show.
+    pub fn is_media_target(&self, controller: &PlayerController) -> bool {
+        self.media_target
             .borrow()
             .upgrade()
-            .is_some_and(|active| std::ptr::eq(Rc::as_ptr(&active), controller))
+            .is_some_and(|target| std::ptr::eq(Rc::as_ptr(&target), controller))
     }
 
     /// Shows `now` in the system's media controls, if it changed.
@@ -1084,12 +1151,8 @@ impl App {
                 self.open_sources(vec![uri], false);
             }
             command => {
-                let target = self
-                    .active
-                    .borrow()
-                    .upgrade()
-                    .or_else(|| self.windows.borrow().last().cloned());
-                if let Some(target) = target {
+                let target = self.media_target.borrow().upgrade();
+                if let Some(target) = target.or_else(|| self.active_window()) {
                     target.media_command(command);
                 }
             }
@@ -1402,5 +1465,37 @@ fn watch_first_window(window: &Rc<PlayerController>) {
 fn spawn(future: impl std::future::Future<Output = ()> + 'static) {
     if let Err(error) = slint::spawn_local(future) {
         log::error!("could not show the dialog: {error}");
+    }
+}
+
+/// Of windows as (window, whether it has nothing to play, focus serial),
+/// the one focused last of those with something to play.
+fn used_last<T>(windows: impl IntoIterator<Item = (T, bool, u64)>) -> Option<T> {
+    windows
+        .into_iter()
+        .filter(|(_, idle, _)| !idle)
+        .max_by_key(|(_, _, serial)| *serial)
+        .map(|(window, _, _)| window)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::used_last;
+
+    #[test]
+    fn media_follow_the_window_used_last_that_plays() {
+        // The library's window, focused last, plays nothing: the window
+        // playing keeps the media controls.
+        assert_eq!(
+            used_last([("playing", false, 3), ("library", true, 5)]),
+            Some("playing")
+        );
+        assert_eq!(
+            used_last([("first", false, 3), ("second", false, 7), ("idle", true, 9)]),
+            Some("second")
+        );
+        // None plays: the caller takes the active window.
+        assert_eq!(used_last([("a", true, 3), ("b", true, 5)]), None);
+        assert_eq!(used_last::<&str>([]), None);
     }
 }

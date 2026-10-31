@@ -1,6 +1,6 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Playback, Media, Actions, PlaylistItem, TrackItem } from "globals.slint";
+import { Playback, Media, Actions, PlaylistItem, TrackItem, LyricItem } from "globals.slint";
 import { IconButton, TextButton, Segmented, Switch, SettingRow, SectionTitle, ValueSlider, ChoiceRow, Slider, Format } from "widgets.slint";
 
 component PanelSection inherits VerticalLayout {
@@ -295,8 +295,21 @@ component PlaylistPanel inherits VerticalLayout {
                     Actions.patina("playlist-wrong-subtitle");
                 }
             }
-            if Media.selection-urls: MenuSeparator { }
-            if Media.selection-urls: MenuItem {
+            if Media.selection-song: MenuSeparator { }
+            if Media.selection-song: MenuItem {
+                title: "Go to Album";
+                activated => {
+                    Actions.patina("playlist-go-to-album");
+                }
+            }
+            if Media.selection-song: MenuItem {
+                title: "Go to Artist";
+                activated => {
+                    Actions.patina("playlist-go-to-artist");
+                }
+            }
+            if Media.selection-web: MenuSeparator { }
+            if Media.selection-web: MenuItem {
                 title: "Open in Browser";
                 activated => {
                     Actions.patina("playlist-open-in-browser");
@@ -480,6 +493,139 @@ component ChaptersPanel inherits VerticalLayout {
                     color: Theme.secondary-text;
                     font-size: Theme.font-small;
                     vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// A line of a song's lyrics. A timed one plays from where it begins when
+// clicked, and stands out while it is sung.
+component LyricRow inherits Rectangle {
+    in property <LyricItem> line;
+    in property <bool> timed;
+    in property <bool> current;
+    // It became the line being sung, or was made so: the panel brings it
+    // into sight.
+    callback reached;
+
+    // A line of synced lyrics may have no start, which as a seek mpv would
+    // count back from the end.
+    property <bool> plays: root.timed && root.line.text != "" && root.line.time >= 0;
+
+    border-radius: Theme.control-radius;
+    background: root.plays && touch.has-hover ? Theme.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: root.line.text;
+    accessible-action-default => {
+        if root.plays {
+            Actions.seek(root.line.time, true);
+        }
+    }
+
+    init => {
+        if self.current {
+            root.reached();
+        }
+    }
+    changed current => {
+        if self.current {
+            root.reached();
+        }
+    }
+
+    // A break between verses is a gap.
+    height: root.line.text == "" ? 10px : words.preferred-height;
+
+    words := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        Text {
+            text: root.line.text;
+            // One weight for every timed line, so that the one sung wraps
+            // as it did before and the lines under it stay where they are.
+            color: !root.timed ? Theme.text : root.current ? Theme.playing : Theme.secondary-text;
+            font-size: Theme.font-heading;
+            font-weight: root.timed ? 600 : 400;
+            wrap: word-wrap;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.plays;
+        mouse-cursor: root.plays ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            Actions.seek(root.line.time, true);
+        }
+    }
+}
+
+// The lyrics of the Jellyfin song playing. Timed ones follow the song,
+// the line being sung kept a little above the middle, except for a few
+// seconds after the user scrolls them.
+component LyricsPanel inherits ScrollView {
+    property <int> lines: Media.lyrics.length;
+    // Where the line being sung is, for the scroll that brings it into
+    // sight once the rows are laid out.
+    property <length> line-top;
+    property <length> line-height;
+    property <bool> browsing;
+
+    content-width: self.visible-width;
+    // Following the song glides from line to line rather than jumps.
+    animate content-y { duration: 250ms; easing: ease-out; }
+
+    function reveal() {
+        self.content-y = clamp(self.visible-height * 0.4 - root.line-top - root.line-height / 2, min(0px, self.visible-height - self.content-height), 0px);
+    }
+
+    // Another song's lyrics start from the top.
+    changed lines => {
+        self.content-y = 0;
+        root.browsing = false;
+    }
+    scrolled => {
+        root.browsing = true;
+        browse-timer.restart();
+        browse-timer.running = true;
+    }
+
+    browse-timer := Timer {
+        interval: 4s;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.browsing = false;
+            root.reveal();
+        }
+    }
+    // A row reached as it is made has no place yet.
+    reveal-timer := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.reveal();
+        }
+    }
+
+    VerticalLayout {
+        alignment: start;
+        padding-right: 8px;
+        padding-bottom: 8px;
+        spacing: 2px;
+        for line[index] in Media.lyrics: LyricRow {
+            line: line;
+            timed: Media.lyrics-timed;
+            current: index == Media.lyric;
+            reached => {
+                root.line-top = self.y;
+                root.line-height = self.height;
+                if !root.browsing {
+                    reveal-timer.restart();
+                    reveal-timer.running = true;
                 }
             }
         }
@@ -953,7 +1099,10 @@ export component Sidebar inherits Rectangle {
     in property <bool> drawer;
     callback close;
 
-    property <bool> playlist-group: root.tab == "playlist" || root.tab == "chapters";
+    // The Lyrics tab, chosen for a song with lyrics, shows the playlist
+    // while what plays has none, and the lyrics again when it has.
+    property <string> shown: root.tab == "lyrics" && !Media.has-lyrics ? "playlist" : root.tab;
+    property <bool> playlist-group: root.shown == "playlist" || root.shown == "chapters" || root.shown == "lyrics";
 
     width: Theme.sidebar-width;
     background: Theme.panel-background;
@@ -983,10 +1132,10 @@ export component Sidebar inherits Rectangle {
             spacing: 8px;
             Segmented {
                 horizontal-stretch: 1;
-                options: root.playlist-group ? ["Playlist", "Chapters"] : ["Video", "Audio", "Subtitles"];
-                selected: root.tab == "playlist" || root.tab == "video" ? 0 : root.tab == "chapters" || root.tab == "audio" ? 1 : 2;
+                options: !root.playlist-group ? ["Video", "Audio", "Subtitles"] : Media.has-lyrics ? ["Playlist", "Chapters", "Lyrics"] : ["Playlist", "Chapters"];
+                selected: root.shown == "playlist" || root.shown == "video" ? 0 : root.shown == "chapters" || root.shown == "audio" ? 1 : 2;
                 activated(index) => {
-                    root.tab = root.playlist-group ? (index == 0 ? "playlist" : "chapters") : (index == 0 ? "video" : index == 1 ? "audio" : "subtitles");
+                    root.tab = root.playlist-group ? (index == 0 ? "playlist" : index == 1 ? "chapters" : "lyrics") : (index == 0 ? "video" : index == 1 ? "audio" : "subtitles");
                 }
             }
             if !root.drawer: IconButton {
@@ -1001,20 +1150,23 @@ export component Sidebar inherits Rectangle {
             }
         }
 
-        if root.tab == "playlist": PlaylistPanel {
+        if root.shown == "playlist": PlaylistPanel {
             vertical-stretch: 1;
             compact: root.drawer;
         }
-        if root.tab == "chapters": ChaptersPanel {
+        if root.shown == "chapters": ChaptersPanel {
             vertical-stretch: 1;
         }
-        if root.tab == "video": VideoPanel {
+        if root.shown == "lyrics": LyricsPanel {
             vertical-stretch: 1;
         }
-        if root.tab == "audio": AudioPanel {
+        if root.shown == "video": VideoPanel {
             vertical-stretch: 1;
         }
-        if root.tab == "subtitles": SubtitlesPanel {
+        if root.shown == "audio": AudioPanel {
+            vertical-stretch: 1;
+        }
+        if root.shown == "subtitles": SubtitlesPanel {
             vertical-stretch: 1;
         }
     }

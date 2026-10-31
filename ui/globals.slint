@@ -37,6 +37,14 @@ export struct OnlineSubtitle {
     exact: bool,
 }
 
+// A line of a song's lyrics: an empty one is a break between verses.
+export struct LyricItem {
+    text: string,
+    // Where clicking it plays from, in seconds; negative for a line that
+    // can't be played from (`Lyrics::plays_from`).
+    time: float,
+}
+
 export struct ChapterItem {
     title: string,
     time: float,
@@ -157,14 +165,19 @@ export global Media {
     in property <int> playlist-pos: -1;
     in property <string> playlist-summary;
     // What the playlist row menu acts on: how many rows are selected, and
-    // whether they include local files and network streams.
+    // whether they include local files, network streams and web pages
+    // (http or https, which a browser opens: not a Jellyfin entry).
     in property <int> playlist-selected;
     in property <bool> selection-local;
     in property <bool> selection-urls;
+    in property <bool> selection-web;
     // One local file is selected, so its subtitles can be chosen, and
     // whether its matched subtitles have been turned down.
     in property <bool> selection-subtitles;
     in property <bool> wrong-subtitle;
+    // One Jellyfin song is selected, whose album and artist the library
+    // can show.
+    in property <bool> selection-song;
     in property <[TrackItem]> video-tracks;
     in property <[TrackItem]> audio-tracks;
     in property <[TrackItem]> sub-tracks;
@@ -180,6 +193,13 @@ export global Media {
     in property <bool> downloaded-subtitle;
     in property <[ChapterItem]> chapters;
     in property <int> chapter: -1;
+    // The Jellyfin song playing has lyrics, which the playlist's Lyrics
+    // tab shows once they have come: their lines, whether the lines say
+    // when they begin, and the line being sung (-1 for none).
+    in property <bool> has-lyrics;
+    in property <[LyricItem]> lyrics;
+    in property <bool> lyrics-timed;
+    in property <int> lyric: -1;
     in property <[RecentItem]> recent;
     in property <string> resume-title;
     in property <[DeviceItem]> audio-devices;

@@ -28,8 +28,10 @@ pub const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 /// track): seeking along the bar makes one report, not one per step.
 pub const CHANGE_GAP: Duration = Duration::from_secs(1);
 
-/// The width artwork for the system's media controls is asked at.
-const ART_WIDTH: u32 = 480;
+/// The width a song's or an episode's artwork is asked at, for the
+/// system's media controls and for music mode's cover, which is 300
+/// pixels wide (twice that on a screen of high density).
+const ART_WIDTH: u32 = 600;
 
 /// How often a load waiting on the server looks whether mpv still wants
 /// the entry.
@@ -256,6 +258,9 @@ pub struct Playing {
     pub item_id: String,
     pub title: String,
     pub audio_only: bool,
+    /// The server has lyrics for the song, which the playlist drawer's
+    /// Lyrics tab shows once they have come.
+    pub has_lyrics: bool,
     pub play_session_id: Option<String>,
     pub media_source_id: String,
     pub live_stream_id: Option<String>,
@@ -678,6 +683,16 @@ pub fn plan(
         stream_options.push(("max_redirects", "0"));
         options.push(("prefetch-playlist", false.into()));
     }
+    let shown = shown(client, item);
+    if audio
+        && !shown.art_url.is_empty()
+        && (method == PlayMethod::Transcode || !has_picture(source))
+    {
+        // A song with no cover in what mpv plays (none in the file, or a
+        // transcode, which carries none) shows its album's from the
+        // server, as the media controls do: the image needs no token.
+        options.push(("cover-art-files", Value::List(vec![shown.art_url.clone()])));
+    }
     let chosen = |asked: Option<i32>, default: Option<i32>| asked.or(default);
     let playing = Playing {
         entry: asked.entry.to_owned(),
@@ -685,6 +700,7 @@ pub fn plan(
         item_id: item.id.clone(),
         title,
         audio_only: audio,
+        has_lyrics: audio && item.has_lyrics,
         play_session_id: answer.play_session_id.clone(),
         media_source_id: source.id.clone(),
         live_stream_id: source.live_stream_id.clone(),
@@ -694,7 +710,7 @@ pub fn plan(
         audio: chosen(asked.audio(), source.default_audio_stream_index),
         subtitle: chosen(asked.subtitle(), source.default_subtitle_stream_index),
         start: start.unwrap_or(0.0),
-        shown: shown(client, item),
+        shown,
         versions: item
             .media_sources
             .iter()
@@ -730,6 +746,15 @@ pub fn plan(
             options,
         },
     })
+}
+
+/// Whether a source's file holds a picture mpv shows: a video, or a
+/// cover embedded in a song.
+fn has_picture(source: &MediaSourceInfo) -> bool {
+    source
+        .media_streams
+        .iter()
+        .any(|stream| matches!(stream.kind, StreamKind::Video | StreamKind::EmbeddedImage))
 }
 
 /// The names and artwork the media controls show for an item: an
@@ -1208,6 +1233,8 @@ impl Report {
 #[derive(Debug, Clone)]
 pub struct Sent {
     pub server_id: String,
+    /// The item it was about.
+    pub item_id: String,
     /// The client it went with: a 401 means only that sign-in is gone.
     pub client: Client,
     pub stopped: bool,
@@ -1322,6 +1349,7 @@ impl Reporter {
                         }
                         let _ = answers.try_send(Sent {
                             server_id: job.server_id.clone(),
+                            item_id: job.report.play_session().0.to_owned(),
                             stopped: matches!(job.report, Report::Stopped(_)),
                             client: job.client,
                             result,
@@ -1502,6 +1530,60 @@ mod tests {
         assert!((playing.start - 12.3456789).abs() < 1e-9);
         assert!(playing.shown.art_url.contains("/Items/film/Images/Primary"));
         assert!(!playing.shown.art_url.contains("TOKEN"));
+    }
+
+    #[test]
+    fn a_song_without_a_cover_of_its_own_shows_its_albums() {
+        let client = client("http://127.0.0.1:18096");
+        let song = item(
+            r#"{"Id": "song", "Name": "Night Ferry", "Type": "Audio", "MediaType": "Audio",
+                "HasLyrics": true, "Album": "Low Tide", "AlbumId": "album",
+                "AlbumPrimaryImageTag": "a1", "ImageTags": {"Primary": "s1"},
+                "Artists": ["Mira Vale"]}"#,
+        );
+        let info = ItemInfo {
+            audio: true,
+            ..info("Night Ferry")
+        };
+        let choice = Choice::default();
+        let answer = |streams: &str, direct: bool| -> PlaybackInfoResponse {
+            serde_json::from_str(&format!(
+                r#"{{"PlaySessionId": "p1", "MediaSources": [{{"Id": "song", "Container": "flac",
+                    "SupportsDirectPlay": {direct}, "SupportsTranscoding": true,
+                    "TranscodingUrl": "/Audio/song/main.m3u8?ApiKey=TOKEN",
+                    "TranscodingSubProtocol": "hls", "MediaStreams": [{streams}]}}]}}"#
+            ))
+            .unwrap()
+        };
+        let audio = r#"{"Index": 0, "Type": "Audio", "Codec": "flac"}"#;
+        let cover = r#"{"Index": 1, "Type": "EmbeddedImage", "Codec": "mjpeg"}"#;
+        let planned = |answer: PlaybackInfoResponse| {
+            plan(&client, None, &asked(&song, &info, &choice), answer).unwrap()
+        };
+
+        // Nothing in the file: the album's image, which is the media
+        // controls' too, with no token in it.
+        let bare = planned(answer(audio, true));
+        let art = &bare.playing.shown.art_url;
+        assert!(art.contains("/Items/album/Images/Primary?tag=a1"), "{art}");
+        assert!(!art.contains("TOKEN"));
+        assert_eq!(
+            bare.options.get("cover-art-files"),
+            Some(&Value::List(vec![art.clone()]))
+        );
+        assert!(bare.playing.audio_only && bare.playing.has_lyrics);
+        // The file's own cover shows as it is.
+        let covered = planned(answer(&format!("{audio}, {cover}"), true));
+        assert_eq!(covered.options.get("cover-art-files"), None);
+        // A transcode carries no cover, whatever the file holds.
+        let transcoded = planned(answer(&format!("{audio}, {cover}"), false));
+        assert_eq!(transcoded.playing.method, PlayMethod::Transcode);
+        assert_eq!(
+            transcoded.options.get("cover-art-files"),
+            Some(&Value::List(vec![art.clone()]))
+        );
+        // Lyrics are a song's.
+        assert!(!direct().has_lyrics);
     }
 
     #[test]
@@ -2195,6 +2277,7 @@ mod tests {
             sent.iter()
                 .all(|sent| sent.result.is_ok() && sent.server_id == "srv")
         );
+        assert!(sent.iter().all(|sent| sent.item_id == playing.item_id));
         assert_eq!(
             sent.iter().map(|sent| sent.stopped).collect::<Vec<_>>(),
             [false, false, true]

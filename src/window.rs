@@ -2,6 +2,7 @@
 
 use crate::app::App;
 use crate::input::{Binding, KeyCombo};
+use crate::jellyfin::lyrics::Lyrics;
 use crate::jellyfin::models::StreamKind;
 use crate::jellyfin::playback::{self, Playing, Report};
 use crate::jellyfin::segments::{self, Segments, Span};
@@ -18,8 +19,9 @@ use crate::thumbnails;
 use crate::util::{self, format_delay, format_speed, format_time};
 use crate::ytdl;
 use crate::{
-    Actions, ChapterItem, DeviceItem, Library, Media, OnlineSubs, OnlineSubtitle, Osd, Platform,
-    Playback, PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem, TrackItem,
+    Actions, ChapterItem, DeviceItem, Library, LyricItem, Media, OnlineSubs, OnlineSubtitle, Osd,
+    Platform, Playback, PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem,
+    TrackItem,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -90,7 +92,7 @@ pub struct PlayerController {
     mpv: Arc<Mpv>,
     state: RefCell<PlaybackState>,
     ready: Cell<bool>,
-    pending_open: RefCell<Vec<(Vec<String>, bool)>>,
+    pending_open: RefCell<Vec<(Vec<String>, Placement)>>,
     /// Bring the window to the front once it exists, with the desktop's
     /// activation token if a launch passed one on.
     pending_raise: RefCell<Option<Option<String>>>,
@@ -229,9 +231,15 @@ pub struct PlayerController {
     /// Seek-bar previews from the server's trickplay images, for a
     /// Jellyfin file that has them.
     jellyfin_tiles: RefCell<Option<Rc<trickplay::Tiles>>>,
+    /// The lyrics of the Jellyfin song playing, once its server has sent
+    /// them, and the line being sung.
+    jellyfin_lyrics: RefCell<Option<Lyrics>>,
+    lyric_line: Cell<Option<usize>>,
     /// The time the seek preview was asked for last, shown once a tile
     /// that was missing has come.
     preview_time: Cell<f64>,
+    /// See `set_focus_serial`.
+    focus_serial: Cell<u64>,
     /// The window's size when it left the library to play something, which
     /// it goes back to when it is idle again: fitted to a small video or a
     /// cover, the library's bar would hide its tabs.
@@ -288,8 +296,11 @@ impl PlayerController {
             jellyfin_segments: RefCell::new(Segments::default()),
             jellyfin_offer: Cell::new(None),
             jellyfin_tiles: RefCell::new(None),
+            jellyfin_lyrics: RefCell::new(None),
+            lyric_line: Cell::new(None),
             preview_time: Cell::new(0.0),
             library_size: Cell::new(None),
+            focus_serial: Cell::new(0),
             app: Rc::downgrade(app),
             window,
             player: RefCell::new(Some(player)),
@@ -667,8 +678,8 @@ impl PlayerController {
         self.ready.set(true);
         self.window.global::<Playback>().set_ready(true);
         let pending: Vec<_> = self.pending_open.borrow_mut().drain(..).collect();
-        for (sources, append) in pending {
-            self.load(&sources, append);
+        for (sources, placement) in pending {
+            self.load(&sources, placement);
         }
     }
 
@@ -691,31 +702,74 @@ impl PlayerController {
 
     /// Opens sources, replacing the playlist unless `append` is set.
     pub fn open(&self, sources: Vec<String>, append: bool) {
+        let placement = if append {
+            Placement::Append
+        } else {
+            Placement::Replace
+        };
+        self.open_at(sources, placement);
+    }
+
+    /// Opens sources in place of the playlist and in their order, playing
+    /// from the one at `start` (those before it are in the playlist too,
+    /// before it), with the playlist's Shuffle off: the library's Play of
+    /// an album, or of one of its songs.
+    pub fn open_from(&self, sources: Vec<String>, start: usize) {
+        self.open_at(sources, Placement::InOrder(start));
+    }
+
+    /// Opens sources in place of the playlist in a random order, with the
+    /// playlist's Shuffle on: the library's Shuffle.
+    pub fn open_shuffled(&self, sources: Vec<String>) {
+        self.open_at(sources, Placement::Shuffled);
+    }
+
+    fn open_at(&self, sources: Vec<String>, placement: Placement) {
         if sources.is_empty() {
             return;
         }
-        if !append {
+        if placement != Placement::Append {
             self.opens.set(self.opens.get() + 1);
         }
         if self.ready.get() {
-            self.load(&sources, append);
+            self.load(&sources, placement);
         } else {
-            self.pending_open.borrow_mut().push((sources, append));
+            self.pending_open.borrow_mut().push((sources, placement));
         }
     }
 
+    /// Where Play Next and Add to Queue from this window's library go: the
+    /// window used last of those with something to play, since the
+    /// library shows only while this one has nothing. None when no other
+    /// has anything.
+    pub fn queue_window(&self) -> Option<Rc<PlayerController>> {
+        self.app.upgrade()?.queue_window(self)
+    }
+
+    /// Counts the times the window was focused, in the order of all the
+    /// windows': the window with the highest was used last.
+    pub fn set_focus_serial(&self, serial: u64) {
+        self.focus_serial.set(serial);
+    }
+
+    pub fn focus_serial(&self) -> u64 {
+        self.focus_serial.get()
+    }
+
     /// Adds sources to the playlist: right after the file playing with
-    /// `next`, otherwise at the end. An idle window starts playing them.
+    /// `next`, otherwise at the end. A window with nothing to play opens
+    /// them as a new playlist (`queueing`).
     pub fn queue(&self, sources: Vec<String>, next: bool) {
-        let at = usize::try_from(self.state.borrow().playlist_pos).ok();
-        match at {
-            Some(at) if next && self.ready.get() && !self.is_idle() => {
+        let playing = usize::try_from(self.state.borrow().playlist_pos).ok();
+        match queueing(self.is_idle(), next && self.ready.get(), playing) {
+            Queueing::Open => self.open(sources, false),
+            Queueing::After(at) => {
                 let player = self.player();
-                for (offset, source) in sources.iter().enumerate() {
-                    loadfile(&player, source, "insert-at", Some(at + 1 + offset));
+                for (index, mode, place) in queue_steps(sources.len(), at) {
+                    loadfile(&player, &sources[index], mode, place);
                 }
             }
-            _ => self.open(sources, true),
+            Queueing::End => self.open(sources, true),
         }
     }
 
@@ -728,7 +782,8 @@ impl PlayerController {
         self.opens.get()
     }
 
-    fn load(&self, sources: &[String], append: bool) {
+    fn load(&self, sources: &[String], placement: Placement) {
+        let append = placement == Placement::Append;
         if !append && self.is_idle() && self.window.global::<Library>().get_shown() {
             self.remember_library_size();
         }
@@ -743,13 +798,24 @@ impl PlayerController {
             }
             self.has_fitted.set(false);
         }
-        for (index, source) in sources.iter().enumerate() {
-            let mode = if append || index > 0 {
-                "append-play"
-            } else {
-                "replace"
-            };
-            loadfile(&player, source, mode, None);
+        if placement == Placement::Shuffled {
+            // What is left of a playlist that ended.
+            player.command(&["playlist-clear"]);
+        }
+        for (index, mode, place) in load_steps(sources.len(), placement) {
+            loadfile(&player, &sources[index], mode, place);
+        }
+        match placement {
+            // Shuffled as the playlist's Shuffle does it, which keeps their
+            // order for turning it off again, and only then played: nothing
+            // starts loading before.
+            Placement::Shuffled => {
+                player.set("shuffle", true);
+                player.command(&["playlist-shuffle"]);
+                player.command(&["playlist-play-index", "0"]);
+            }
+            Placement::InOrder(_) => player.set("shuffle", false),
+            Placement::Replace | Placement::Append => {}
         }
         if !append {
             player.set("pause", self.app().prefs().pause_when_open);
@@ -800,6 +866,7 @@ impl PlayerController {
                     self.reset_thumbnails();
                     self.set_online(None);
                     self.reset_segments();
+                    self.clear_lyrics(true);
                     self.window
                         .global::<Media>()
                         .set_video_versions(ModelRc::new(VecModel::default()));
@@ -827,6 +894,8 @@ impl PlayerController {
                         // Whether it is music is the server's to say, which
                         // the window knows only now.
                         changed.insert(Prop::TrackList);
+                    } else {
+                        self.clear_lyrics(false);
                     }
                     let state = self.state.borrow();
                     // mpv may not have said the title it was given yet.
@@ -907,7 +976,7 @@ impl PlayerController {
                     // A seek finished (or playback began): tell the media
                     // controls where playback is now.
                     if let Some(app) = self.app.upgrade()
-                        && app.is_active(self)
+                        && app.is_media_target(self)
                     {
                         app.media_position(self.state.borrow().position, true);
                     }
@@ -996,16 +1065,16 @@ impl PlayerController {
         // screen; the next file decides afresh.
         if any(&[Prop::Idle]) && state.idle {
             self.music_override.set(false);
+            self.clear_lyrics(false);
             self.leave_music_mode(false);
             self.restore_library_size();
             // What played may have moved on the server's progress, which
-            // the library shows again now. Deferred: it reads the state
-            // borrowed here. After a Jellyfin item, once the server has
-            // taken the report of its end (`Change::Played`).
-            if !self.jellyfin_stopping.get()
-                && let Some(library) = self.library()
-            {
-                Timer::single_shot(Duration::ZERO, move || library.refresh());
+            // the library shows again now; after a Jellyfin item, once the
+            // server has taken the report of its end. Deferred: it reads
+            // the state borrowed here.
+            if let Some(library) = self.library() {
+                let stopping = self.jellyfin_stopping.get();
+                Timer::single_shot(Duration::ZERO, move || library.shown_again(stopping));
             }
         }
         if any(&[Prop::TrackList, Prop::Idle]) && !state.idle {
@@ -1024,7 +1093,15 @@ impl PlayerController {
             && let Some(app) = self.app.upgrade()
         {
             // Deferred: the app may be borrowing its window list right now.
-            Timer::single_shot(Duration::ZERO, move || app.playback_changed());
+            let idle_changed = any(&[Prop::Idle]);
+            Timer::single_shot(Duration::ZERO, move || {
+                app.playback_changed();
+                // The media controls follow a window that has something
+                // to play over one that has nothing.
+                if idle_changed {
+                    app.retarget_media();
+                }
+            });
         }
         if any(&[Prop::PausedForCache, Prop::CacheBuffering, Prop::Idle]) {
             playback.set_buffering(!state.idle && (state.paused_for_cache || self.loading.get()));
@@ -1045,7 +1122,7 @@ impl PlayerController {
         if any(&[Prop::TimePos]) {
             playback.set_position(state.position as f32);
             if let Some(app) = self.app.upgrade()
-                && app.is_active(self)
+                && app.is_media_target(self)
             {
                 app.media_position(state.position, false);
             }
@@ -1295,7 +1372,7 @@ impl PlayerController {
             Prop::Chapter,
             Prop::ChapterMetadata,
         ]) && let Some(app) = self.app.upgrade()
-            && app.is_active(self)
+            && app.is_media_target(self)
         {
             app.publish_now_playing(self.now_playing(&state));
         }
@@ -2201,6 +2278,8 @@ impl PlayerController {
                     window.open(paths, false);
                 }
             }
+            "playlist-go-to-album" => self.go_to_music(false),
+            "playlist-go-to-artist" => self.go_to_music(true),
             "playlist-remove" => self.playlist_remove(&self.selected_entries()),
             "playlist-copy" => self.playlist_copy(false),
             "playlist-cut" => self.playlist_copy(true),
@@ -2799,7 +2878,7 @@ impl PlayerController {
         self.window.set_music_art(prefs.music_mode_show_album_art);
         if !matches!(
             self.window.get_sidebar_tab().as_str(),
-            "playlist" | "chapters"
+            "playlist" | "chapters" | "lyrics"
         ) {
             self.window.set_sidebar_tab("playlist".into());
         }
@@ -3028,10 +3107,16 @@ impl PlayerController {
         }
     }
 
+    /// Shows what the window plays in the media controls, and where: they
+    /// show this window from now on.
     pub fn publish_now_playing(&self) {
         if let Some(app) = self.app.upgrade() {
-            let now = self.now_playing(&self.state.borrow());
+            let (now, position) = {
+                let state = self.state.borrow();
+                (self.now_playing(&state), state.position)
+            };
             app.publish_now_playing(now);
+            app.media_position(position, true);
         }
     }
 
@@ -3316,6 +3401,7 @@ impl PlayerController {
         media.set_playlist_selected(entries.len() as i32);
         media.set_selection_local(entries.iter().any(|entry| entry.is_local()));
         media.set_selection_urls(entries.iter().any(|entry| util::is_url(&entry.filename)));
+        media.set_selection_web(entries.iter().any(|entry| util::is_web(&entry.filename)));
         let single = match entries.as_slice() {
             [entry] if entry.is_local() && subtitle_match::takes_subtitles(&entry.filename) => {
                 Some(*entry)
@@ -3325,6 +3411,101 @@ impl PlayerController {
         media.set_selection_subtitles(single.is_some());
         media.set_wrong_subtitle(
             single.is_some_and(|entry| self.app().subtitle_choice(&entry.filename).wrong),
+        );
+        media.set_selection_song(match entries.as_slice() {
+            [entry] => self.is_jellyfin_song(&entry.filename),
+            _ => false,
+        });
+    }
+
+    /// Whether a playlist entry is a Jellyfin song: as it plays, or as the
+    /// library opened it.
+    fn is_jellyfin_song(&self, entry: &str) -> bool {
+        if session::parse_entry(entry).is_none() {
+            return false;
+        }
+        let playing = self
+            .jellyfin
+            .borrow()
+            .as_ref()
+            .filter(|playing| playing.entry == entry)
+            .map(|playing| playing.audio_only);
+        playing.unwrap_or_else(|| {
+            self.app()
+                .jellyfin()
+                .registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(entry)
+                .is_some_and(|info| info.audio)
+        })
+    }
+
+    /// Go to Album and Go to Artist: the library's page of the selected
+    /// Jellyfin song's album, or its artist, in an idle window or a new
+    /// one, since this one plays. The song says which they are.
+    fn go_to_music(&self, artist: bool) {
+        let entries = self.selected_entries();
+        let [(_, entry)] = entries.as_slice() else {
+            return;
+        };
+        let Some((server_id, item_id)) = session::parse_entry(&entry.filename) else {
+            return;
+        };
+        let session = self.app().jellyfin();
+        let Some(account) = session.account(server_id) else {
+            return;
+        };
+        let server_id = server_id.to_owned();
+        let weak = self.this.clone();
+        let client = account.client;
+        let asked = client.clone();
+        let item_id = item_id.to_owned();
+        session::load(
+            move || asked.item(&item_id),
+            move |result| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let song = match result {
+                    Ok(song) => song,
+                    Err(crate::jellyfin::api::Error::Unauthorized) => {
+                        this.app().jellyfin().unauthorized(&server_id, &client);
+                        return;
+                    }
+                    Err(error) => {
+                        let name = this
+                            .app()
+                            .jellyfin()
+                            .server(&server_id)
+                            .map(|server| server.name);
+                        this.show_message(
+                            "Can't Open the Library",
+                            &error.about(name.as_deref()),
+                            4.0,
+                        );
+                        return;
+                    }
+                };
+                let page = if artist {
+                    song.album_artists
+                        .first()
+                        .or(song.artist_items.first())
+                        .map(|artist| (artist.id.clone(), "artist"))
+                } else {
+                    song.album_id.clone().map(|album| (album, "album"))
+                };
+                let Some((id, kind)) = page else {
+                    return;
+                };
+                let app = this.app();
+                if let Some(window) = app.library_window() {
+                    if let Some(library) = window.library() {
+                        library.go_to(&server_id, &id, kind);
+                    }
+                    window.raise();
+                }
+            },
         );
     }
 
@@ -3621,6 +3802,7 @@ impl PlayerController {
         self.set_jellyfin_qualities();
         self.set_jellyfin_versions();
         self.fetch_segments(kept);
+        self.fetch_lyrics();
     }
 
     /// Reports the playback's start, and its progress from then on.
@@ -3809,6 +3991,7 @@ impl PlayerController {
         }
         if changed.contains(&Prop::TimePos) {
             self.check_segments();
+            self.follow_lyrics();
         }
         // mpv keeps a file open at its end, which for the server is where
         // playback stopped: it counts it watched (or not) from that. A seek
@@ -4307,6 +4490,114 @@ impl PlayerController {
         self.player()
             .command_quiet(&["seek", &format!("{:.3}", span.end), "absolute+exact"]);
         self.show_osd(segments::skipped_label(span.kind), "", None);
+    }
+
+    // ---- Jellyfin lyrics -------------------------------------------------
+
+    /// Empties the playlist's Lyrics tab, and with `keep_tab` leaves the
+    /// tab, while the next file opens: between two songs with lyrics, the
+    /// playlist would show for a moment in their place.
+    fn clear_lyrics(&self, keep_tab: bool) {
+        self.jellyfin_lyrics.borrow_mut().take();
+        self.lyric_line.set(None);
+        let media = self.window.global::<Media>();
+        if media.get_lyrics().row_count() > 0 {
+            media.set_lyrics(ModelRc::default());
+        }
+        media.set_lyric(-1);
+        if !keep_tab {
+            media.set_has_lyrics(false);
+        }
+    }
+
+    /// Asks the server for the Jellyfin song's lyrics, when it has some.
+    /// The Lyrics tab shows from now, its lines once they have come.
+    fn fetch_lyrics(&self) {
+        let Some(playing) = self.jellyfin.borrow().clone() else {
+            return;
+        };
+        let session = self.app().jellyfin();
+        let Some(account) = session
+            .account(&playing.server_id)
+            .filter(|_| playing.has_lyrics)
+        else {
+            self.clear_lyrics(false);
+            return;
+        };
+        self.window.global::<Media>().set_has_lyrics(true);
+        let track = self.track.get();
+        let weak = self.this.clone();
+        let client = account.client;
+        session::load(
+            {
+                let client = client.clone();
+                let item_id = playing.item_id.clone();
+                move || client.lyrics(&item_id)
+            },
+            move |result| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                // Another file (or the same again) has started since.
+                if this.track.get() != track || this.jellyfin.borrow().is_none() {
+                    return;
+                }
+                let lyrics = match result {
+                    Ok(found) => found.as_ref().and_then(Lyrics::new),
+                    Err(crate::jellyfin::api::Error::Unauthorized) => {
+                        this.app()
+                            .jellyfin()
+                            .unauthorized(&playing.server_id, &client);
+                        None
+                    }
+                    Err(error) => {
+                        log::debug!("no lyrics for {}: {error}", playing.entry);
+                        None
+                    }
+                };
+                this.show_lyrics(lyrics);
+            },
+        );
+    }
+
+    fn show_lyrics(&self, lyrics: Option<Lyrics>) {
+        let Some(lyrics) = lyrics else {
+            self.clear_lyrics(false);
+            return;
+        };
+        let lines: Vec<LyricItem> = lyrics
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| LyricItem {
+                text: line.text.clone().into(),
+                time: lyrics.plays_from(index).map_or(-1.0, |start| start as f32),
+            })
+            .collect();
+        let media = self.window.global::<Media>();
+        media.set_lyrics_timed(lyrics.timed);
+        media.set_lyrics(ModelRc::new(VecModel::from(lines)));
+        media.set_lyric(-1);
+        media.set_has_lyrics(true);
+        self.lyric_line.set(None);
+        *self.jellyfin_lyrics.borrow_mut() = Some(lyrics);
+        self.follow_lyrics();
+    }
+
+    /// The position moved: timed lyrics follow it to the line being sung.
+    /// Not at the file's end, where mpv no longer says where it is.
+    fn follow_lyrics(&self) {
+        let line = match &*self.jellyfin_lyrics.borrow() {
+            Some(lyrics) if self.position_known.get() => {
+                lyrics.line_at(self.state.borrow().position)
+            }
+            _ => return,
+        };
+        if self.lyric_line.replace(line) != line {
+            self.window
+                .global::<Media>()
+                .set_lyric(line.map_or(-1, |line| line as i32));
+        }
     }
 
     /// Seek-bar previews from the server's trickplay images, when the
@@ -5107,6 +5398,79 @@ fn sub_languages(prefs: &crate::settings::Preferences) -> Vec<String> {
         .collect()
 }
 
+/// Where `PlayerController::open_at` puts sources in mpv's playlist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// In place of the playlist, from the first.
+    Replace,
+    /// In place of the playlist, from the one at this index, with Shuffle
+    /// off.
+    InOrder(usize),
+    /// In place of the playlist, shuffled, with Shuffle on.
+    Shuffled,
+    /// At the end, playing if nothing does.
+    Append,
+}
+
+/// How `count` sources go into mpv's playlist, as (source, `loadfile`
+/// mode, index). Appended, at the end, playing if nothing does. In place of
+/// the playlist, from the one at `start`: it replaces the playlist, and
+/// those before it go in ahead of it, so that mpv, which takes them all
+/// before it opens anything, starts loading no other. To be shuffled: at
+/// the end of a playlist cleared before, in their order, none playing.
+fn load_steps(count: usize, placement: Placement) -> Vec<(usize, &'static str, Option<usize>)> {
+    let start = match placement {
+        Placement::Append => {
+            return (0..count)
+                .map(|index| (index, "append-play", None))
+                .collect();
+        }
+        Placement::Shuffled => return (0..count).map(|index| (index, "append", None)).collect(),
+        Placement::Replace => 0,
+        Placement::InOrder(start) => start,
+    };
+    let Some(last) = count.checked_sub(1) else {
+        return Vec::new();
+    };
+    let start = start.min(last);
+    let mut steps = vec![(start, "replace", None)];
+    steps.extend((0..start).map(|index| (index, "insert-at", Some(index))));
+    steps.extend((start + 1..count).map(|index| (index, "append", None)));
+    steps
+}
+
+/// How Play Next (`next`) and Add to Queue add to a window's playlist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Queueing {
+    /// As a new playlist, as if played.
+    Open,
+    /// Right after the entry at this index.
+    After(usize),
+    /// At the end.
+    End,
+}
+
+/// How what is queued goes into a window's playlist, whose entry playing is
+/// at `playing`. A window with nothing to play (`idle`) opens it as a new
+/// playlist, as Play would: added to the end of what ended, it would start
+/// paused when that was stopped paused, and the library would come back at
+/// the size the window was fitted to for it rather than its own.
+fn queueing(idle: bool, next: bool, playing: Option<usize>) -> Queueing {
+    match playing {
+        _ if idle => Queueing::Open,
+        Some(at) if next => Queueing::After(at),
+        _ => Queueing::End,
+    }
+}
+
+/// How `count` sources go in after the entry playing, at `at`, in their
+/// order: Play Next.
+fn queue_steps(count: usize, at: usize) -> Vec<(usize, &'static str, Option<usize>)> {
+    (0..count)
+        .map(|index| (index, "insert-at", Some(at + 1 + index)))
+        .collect()
+}
+
 /// Queues `loadfile` for one source, at `index` for the modes that take
 /// one. Folders are read recursively, every media file inside, as IINA
 /// opens them.
@@ -5383,6 +5747,114 @@ mod tests {
         assert!(!leaves_full_screen(&escape, &quit));
         let enter = KeyCombo::parse("ENTER").unwrap();
         assert!(!leaves_full_screen(&enter, bindings.get(&enter).unwrap()));
+    }
+
+    /// The playlist and the entry playing after `steps`, as mpv makes
+    /// them: `insert-at` past the end appends.
+    fn played(
+        mut playlist: Vec<String>,
+        mut current: Option<usize>,
+        sources: &[&str],
+        steps: &[(usize, &str, Option<usize>)],
+    ) -> (Vec<String>, Option<usize>) {
+        for &(index, mode, place) in steps {
+            let source = sources[index].to_owned();
+            match (mode, place) {
+                ("replace", _) => {
+                    playlist = vec![source];
+                    current = Some(0);
+                }
+                ("insert-at", Some(at)) if at <= playlist.len() => {
+                    playlist.insert(at, source);
+                    current = current.map(|current| current + usize::from(at <= current));
+                }
+                ("append", _) => playlist.push(source),
+                _ => {
+                    playlist.push(source);
+                    current = current.or(Some(playlist.len() - 1));
+                }
+            }
+        }
+        (playlist, current)
+    }
+
+    #[test]
+    fn sources_go_where_they_play_in_the_playlist() {
+        let songs = ["1", "2", "3", "4", "5"];
+        let all: Vec<String> = songs.iter().map(|song| song.to_string()).collect();
+        let before = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        // Played from the third song: all of them, the third playing,
+        // and it the first mpv is given.
+        let steps = load_steps(5, Placement::InOrder(2));
+        assert_eq!(steps[0], (2, "replace", None));
+        assert_eq!(
+            played(before.clone(), Some(1), &songs, &steps),
+            (all.clone(), Some(2))
+        );
+        assert_eq!(
+            played(
+                before.clone(),
+                Some(1),
+                &songs,
+                &load_steps(5, Placement::Replace)
+            ),
+            (all.clone(), Some(0))
+        );
+        assert_eq!(
+            played(
+                before.clone(),
+                Some(1),
+                &songs,
+                &load_steps(5, Placement::InOrder(4))
+            ),
+            (all.clone(), Some(4))
+        );
+        // Past the end, the last.
+        assert_eq!(
+            load_steps(5, Placement::InOrder(9))[0],
+            (4, "replace", None)
+        );
+        assert_eq!(load_steps(0, Placement::Replace), []);
+        // To be shuffled: in their order after the playlist is cleared,
+        // none of them playing until mpv has shuffled them.
+        assert_eq!(
+            played(
+                Vec::new(),
+                None,
+                &songs,
+                &load_steps(5, Placement::Shuffled)
+            ),
+            (all.clone(), None)
+        );
+        // Added to the queue: at the end, after what is there.
+        let (playlist, current) = played(
+            before.clone(),
+            Some(1),
+            &songs,
+            &load_steps(5, Placement::Append),
+        );
+        assert_eq!(playlist[..3], before[..]);
+        assert_eq!(playlist[3..], all[..]);
+        assert_eq!(current, Some(1));
+        // Play Next: right after the entry playing, in their order.
+        let (playlist, current) = played(before.clone(), Some(1), &songs[..2], &queue_steps(2, 1));
+        assert_eq!(playlist, ["a", "b", "1", "2", "c"]);
+        assert_eq!(current, Some(1));
+        let (playlist, _) = played(before.clone(), Some(2), &songs[..2], &queue_steps(2, 2));
+        assert_eq!(playlist, ["a", "b", "c", "1", "2"]);
+    }
+
+    #[test]
+    fn a_window_with_nothing_to_play_opens_what_is_queued() {
+        assert_eq!(queueing(true, true, None), Queueing::Open);
+        assert_eq!(queueing(true, false, None), Queueing::Open);
+        // A playlist that ended keeps no entry playing, but mpv may still
+        // say where it was.
+        assert_eq!(queueing(true, true, Some(3)), Queueing::Open);
+        assert_eq!(queueing(false, true, Some(3)), Queueing::After(3));
+        assert_eq!(queueing(false, false, Some(3)), Queueing::End);
+        // Opening, before mpv says what plays: after what is on its way.
+        assert_eq!(queueing(false, true, None), Queueing::End);
     }
 
     #[test]

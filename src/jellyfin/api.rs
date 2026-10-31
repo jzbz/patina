@@ -1065,8 +1065,6 @@ impl Client {
     }
 
     /// A track's lyrics; None when it has none.
-    // Music mode's lyrics drawer will show them.
-    #[allow(dead_code)]
     pub fn lyrics(&self, id: &str) -> Result<Option<LyricDto>, Error> {
         match self.get(&format!("/Audio/{}/Lyrics", segment(id)), &[]) {
             Ok(lyrics) => Ok(Some(lyrics)),

@@ -22,7 +22,7 @@ component ToolbarButton inherits IconButton {
         : root.kind == "screenshot" ? "Screenshot"
         : root.kind == "subtitles" ? "Subtitles"
         : root.kind;
-    active: (root.kind == "playlist" && (root.sidebar == "playlist" || root.sidebar == "chapters"))
+    active: (root.kind == "playlist" && (root.sidebar == "playlist" || root.sidebar == "chapters" || root.sidebar == "lyrics"))
         || (root.kind == "settings" && (root.sidebar == "video" || root.sidebar == "audio"))
         || (root.kind == "subtitles" && root.sidebar == "subtitles");
     icon-size: 17px;

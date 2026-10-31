@@ -1229,6 +1229,49 @@ fn browse_music(client: &Client, music: &str) {
         }
     }
     expect(with_lyrics > 0 && timed > 0, "a track with timed lyrics");
+    if generated() {
+        // The script's album: timed lyrics from an .lrc file on its first
+        // track, plain ones from a .txt file on its second, as the drawer
+        // shows them.
+        let shown = |track: &BaseItemDto| {
+            ok(client.lyrics(&track.id))
+                .as_ref()
+                .and_then(super::lyrics::Lyrics::new)
+                .unwrap_or_else(|| panic!("no lyrics for {}", track.name))
+        };
+        let timed = shown(&tracks[0]);
+        assert!(timed.timed);
+        let lines: Vec<(&str, Option<f64>)> = timed
+            .lines
+            .iter()
+            .map(|line| (line.text.as_str(), line.start))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("The water leaves the harbour wall", Some(0.5)),
+                ("and takes the evening light", Some(3.0)),
+                ("the boats lie down on sand", Some(6.0)),
+                ("until the tide comes back tonight", Some(9.0)),
+            ]
+        );
+        assert_eq!(timed.line_at(0.2), None);
+        assert_eq!(timed.line_at(4.0), Some(1));
+        assert_eq!(timed.line_at(11.9), Some(3));
+        let plain = shown(&tracks[1]);
+        assert!(!plain.timed);
+        let lines: Vec<&str> = plain.lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(
+            lines,
+            [
+                "Glass water, still and clear",
+                "Every stone is showing here",
+                "Nothing moves and nothing sings",
+                "Only light on little things",
+            ]
+        );
+        assert_eq!(plain.line_at(4.0), None);
+    }
 
     // A track plays directly too, from a URL without a token.
     let track = ok(client.item(&tracks[0].id));
