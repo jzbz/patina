@@ -184,6 +184,8 @@ component PlaylistRow inherits Rectangle {
 }
 
 component PlaylistPanel inherits VerticalLayout {
+    // Music mode's drawer, too narrow for the buttons' icons as well.
+    in property <bool> compact;
     property <int> drag-from: -1;
     property <int> drop-position: -1;
     property <bool> expanded;
@@ -407,14 +409,14 @@ component PlaylistPanel inherits VerticalLayout {
         spacing: 6px;
         TextButton {
             text: "Add Files…";
-            icon: @image-url("icons/plus.svg");
+            icon: root.compact ? @image-url("") : @image-url("icons/plus.svg");
             clicked => {
                 Actions.patina("add-files");
             }
         }
         TextButton {
             text: "URL…";
-            icon: @image-url("icons/link.svg");
+            icon: root.compact ? @image-url("") : @image-url("icons/link.svg");
             clicked => {
                 Actions.patina("add-url");
             }
@@ -424,7 +426,7 @@ component PlaylistPanel inherits VerticalLayout {
         }
         TextButton {
             text: "Clear";
-            icon: @image-url("icons/trash-2.svg");
+            icon: root.compact ? @image-url("") : @image-url("icons/trash-2.svg");
             enabled: Media.playlist.length > 0;
             clicked => {
                 Actions.patina("clear-playlist");
@@ -1001,6 +1003,7 @@ export component Sidebar inherits Rectangle {
 
         if root.tab == "playlist": PlaylistPanel {
             vertical-stretch: 1;
+            compact: root.drawer;
         }
         if root.tab == "chapters": ChaptersPanel {
             vertical-stretch: 1;
