@@ -1003,12 +1003,6 @@ export component PlayerWindow inherits Window {
                 height: root.music-art-height;
             }
 
-            if !Playback.has-media && !root.music-mode: WelcomeView {
-                width: parent.width;
-                height: parent.height;
-                drop-active: root.drop-active;
-            }
-
             WindowMoveArea {
                 enabled: !root.full-screen;
 
@@ -1060,6 +1054,15 @@ export component PlayerWindow inherits Window {
                         return accept;
                     }
                 }
+            }
+
+            // Over the area above, which would otherwise take every click
+            // meant for its buttons: what the welcome screen doesn't take
+            // itself still reaches it, to move the window or open the menu.
+            if !Playback.has-media && !root.music-mode: WelcomeView {
+                width: parent.width;
+                height: parent.height;
+                drop-active: root.drop-active;
             }
         }
 
