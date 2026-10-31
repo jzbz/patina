@@ -108,6 +108,72 @@ export component PromptDialog inherits Modal {
     }
 }
 
+// A question with Cancel and a button that goes ahead, which Return also
+// presses.
+export component ConfirmDialog inherits Modal {
+    in property <string> title;
+    in property <string> message;
+    in property <string> confirm-label: "OK";
+    callback confirm;
+    panel-width: 380px;
+
+    init => {
+        scope.focus();
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            if event.text == Key.Return {
+                root.confirm();
+                return accept;
+            }
+            // Nothing else here takes focus, so Tab would move it out to
+            // the window, where Return and Escape are full screen keys.
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            spacing: 12px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-heading;
+                font-weight: 600;
+            }
+            if root.message != "": Text {
+                text: root.message;
+                color: Theme.secondary-text;
+                font-size: Theme.font-normal;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                TextButton {
+                    text: "Cancel";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                TextButton {
+                    text: root.confirm-label;
+                    primary: true;
+                    clicked => {
+                        root.confirm();
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AboutDialog inherits Modal {
     panel-width: 360px;
 

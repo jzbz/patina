@@ -1,6 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Media, Actions, Platform } from "globals.slint";
+import { TextButton } from "widgets.slint";
 
 component WelcomeAction inherits Rectangle {
     in property <image> icon;
@@ -53,6 +54,9 @@ component WelcomeAction inherits Rectangle {
 // Shown while nothing is loaded, laid out like IINA's welcome window.
 export component WelcomeView inherits Rectangle {
     in property <bool> drop-active;
+    // Clear… was pressed. The window asks first, since clearing empties
+    // the whole history.
+    callback clear-recent;
     background: #141416;
 
     HorizontalLayout {
@@ -128,11 +132,24 @@ export component WelcomeView inherits Rectangle {
             VerticalLayout {
                 padding: 12px;
                 spacing: 8px;
-                Text {
-                    text: "Recent";
-                    color: Theme.secondary-text;
-                    font-size: Theme.font-small;
-                    font-weight: 600;
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 8px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Recent";
+                        color: Theme.secondary-text;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if Media.recent.length > 0: TextButton {
+                        text: "Clear…";
+                        clicked => {
+                            root.clear-recent();
+                        }
+                    }
                 }
                 if Media.recent.length == 0: Rectangle {
                     vertical-stretch: 1;

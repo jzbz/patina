@@ -5,7 +5,7 @@ import { Sidebar } from "sidebar.slint";
 import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
 import { MusicPanel, MusicWindowButtons, DefaultArt } from "music.slint";
-import { PromptDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog } from "dialogs.slint";
+import { PromptDialog, ConfirmDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog } from "dialogs.slint";
 import { Spinner, IconButton } from "widgets.slint";
 import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
 import { HistoryWindow, HistoryRow } from "history.slint";
@@ -1063,6 +1063,9 @@ export component PlayerWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 drop-active: root.drop-active;
+                clear-recent => {
+                    root.dialog = "clear-recent";
+                }
             }
         }
 
@@ -1310,6 +1313,22 @@ export component PlayerWindow inherits Window {
             }
             confirm(value) => {
                 root.dialog-confirmed("jump-to", value);
+                root.dialog = "";
+                keys.focus();
+            }
+        }
+
+        // Recent is the newest of the history, so this clears all of it.
+        if root.dialog == "clear-recent": ConfirmDialog {
+            title: "Clear History";
+            message: "Every file goes from Recent and from the History window. Saved playback positions are kept.";
+            confirm-label: "Clear";
+            cancel => {
+                root.dialog = "";
+                keys.focus();
+            }
+            confirm => {
+                Actions.patina("clear-recent");
                 root.dialog = "";
                 keys.focus();
             }
