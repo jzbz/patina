@@ -129,6 +129,14 @@ modules:
       # have no device to open: the sandbox has no /dev/snd.
       - -Dalsa=disabled
       - -Dpulse=enabled
+      # Nor is PipeWire's own socket granted, only its PulseAudio server, so
+      # mpv's PipeWire output, and JACK, which in the runtime is PipeWire's,
+      # could only fail to connect: before every file, and whenever mpv
+      # lists audio devices. Stopping PipeWire's thread after that failure
+      # can hang mpv for good, and Patina's window with it, which is how
+      # opening one file after another froze the Flatpak.
+      - -Dpipewire=disabled
+      - -Djack=disabled
       # What Patina's window and hardware decoding rely on: Patina hands
       # libmpv its X11 or Wayland display, and VA-API frames reach its OpenGL
       # context through EGL. Named rather than left to detection, so that a
