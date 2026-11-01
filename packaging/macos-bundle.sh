@@ -92,6 +92,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>video.patina.Patina</string>
   <key>CFBundleVersion</key><string>${version}</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
+  <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Jonathan Zeppettini</string>
   <key>CFBundleExecutable</key><string>patina</string>
   <key>CFBundleIconFile</key><string>patina</string>
   <key>CFBundlePackageType</key><string>APPL</string>

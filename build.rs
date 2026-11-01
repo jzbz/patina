@@ -28,7 +28,7 @@ fn windows_resources() {
     resources.set("FileDescription", "Patina");
     resources.set("ProductName", "Patina");
     resources.set("Comments", env!("CARGO_PKG_DESCRIPTION"));
-    resources.set("LegalCopyright", "MIT licensed");
+    resources.set("LegalCopyright", "Copyright © 2026 Jonathan Zeppettini");
     // An icon is not worth failing a build over.
     if let Err(error) = resources.compile() {
         println!("cargo:warning=no icon embedded: {error}");

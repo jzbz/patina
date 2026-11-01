@@ -25,8 +25,8 @@
 ; directive of the same name. That one is left at its default, the folder
 ; this script is in, which SetupIconFile below is relative to.
 ;
-; ASCII only, so the question of which encoding ISCC reads it in never
-; arises: it has taken UTF-8 without a byte-order mark since 6.3.0, and since
+; UTF-8, without a byte-order mark, and ASCII but for the copyright sign in
+; AppCopyright: ISCC has taken such a file as UTF-8 since 6.3.0, and since
 ; 7.0.2 it refuses to compile a byte that is not valid in the encoding it
 ; settles on. Comments sit on lines of their own: a trailing ";" is part of a
 ; directive's value.
@@ -51,7 +51,7 @@ AppPublisher=Jonathan Zeppettini
 AppPublisherURL=https://jz.bz/
 AppSupportURL=https://github.com/jzbz/patina/issues
 AppUpdatesURL=https://github.com/jzbz/patina/releases
-AppCopyright=Copyright (c) 2026 Jonathan Zeppettini
+AppCopyright=Copyright © 2026 Jonathan Zeppettini
 ; The Apps & Features name, kept to the bare name rather than "Patina 0.1.0":
 ; winget matches the entry against the manifest's PackageName and Publisher,
 ; and reads the version from DisplayVersion, which is AppVersion.
