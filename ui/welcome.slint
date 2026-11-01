@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Media, Actions, Platform } from "globals.slint";
-import { IconButton } from "widgets.slint";
+import { IconButton, SectionTitle } from "widgets.slint";
 import { Library } from "library-model.slint";
 
 component WelcomeAction inherits Rectangle {
@@ -146,12 +146,9 @@ export component WelcomeView inherits Rectangle {
                 HorizontalLayout {
                     height: 28px;
                     spacing: 8px;
-                    Text {
+                    SectionTitle {
                         horizontal-stretch: 1;
                         text: "Recent";
-                        color: Theme.secondary-text;
-                        font-size: Theme.font-small;
-                        font-weight: 600;
                         vertical-alignment: center;
                         overflow: elide;
                     }

@@ -54,6 +54,13 @@ export global Theme {
     // src/fonts.rs puts it first among the sans-serif fonts for the menus,
     // which don't inherit it.
     out property <string> font-family: "IBM Plex Sans";
+    // Capitals this small crowd each other: the all-caps section headers
+    // are spaced out by this much.
+    out property <length> caps-letter-spacing: 0.4px;
+    // Wrapped paragraphs (overviews, lyrics, messages and notes) get this
+    // much of the font's own line height, which is tight: it suits single
+    // lines, labels and rows, but packs a paragraph's lines too close.
+    out property <float> paragraph-line-height: 1.1;
 
     // Metrics.
     out property <length> osc-radius: 10px;

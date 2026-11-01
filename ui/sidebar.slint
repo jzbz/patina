@@ -6,8 +6,10 @@ import { IconButton, TextButton, Segmented, Switch, SettingRow, SectionTitle, Va
 component PanelSection inherits VerticalLayout {
     in property <string> title;
     spacing: 6px;
+    // The panels give their titles in capitals.
     if root.title != "": SectionTitle {
         text: root.title;
+        letter-spacing: Theme.caps-letter-spacing;
     }
     @children
 }
@@ -237,6 +239,7 @@ component PlaylistPanel inherits VerticalLayout {
             font-size: Theme.font-normal;
             horizontal-alignment: center;
             vertical-alignment: center;
+            line-height-factor: Theme.paragraph-line-height;
         }
     }
 
@@ -550,6 +553,7 @@ component LyricRow inherits Rectangle {
             font-size: Theme.font-heading;
             font-weight: root.timed ? 600 : 400;
             wrap: word-wrap;
+            line-height-factor: Theme.paragraph-line-height;
         }
     }
 

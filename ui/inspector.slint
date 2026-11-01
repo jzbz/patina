@@ -3,7 +3,7 @@
 
 import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { IconButton, Segmented, TextButton, ToastView } from "widgets.slint";
+import { IconButton, Segmented, TextButton, SectionTitle, ToastView } from "widgets.slint";
 
 // A section heading (`section`), or a label and its value.
 export struct InspectorRow {
@@ -104,12 +104,10 @@ export component InspectorWindow inherits Window {
             VerticalLayout {
                 padding-right: 10px;
                 for entry[index] in root.rows: VerticalLayout {
-                    if entry.section: Text {
+                    if entry.section: SectionTitle {
                         height: 30px;
                         text: entry.label;
                         color: Theme.text;
-                        font-size: Theme.font-small;
-                        font-weight: 700;
                         vertical-alignment: bottom;
                     }
                     if !entry.section: Row {

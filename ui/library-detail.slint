@@ -122,6 +122,8 @@ component EpisodeRow inherits Rectangle {
                     font-size: Theme.font-small;
                     overflow: elide;
                 }
+                // The row's height still holds three of these lines under
+                // a subtitle and four without one.
                 Text {
                     vertical-stretch: 1;
                     min-height: 0;
@@ -129,6 +131,7 @@ component EpisodeRow inherits Rectangle {
                     color: Theme.secondary-text;
                     font-size: Theme.font-small;
                     wrap: word-wrap;
+                    line-height-factor: Theme.paragraph-line-height;
                     overflow: elide;
                 }
             }
@@ -842,6 +845,7 @@ export component DetailPage inherits ScrollView {
                         color: Theme.text;
                         font-size: Theme.font-normal;
                         wrap: word-wrap;
+                        line-height-factor: Theme.paragraph-line-height;
                     }
                 }
             }

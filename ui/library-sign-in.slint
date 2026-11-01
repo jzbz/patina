@@ -19,6 +19,7 @@ component Explanation inherits Text {
     color: Theme.secondary-text;
     font-size: Theme.font-normal;
     wrap: word-wrap;
+    line-height-factor: Theme.paragraph-line-height;
 }
 
 // A line with an icon in front: the error or notice from the controller,
@@ -28,8 +29,10 @@ component Note inherits HorizontalLayout {
     in property <color> icon-color: Theme.danger;
     spacing: 8px;
 
+    // Level with the text's first line, which the paragraph line height
+    // moves down a little.
     Image {
-        y: 1px;
+        y: 2px;
         source: @image-url("icons/circle-alert.svg");
         width: 15px;
         height: 15px;
@@ -41,6 +44,7 @@ component Note inherits HorizontalLayout {
         color: Theme.text;
         font-size: Theme.font-normal;
         wrap: word-wrap;
+        line-height-factor: Theme.paragraph-line-height;
     }
 }
 

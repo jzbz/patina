@@ -76,6 +76,7 @@ export component ToastView inherits Rectangle {
                 color: Theme.secondary-text;
                 font-size: Theme.font-normal;
                 wrap: word-wrap;
+                line-height-factor: Theme.paragraph-line-height;
             }
         }
     }
@@ -459,6 +460,8 @@ export component SettingRow inherits HorizontalLayout {
     @children
 }
 
+// The small label over a group of settings or rows. Every one has this
+// weight: IBM Plex Sans has a SemiBold, so a Bold one among them would show.
 export component SectionTitle inherits Text {
     color: Theme.secondary-text;
     font-size: Theme.font-small;

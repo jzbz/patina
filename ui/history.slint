@@ -3,7 +3,7 @@
 
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Segmented, TextButton, ToastView } from "widgets.slint";
+import { Segmented, TextButton, SectionTitle, ToastView } from "widgets.slint";
 
 // A day or folder heading (`header`), or one file.
 export struct HistoryRow {
@@ -234,12 +234,9 @@ export component HistoryWindow inherits Window {
                 if root.rows.length > 0: ListView {
                     vertical-stretch: 1;
                     for entry[index] in root.rows: VerticalLayout {
-                        if entry.header: Text {
+                        if entry.header: SectionTitle {
                             height: 32px;
                             text: entry.title;
-                            color: Theme.secondary-text;
-                            font-size: Theme.font-small;
-                            font-weight: 700;
                             vertical-alignment: bottom;
                             overflow: elide;
                         }

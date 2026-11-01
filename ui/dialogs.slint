@@ -78,6 +78,7 @@ export component PromptDialog inherits Modal {
                 color: Theme.secondary-text;
                 font-size: Theme.font-normal;
                 wrap: word-wrap;
+                line-height-factor: Theme.paragraph-line-height;
             }
             edit := LineEdit {
                 text <=> root.text;
@@ -152,6 +153,7 @@ export component ConfirmDialog inherits Modal {
                 color: Theme.secondary-text;
                 font-size: Theme.font-normal;
                 wrap: word-wrap;
+                line-height-factor: Theme.paragraph-line-height;
             }
             HorizontalLayout {
                 alignment: end;
@@ -203,6 +205,7 @@ export component AboutDialog inherits Modal {
             font-size: Theme.font-normal;
             horizontal-alignment: center;
             wrap: word-wrap;
+            line-height-factor: Theme.paragraph-line-height;
         }
         Text {
             text: "Copyright © 2026 Jonathan Zeppettini";
@@ -216,6 +219,7 @@ export component AboutDialog inherits Modal {
             font-size: Theme.font-small;
             horizontal-alignment: center;
             wrap: word-wrap;
+            line-height-factor: Theme.paragraph-line-height;
         }
         HorizontalLayout {
             alignment: center;
@@ -295,6 +299,7 @@ export component OnlineSubtitlesDialog inherits Modal {
                 color: OnlineSubs.failed ? Theme.danger : Theme.secondary-text;
                 font-size: Theme.font-normal;
                 wrap: word-wrap;
+                line-height-factor: Theme.paragraph-line-height;
             }
             if OnlineSubs.results.length > 0: ListView {
                 height: 300px;

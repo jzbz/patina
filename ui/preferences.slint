@@ -1,6 +1,6 @@
 import { LineEdit, ComboBox, TextEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Switch, TextButton, IconButton, ToastView } from "widgets.slint";
+import { Switch, TextButton, IconButton, SectionTitle, ToastView } from "widgets.slint";
 
 // One row of a preferences page. `kind` is "heading", "switch", "number",
 // "choice", "text", "path", "lines" or "button".
@@ -94,11 +94,10 @@ component PrefRowView inherits Rectangle {
 
         if root.entry.kind == "heading": VerticalLayout {
             spacing: 6px;
-            Text {
+            // In capitals, as src/preferences/mod.rs makes the headings.
+            SectionTitle {
                 text: root.entry.label;
-                color: Theme.secondary-text;
-                font-size: Theme.font-small;
-                font-weight: 700;
+                letter-spacing: Theme.caps-letter-spacing;
             }
             Rectangle {
                 height: 1px;
@@ -318,6 +317,7 @@ component KeyBindingsPage inherits VerticalLayout {
         color: Theme.tertiary-text;
         font-size: Theme.font-small;
         wrap: word-wrap;
+        line-height-factor: Theme.paragraph-line-height;
     }
 
     HorizontalLayout {
