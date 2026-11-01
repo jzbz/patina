@@ -6,7 +6,7 @@ import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
 import { LibraryView, Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn } from "library.slint";
 import { MusicPanel, MusicWindowButtons, DefaultArt } from "music.slint";
-import { PromptDialog, ConfirmDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog } from "dialogs.slint";
+import { PromptDialog, ConfirmDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog, DialogSize } from "dialogs.slint";
 import { Spinner, IconButton, TextButton, Toast, ToastView } from "widgets.slint";
 import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
 import { HistoryWindow, HistoryRow } from "history.slint";
@@ -56,6 +56,9 @@ export component PlayerWindow inherits Window {
     // "online-subtitles".
     in-out property <string> dialog;
     in-out property <string> dialog-text;
+    // How tall the dialog showing needs the window to be, wrapped to the
+    // window's width; music mode's window grows to it.
+    out property <length> dialog-height: root.dialog == "" ? 0px : DialogSize.needed;
     in property <[ShortcutItem]> shortcuts;
     in property <string> error;
     in-out property <length> osc-offset-x;
@@ -286,7 +289,7 @@ export component PlayerWindow inherits Window {
         }
     }
     // A dialog needs more room than music mode's strip.
-    changed dialog => {
+    changed dialog-height => {
         if self.music-mode {
             Actions.patina("music-layout");
         }

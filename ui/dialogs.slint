@@ -8,10 +8,24 @@ export struct ShortcutItem {
     action: string,
 }
 
+// How tall the dialog showing would have its window: its panel's preferred
+// height and the margin around it. Music mode's window grows to it.
+export global DialogSize {
+    in-out property <length> needed;
+}
+
 component Modal inherits Rectangle {
     in property <length> panel-width: 420px;
     callback cancel;
     background: #00000080;
+
+    property <length> needed-height: layout.preferred-height + 32px;
+    init => {
+        DialogSize.needed = self.needed-height;
+    }
+    changed needed-height => {
+        DialogSize.needed = self.needed-height;
+    }
 
     // Clicking outside the panel cancels; clicks inside stay there.
     TouchArea {
@@ -35,10 +49,19 @@ component Modal inherits Rectangle {
 
         TouchArea { }
 
-        layout := VerticalLayout {
-            padding: 18px;
-            spacing: 12px;
-            @children
+        // A window too short for the dialog (About in the smallest window)
+        // scrolls it, rather than leaving its buttons out of reach.
+        flick := Flickable {
+            interactive: layout.preferred-height > self.height;
+            content-height: layout.preferred-height;
+
+            layout := VerticalLayout {
+                width: flick.width;
+                height: self.preferred-height;
+                padding: 18px;
+                spacing: 12px;
+                @children
+            }
         }
     }
 }

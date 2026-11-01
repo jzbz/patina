@@ -3040,12 +3040,10 @@ impl PlayerController {
         } else {
             0.0
         };
-        let dialog = match self.window.get_dialog().as_str() {
-            "" => 0.0,
-            "shortcuts" | "online-subtitles" => 540.0,
-            "about" => 340.0,
-            _ => 260.0,
-        };
+        // The dialog's own layout says how tall it is at this width, so
+        // About's credits or a longer message still fit; it is 0 while
+        // none shows.
+        let dialog = self.window.get_dialog_height().ceil();
         let height = (self.window.get_music_art_height() + MUSIC_PANEL + drawer).max(dialog);
         self.resize_window(slint::LogicalSize::new(MUSIC_WIDTH, height));
     }
