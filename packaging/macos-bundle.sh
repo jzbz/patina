@@ -49,6 +49,7 @@ rm -rf "$iconset"
 
 cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
 cp "$root/ui/icons/LICENSE" "$app/Contents/Resources/LICENSE-lucide"
+cp "$root/ui/fonts/LICENSE" "$app/Contents/Resources/LICENSE-ibm-plex"
 cp "$root/packaging/THIRD-PARTY.md" "$app/Contents/Resources/THIRD-PARTY.md"
 
 version="$(grep -m1 '^version' "$root/Cargo.toml" | cut -d'"' -f2)"

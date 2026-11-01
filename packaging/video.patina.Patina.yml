@@ -328,10 +328,13 @@ modules:
         done
       - install -Dm644 ui/icons/patina.svg
         /app/share/icons/hicolor/scalable/apps/video.patina.Patina.svg
-      # Lucide's licence, for the icons compiled into Patina. Patina's own
-      # LICENSE, at the top of the tree, flatpak-builder records by itself.
+      # Lucide's licence, for the icons compiled into Patina, and IBM Plex's,
+      # for the typeface compiled into it. Patina's own LICENSE, at the top
+      # of the tree, flatpak-builder records by itself.
       - install -Dm644 ui/icons/LICENSE
         /app/share/licenses/video.patina.Patina/lucide/LICENSE
+      - install -Dm644 ui/fonts/LICENSE
+        /app/share/licenses/video.patina.Patina/ibm-plex/LICENSE
     sources:
       - type: git
         url: https://github.com/jzbz/patina.git

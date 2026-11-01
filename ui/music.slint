@@ -354,11 +354,12 @@ export component MusicPanel inherits Rectangle {
             }
         }
 
-        // Elapsed time, seek bar, and the length or the time left.
+        // Elapsed time, seek bar, and the length or the time left. The
+        // times' boxes fit "-10:00:00" in IBM Plex Sans at this size.
         Text {
-            x: 6px;
+            x: 4px;
             y: 44px;
-            width: 44px;
+            width: 52px;
             height: 18px;
             text: Format.time(seek.dragging ? seek.hover-time : Playback.position);
             color: Theme.secondary-text;
@@ -368,9 +369,9 @@ export component MusicPanel inherits Rectangle {
         }
 
         seek := SeekBar {
-            x: 56px;
+            x: 60px;
             y: 44px;
-            width: root.width - 112px;
+            width: root.width - 120px;
             position: Playback.position;
             duration: Playback.duration;
             cache-end: Playback.cache-end;
@@ -383,9 +384,9 @@ export component MusicPanel inherits Rectangle {
         }
 
         Text {
-            x: root.width - 50px;
+            x: root.width - 56px;
             y: 44px;
-            width: 44px;
+            width: 52px;
             height: 18px;
             text: Playback.duration <= 0 ? "--:--" : Prefs.show-remaining-time ? "-" + Format.time(Playback.duration - Playback.position) : Format.time(Playback.duration);
             color: Theme.secondary-text;

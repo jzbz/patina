@@ -542,7 +542,7 @@ jobs:
       # the vulkan-1.dll libmpv imports, which Windows finds in the exe's
       # folder; then the licences. This folder is the zip's content and what
       # the installer puts in {app}, so it is checked to hold exactly these
-      # six files, and each one's hash is kept as well as printed: Inno
+      # seven files, and each one's hash is kept as well as printed: Inno
       # Setup's installer, its compiler and the setup exe all run in this
       # workspace after this, and the last step checks against these hashes
       # rather than against the files as they are by then.
@@ -557,8 +557,9 @@ jobs:
           ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads') -Lib $dir
           Copy-Item LICENSE (Join-Path $dir 'LICENSE.txt')
           Copy-Item ui\icons\LICENSE (Join-Path $dir 'LICENSE-lucide.txt')
+          Copy-Item ui\fonts\LICENSE (Join-Path $dir 'LICENSE-ibm-plex.txt')
           Copy-Item packaging\THIRD-PARTY.md (Join-Path $dir 'THIRD-PARTY.md')
-          $expected = 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY.md', 'libmpv-2.dll', 'patina.exe', 'vulkan-1.dll'
+          $expected = 'LICENSE-ibm-plex.txt', 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY.md', 'libmpv-2.dll', 'patina.exe', 'vulkan-1.dll'
           $found = @(Get-ChildItem -LiteralPath $dir -Force | ForEach-Object Name)
           if (Compare-Object $expected $found) {
             throw "$dir holds $($found -join ', '), not $($expected -join ', ')"

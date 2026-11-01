@@ -9,6 +9,7 @@ mod cli;
 mod clipboard;
 mod credentials;
 mod downloads;
+mod fonts;
 mod formats;
 mod history;
 mod inhibit;

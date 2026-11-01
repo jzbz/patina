@@ -14,7 +14,7 @@ import { DownloadsWindow, DownloadRow } from "downloads.slint";
 import { InspectorWindow, InspectorRow } from "inspector.slint";
 
 export { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn }
-export { Platform, Playback, Media, Osd, Toast, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, LyricItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
+export { Theme, Platform, Playback, Media, Osd, Toast, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, LyricItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
 
 export component PlayerWindow inherits Window {
     title: !Playback.has-media ? "Patina" : root.music-mode && Playback.music-title != "" ? Playback.music-title : Playback.title;
@@ -30,6 +30,7 @@ export component PlayerWindow inherits Window {
     max-width: root.music-mode ? 300px : 3000000000px;
     preferred-width: 960px;
     preferred-height: 600px;
+    default-font-family: Theme.font-family;
     default-font-size: Theme.font-normal;
     always-on-top: root.float-on-top;
 

@@ -2,6 +2,17 @@
 // translucent panels over the video, white text at a few opacities, and the
 // system-style blue for selections.
 
+// The interface's typeface, IBM Plex Sans (SIL Open Font License; see
+// fonts/LICENSE), in the weights and style the interface asks for: 400,
+// its italic, 600 and 700. They are compiled into Patina and registered
+// with each window, so it looks the same on every system and in every
+// package. Text in a script they don't cover falls back to the system's
+// fonts.
+import "fonts/IBMPlexSans-Regular.ttf";
+import "fonts/IBMPlexSans-Italic.ttf";
+import "fonts/IBMPlexSans-SemiBold.ttf";
+import "fonts/IBMPlexSans-Bold.ttf";
+
 export global Theme {
     // Panels drawn over the video.
     out property <color> osc-background: #1d1d1fe0;
@@ -38,6 +49,11 @@ export global Theme {
 
     // Window chrome.
     out property <color> close-hover: #e5484d;
+
+    // Type. Every window sets this as its default-font-family, and
+    // src/fonts.rs puts it first among the sans-serif fonts for the menus,
+    // which don't inherit it.
+    out property <string> font-family: "IBM Plex Sans";
 
     // Metrics.
     out property <length> osc-radius: 10px;

@@ -123,6 +123,7 @@ export component DownloadsWindow inherits Window {
     // its buttons it needs more than 420px.
     min-width: max(420px, footer.min-width + 2 * 14px);
     min-height: 260px;
+    default-font-family: Theme.font-family;
     default-font-size: Theme.font-normal;
 
     in property <[DownloadRow]> rows;

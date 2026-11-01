@@ -257,3 +257,5 @@ dependencies keep their own licenses; note that mpv is GPL-licensed by
 default, which applies to builds that bundle it. The icons, the logo's
 glyph included, are [Lucide](https://lucide.dev)'s, under the ISC license
 (a few derived from Feather, MIT); see [ui/icons/LICENSE](ui/icons/LICENSE).
+The typeface is [IBM Plex Sans](https://github.com/IBM/plex), under the SIL
+Open Font License 1.1; see [ui/fonts/LICENSE](ui/fonts/LICENSE).

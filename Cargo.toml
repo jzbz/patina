@@ -34,6 +34,7 @@ slint = { version = "1.18.1", default-features = false, features = [
     "backend-winit",
     "renderer-femtovg",
     "renderer-software",
+    "unstable-fontique-011",
     "unstable-winit-030",
 ] }
 trash = "5.2.9"

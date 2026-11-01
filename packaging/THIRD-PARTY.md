@@ -7,6 +7,12 @@ each under its own license.
 
 - **Lucide icons**, ISC license (a few derived from Feather, MIT); see
   LICENSE-lucide. <https://lucide.dev>
+- **IBM Plex Sans** 3.005, the interface's typeface, compiled into Patina:
+  Regular, Italic, SemiBold and Bold, unmodified, from IBM's
+  `@ibm/plex-sans` 1.1.0 release. Copyright © 2017 IBM Corp. with Reserved
+  Font Name "Plex" (the font files' own notice reads "Copyright 2018 IBM
+  Corp. All rights reserved."); SIL Open Font License 1.1; see
+  LICENSE-ibm-plex. <https://github.com/IBM/plex>
 
 ## Flatpak (under /app)
 

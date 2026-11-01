@@ -160,6 +160,7 @@ Source: "{#SourceDir}\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion noti
 Source: "{#SourceDir}\vulkan-1.dll"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-lucide.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\LICENSE-ibm-plex.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\THIRD-PARTY.md"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 
 [Icons]

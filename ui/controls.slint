@@ -160,11 +160,12 @@ export component ControlBar inherits Rectangle {
         }
     }
 
-    // Bottom row: elapsed time, seek bar, duration or remaining time.
+    // Bottom row: elapsed time, seek bar, duration or remaining time. The
+    // times' boxes fit "-10:00:00" in IBM Plex Sans at this size.
     Text {
-        x: 10px;
+        x: 8px;
         y: 44px;
-        width: 54px;
+        width: 58px;
         height: 18px;
         text: Format.time(seek.dragging ? seek.hover-time : Playback.position);
         color: Theme.secondary-text;
@@ -174,9 +175,9 @@ export component ControlBar inherits Rectangle {
     }
 
     seek := SeekBar {
-        x: 66px;
+        x: 70px;
         y: 44px;
-        width: root.width - 132px;
+        width: root.width - 140px;
         position: Playback.position;
         duration: Playback.duration;
         cache-end: Playback.cache-end;
@@ -191,9 +192,9 @@ export component ControlBar inherits Rectangle {
     }
 
     Text {
-        x: root.width - 64px;
+        x: root.width - 66px;
         y: 44px;
-        width: 54px;
+        width: 58px;
         height: 18px;
         text: Playback.duration <= 0 ? "--:--" : Prefs.show-remaining-time ? "-" + Format.time(Playback.duration - Playback.position) : Format.time(Playback.duration);
         color: Theme.secondary-text;

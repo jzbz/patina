@@ -4,12 +4,12 @@
 the per-user installer each release carries beside the portable
 `patina-vX.Y.Z-windows-x86_64.zip`. It installs the folder that zip holds,
 file for file: `patina.exe`, the `libmpv-2.dll` and `vulkan-1.dll` it needs
-beside it, `LICENSE.txt`, `LICENSE-lucide.txt` and `THIRD-PARTY.md`. To that
-it adds what an unpacked folder cannot have: a Start Menu entry, an Apps &
-Features entry, an uninstaller that removes both along with the file types
-Patina registered, and an App Paths entry so that Win+R `patina` finds the
-program from a normal, not elevated, Run box. It is what winget installs;
-`packaging/winget/README.md` covers that side.
+beside it, `LICENSE.txt`, `LICENSE-lucide.txt`, `LICENSE-ibm-plex.txt` and
+`THIRD-PARTY.md`. To that it adds what an unpacked folder cannot have: a
+Start Menu entry, an Apps & Features entry, an uninstaller that removes both
+along with the file types Patina registered, and an App Paths entry so that
+Win+R `patina` finds the program from a normal, not elevated, Run box. It is
+what winget installs; `packaging/winget/README.md` covers that side.
 
 It is the script rPGP and Azzurro use (`packaging/windows/rpgp.iss` and
 `azzurro.iss` there), with Patina's names, icon and folders and three real
@@ -96,7 +96,7 @@ same commit:
   it from the exe:
   `(Get-Item C:\scratch\zip\Patina\patina.exe).VersionInfo.ProductVersion`.
 - `SourceDir` is the folder, by its full path; a relative one is read from
-  `packaging\windows`, not from where ISCC was started. The six files are
+  `packaging\windows`, not from where ISCC was started. The seven files are
   named one by one in the script, and a missing one stops the compile.
 - `--output-dir` keeps the result out of the tree; without it ISCC writes
   into `packaging\windows\Output`. The name is
@@ -188,7 +188,7 @@ From Linux, innoextract is no help, since its newest code knows Inno Setup
 only up to 6.4, but the Rust `inno` crate reads Inno Setup 7 from 0.6.0
 (Komac 2.17 uses 0.7.0). With its `extract` feature, `inno::Inno::new`
 on the setup exe opened as a plain `std::fs::File` (a `BufReader` around it
-trips a bug in 0.6.0), then `files()`, yields the six `{app}\…` files and
+trips a bug in 0.6.0), then `files()`, yields the seven `{app}\…` files and
 their bytes, each of whose SHA-256 should equal the same file's in the
 unpacked zip. That shows the payload is the signed folder, though not what
 else the setup does with it; only the rebuild above compares every byte.

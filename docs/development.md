@@ -184,6 +184,9 @@ its `/privacy/` page) to answer.
   windows.
 - `src/media_controls/`: MPRIS, SMTC and MediaPlayer integration.
 - `src/inhibit.rs`: keeping the screen awake during playback.
+- `src/fonts.rs`: puts the interface's typeface (`Theme.font-family`)
+  first among the sans-serif fonts, for the menus Slint draws itself on
+  Linux, which inherit no `default-font-family`.
 - `src/cli.rs`, `src/util.rs`, `src/platform.rs`.
 - `tools/`: `menubar.py` and `smoke.sh` (see above), and
   `jellyfin-server.sh`, the Jellyfin test server, with
@@ -191,7 +194,11 @@ its `/privacy/` page) to answer.
 - `ui/`: the Slint interface (`app.slint` is the window, `library*.slint`
   the Jellyfin library; see architecture.md); `ui/icons/` are Lucide's
   SVG icons (lucide-static, ISC; `ui/icons/LICENSE`), white for Slint to
-  tint, the transport controls filled.
+  tint, the transport controls filled; `ui/fonts/` is IBM Plex Sans
+  (OFL 1.1; `ui/fonts/LICENSE`), the static Regular, Italic, SemiBold and
+  Bold files that `theme.slint` imports, which compiles them into Patina.
+  A weight or style the interface starts to use needs its file added
+  there; otherwise one of these four is drawn in its place.
 
 ## Rules
 

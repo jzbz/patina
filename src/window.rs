@@ -21,7 +21,7 @@ use crate::ytdl;
 use crate::{
     Actions, ChapterItem, DeviceItem, Library, LyricItem, Media, OnlineSubs, OnlineSubtitle, Osd,
     Platform, Playback, PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem,
-    TrackItem,
+    Theme, TrackItem,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -260,6 +260,7 @@ pub struct PlayerController {
 impl PlayerController {
     pub fn new(app: &Rc<App>, options: &crate::player::CoreOptions) -> Result<Rc<Self>, String> {
         let window = PlayerWindow::new().map_err(|error| error.to_string())?;
+        crate::fonts::lead_sans_serif(&window.global::<Theme>().get_font_family());
         let (player, events) = Player::start(options)?;
         let mpv = player.mpv().clone();
 
