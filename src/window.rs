@@ -66,6 +66,8 @@ const ARROW_SPEEDS: [f64; 11] = [
 const EQ_BANDS: [u32; 10] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 /// How long after a user action property changes still count as caused by it.
 const USER_ACTION_WINDOW: Duration = Duration::from_millis(1500);
+/// How long "Could not open …" stays up, unless clicked away sooner.
+const LOAD_ERROR_FOR: Duration = Duration::from_secs(8);
 /// Music mode's width and strip of controls, as in IINA's mini player, and
 /// how tall its playlist drawer opens; with less of it than the minimum,
 /// the drawer shuts.
@@ -111,6 +113,8 @@ pub struct PlayerController {
     lists_audio_devices: bool,
     closed: Cell<bool>,
     osd_timer: Timer,
+    /// Takes a load's error down again (LOAD_ERROR_FOR).
+    error_timer: Timer,
     last_user_action: Cell<Option<Instant>>,
     loading: Cell<bool>,
     /// Fit the window to the next video size reported by mpv.
@@ -321,6 +325,7 @@ impl PlayerController {
             lists_audio_devices: options.list_audio_devices,
             closed: Cell::new(false),
             osd_timer: Timer::default(),
+            error_timer: Timer::default(),
             last_user_action: Cell::new(None),
             loading: Cell::new(false),
             fit_pending: Cell::new(false),
@@ -388,6 +393,22 @@ impl PlayerController {
 
     pub fn set_own_options(&self, own: bool) {
         self.own_options.set(own);
+    }
+
+    /// Shows why a file didn't open, for a while: it says what happened, and
+    /// would otherwise stay over the welcome screen or the library until
+    /// something else plays. A click takes it down sooner.
+    fn show_load_error(&self, text: String) {
+        self.window.set_error(text.clone().into());
+        let this = self.this.clone();
+        self.error_timer
+            .start(TimerMode::SingleShot, LOAD_ERROR_FOR, move || {
+                if let Some(this) = this.upgrade()
+                    && this.window.get_error() == text.as_str()
+                {
+                    this.window.set_error(SharedString::new());
+                }
+            });
     }
 
     /// Asks mpv for the audio devices, which a menu, the Audio panel or the
@@ -976,8 +997,7 @@ impl PlayerController {
                             .unwrap_or_default();
                         let path = self.state.borrow().path.clone();
                         let name = self.display_name(&path);
-                        self.window
-                            .set_error(format!("Could not open {name}\n{detail}").into());
+                        self.show_load_error(format!("Could not open {name}\n{detail}"));
                     }
                 }
                 Event::Seek => {
@@ -2249,6 +2269,10 @@ impl PlayerController {
             }
             "music-next" => self.player().command(&["playlist-next"]),
             "audio-devices" => self.request_audio_devices(),
+            "dismiss-error" => {
+                self.error_timer.stop();
+                self.window.set_error(SharedString::new());
+            }
             "toggle-ontop" => {
                 let ontop = !self.window.get_float_on_top();
                 self.player().set("ontop", ontop);

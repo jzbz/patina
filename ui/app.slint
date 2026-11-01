@@ -1246,6 +1246,13 @@ export component PlayerWindow inherits Window {
                 wrap: word-wrap;
                 horizontal-alignment: center;
             }
+            // A click takes it down; a load's error also goes by itself.
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    Actions.patina("dismiss-error");
+                }
+            }
         }
 
         // Title bar, faded with the controller like IINA's.
