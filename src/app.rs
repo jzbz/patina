@@ -852,6 +852,20 @@ impl App {
         started
     }
 
+    /// Adds files from a Jellyfin server to the downloads and shows them,
+    /// as `download` does for yt-dlp; gives which of `requests` were added,
+    /// by their place, leaving out those already downloading, or None when
+    /// the downloads couldn't open.
+    pub fn download_jellyfin(
+        self: &Rc<Self>,
+        requests: Vec<crate::jellyfin::download::Request>,
+    ) -> Option<Vec<usize>> {
+        let downloads = self.downloads()?;
+        let added = downloads.start_jellyfin(requests);
+        downloads.show();
+        Some(added)
+    }
+
     /// mpv's own configuration directory, where yt-dlp may be.
     pub fn mpv_config_dir(&self) -> std::path::PathBuf {
         self.paths.mpv_config_dir()

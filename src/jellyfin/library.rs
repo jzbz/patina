@@ -14,6 +14,7 @@
 //! row rather than everything the view draws.
 
 use super::api::{Client, Error, ItemsQuery, SortOrder};
+use super::download;
 use super::images::{self, Generation};
 use super::models::*;
 use super::session::{
@@ -69,11 +70,18 @@ const PERSON_WIDTH: f32 = 120.0;
 const TRACK_WIDTH: f32 = 200.0;
 const USER_WIDTH: f32 = 48.0;
 
-/// The fields every card's item needs beyond the defaults.
-const CARD_FIELDS: &[&str] = &["PrimaryImageAspectRatio"];
+/// The fields every card's item needs beyond the defaults: its image's
+/// shape, and whether its menu offers Download.
+const CARD_FIELDS: &[&str] = &["PrimaryImageAspectRatio", "CanDownload"];
 /// Cards on Home show a poster or a landscape image, whichever the item
 /// has.
 const CARD_IMAGES: &[ImageType] = &[ImageType::Primary, ImageType::Thumb, ImageType::Backdrop];
+/// What a season's episodes are asked for with.
+const EPISODE_FIELDS: &[&str] = &["Overview", "PrimaryImageAspectRatio", "CanDownload"];
+/// The fields of what a season, show, album or playlist downloads: what
+/// its files may be named when the server gives no name, and whether
+/// each can be.
+const DOWNLOAD_FIELDS: &[&str] = &["Path", "CanDownload"];
 
 // What the library shows, and how it asks for it.
 
@@ -206,7 +214,7 @@ impl Tab {
     fn fields(self) -> &'static [&'static str] {
         match self {
             Tab::Collections | Tab::Playlists | Tab::Items => {
-                &["PrimaryImageAspectRatio", "ChildCount"]
+                &["PrimaryImageAspectRatio", "ChildCount", "CanDownload"]
             }
             _ => CARD_FIELDS,
         }
@@ -415,7 +423,7 @@ fn seasons_query() -> ItemsQuery {
 fn episodes_query(season: &str) -> ItemsQuery {
     ItemsQuery::new()
         .season(season)
-        .fields(&["Overview", "PrimaryImageAspectRatio"])
+        .fields(EPISODE_FIELDS)
         .images(CARD_IMAGES, 1)
 }
 
@@ -424,6 +432,7 @@ fn album_tracks_query(album: &str) -> ItemsQuery {
         .parent(album)
         .types(&[ItemKind::Audio])
         .recursive()
+        .fields(&["CanDownload"])
         .sort(
             &["ParentIndexNumber", "IndexNumber", "SortName"],
             SortOrder::Ascending,
@@ -490,7 +499,7 @@ fn collection_items_query(collection: &str) -> ItemsQuery {
             &["PremiereDate", "ProductionYear", "SortName"],
             SortOrder::Ascending,
         )
-        .fields(&["PrimaryImageAspectRatio", "ChildCount"])
+        .fields(&["PrimaryImageAspectRatio", "ChildCount", "CanDownload"])
         .images(&[ImageType::Primary], 1)
         .limit(PAGE_LIMIT)
 }
@@ -724,7 +733,7 @@ fn item_kind(kind: &str) -> ItemKind {
 }
 
 /// Items that are one file to play.
-fn is_playable(kind: ItemKind) -> bool {
+pub(super) fn is_playable(kind: ItemKind) -> bool {
     matches!(
         kind,
         ItemKind::Movie
@@ -1180,6 +1189,7 @@ fn card_of(item: &BaseItemDto, art: Art, lines: Lines) -> LibraryCard {
         played: item.played(),
         favorite: item.is_favorite(),
         unplayed: unplayed(item),
+        downloadable: download::offered(item),
     }
 }
 
@@ -1261,6 +1271,7 @@ fn track_of(
         played: item.played(),
         favorite: item.is_favorite(),
         playing: false,
+        downloadable: download::offered(item),
     }
 }
 
@@ -1433,6 +1444,7 @@ fn detail_of(item: &BaseItemDto, choice: &Choice) -> LibraryDetail {
         played: item.played(),
         favorite: item.is_favorite(),
         can_play: is_playable(item.kind) || plays_children(item.kind),
+        downloadable: download::offered(item),
         resume: resume.into(),
         parent_title: parent_title.unwrap_or_default().into(),
         parent_id: parent_id.unwrap_or_default().into(),
@@ -1519,10 +1531,22 @@ enum Start {
 }
 
 /// What a show, season, album or playlist plays: what it holds that can be
-/// played, in order. Blocks.
-fn children(client: &Client, item: &BaseItemDto) -> Result<Vec<BaseItemDto>, Error> {
-    let songs = |query: ItemsQuery| songs_query(query).limit(MAX_PLAYLIST);
-    let all = || ItemsQuery::new().limit(MAX_PLAYLIST);
+/// played, in order, with `fields` when there are any. Blocks.
+fn children(
+    client: &Client,
+    item: &BaseItemDto,
+    fields: &[&str],
+) -> Result<Vec<BaseItemDto>, Error> {
+    let with = |query: ItemsQuery| {
+        let query = query.limit(MAX_PLAYLIST);
+        if fields.is_empty() {
+            query
+        } else {
+            query.fields(fields)
+        }
+    };
+    let songs = |query: ItemsQuery| with(songs_query(query));
+    let all = || with(ItemsQuery::new());
     let page = match item.kind {
         ItemKind::Series => client.episodes(&item.id, &all())?,
         ItemKind::Season => match &item.series_id {
@@ -1534,21 +1558,20 @@ fn children(client: &Client, item: &BaseItemDto) -> Result<Vec<BaseItemDto>, Err
                     .sort(&["IndexNumber"], SortOrder::Ascending),
             )?,
         },
-        ItemKind::MusicAlbum => client.items(&album_tracks_query(&item.id).limit(MAX_PLAYLIST))?,
+        ItemKind::MusicAlbum => client.items(&with(album_tracks_query(&item.id)))?,
         ItemKind::Playlist => client.playlist_items(&item.id, &all())?,
-        ItemKind::BoxSet => client.items(&collection_items_query(&item.id).limit(MAX_PLAYLIST))?,
+        ItemKind::BoxSet => client.items(&with(collection_items_query(&item.id)))?,
         ItemKind::MusicArtist => client.items(&songs(ItemsQuery::new().artists(&[&item.id])))?,
         ItemKind::MusicGenre | ItemKind::Genre => {
             client.items(&songs(ItemsQuery::new().genres(&[&item.id])))?
         }
-        _ => client.items(
-            &ItemsQuery::new()
+        _ => client.items(&with(
+            ItemsQuery::new()
                 .parent(&item.id)
                 .media_types(&["Video", "Audio"])
                 .recursive()
-                .sort(&["SortName"], SortOrder::Ascending)
-                .limit(MAX_PLAYLIST),
-        )?,
+                .sort(&["SortName"], SortOrder::Ascending),
+        ))?,
     };
     Ok(page.items)
 }
@@ -1571,7 +1594,7 @@ fn playable_list(
     let mut items = if is_playable(item.kind) {
         vec![item.clone()]
     } else {
-        children(client, item)?
+        children(client, item, &[])?
     };
     // Missing episodes the server knows of only from metadata.
     items.retain(|item| is_playable(item.kind) && item.location_type != LocationType::Virtual);
@@ -1626,6 +1649,63 @@ fn following(episode: &BaseItemDto, mut episodes: Vec<BaseItemDto>) -> Vec<BaseI
         .into_iter()
         .filter(|item| is_playable(item.kind) && item.location_type != LocationType::Virtual)
         .collect()
+}
+
+/// What downloading `items`, an item's own file or the files it holds,
+/// comes to: how many files that is, leaving out the episodes the server
+/// knows only from metadata, which are none, and a playlist's repeats,
+/// which are one file; and of those, the ones `policy` and the server
+/// allow.
+fn download_files(items: Vec<BaseItemDto>, policy: &UserPolicy) -> (usize, Vec<BaseItemDto>) {
+    let mut seen = std::collections::HashSet::new();
+    let files: Vec<BaseItemDto> = items
+        .into_iter()
+        .filter(|item| is_playable(item.kind) && item.location_type != LocationType::Virtual)
+        .filter(|item| seen.insert(item.id.clone()))
+        .collect();
+    let total = files.len();
+    let wanted = files
+        .into_iter()
+        .filter(|item| download::allowed(policy, item))
+        .collect();
+    (total, wanted)
+}
+
+/// What the library says on starting downloads: "Downloading" and the
+/// item's title for one file, or for a season, show, album or playlist how
+/// many were added ("Downloading 12 Episodes") with its name, how many of
+/// it were already downloading, and how many the server didn't offer.
+fn download_notice(
+    item: &BaseItemDto,
+    added: &[&BaseItemDto],
+    already: usize,
+    refused: usize,
+) -> (String, String) {
+    if !download::downloads_children(item.kind) {
+        return ("Downloading".to_owned(), display_title(item));
+    }
+    let count = added.len();
+    let what = if added.iter().all(|item| item.kind == ItemKind::Episode) {
+        ("Episode", "Episodes")
+    } else if added.iter().all(|item| item.kind == ItemKind::Audio) {
+        ("Song", "Songs")
+    } else {
+        ("File", "Files")
+    };
+    let text = format!(
+        "Downloading {count} {}",
+        if count == 1 { what.0 } else { what.1 }
+    );
+    let mut detail = item.name.clone();
+    if already > 0 {
+        detail.push_str(&format!(" · {already} already downloading"));
+    }
+    match refused {
+        0 => {}
+        1 => detail.push_str(" · 1 isn't offered for download"),
+        refused => detail.push_str(&format!(" · {refused} aren't offered for download")),
+    }
+    (text, detail)
 }
 
 /// The title the playlist and the title bar show for an item.
@@ -1749,6 +1829,10 @@ pub struct LibraryController {
     /// (`shown_again`).
     stale: Cell<bool>,
     me: RefCell<Option<UserDto>>,
+    /// Set while the account's details are on their way, or once they have
+    /// come; cleared when asking failed, so that the next page asks again
+    /// (`load_me_again`).
+    me_asked: Cell<bool>,
     /// The account's libraries, as the bar lists them.
     views: RefCell<Vec<BaseItemDto>>,
     pages: RefCell<Pages>,
@@ -1817,6 +1901,7 @@ impl LibraryController {
             server: RefCell::new(None),
             stale: Cell::new(false),
             me: RefCell::new(None),
+            me_asked: Cell::new(false),
             views: RefCell::new(Vec::new()),
             pages: RefCell::new(Pages::default()),
             ticket: Cell::new(0),
@@ -1922,6 +2007,7 @@ impl LibraryController {
             .set_played(&id, played));
         on!(on_set_favorite, |this, id, favorite| this
             .set_favorite(&id, favorite));
+        on!(on_download, |this, id| this.download(&id));
         on!(on_select_tab, |this, id| this.select_tab(&id));
         on!(on_sort_by, |this, id, descending| this
             .sort_by(&id, descending));
@@ -2017,9 +2103,12 @@ impl LibraryController {
     fn server_changed(&self) {
         self.bar_generation.bump();
         self.me.borrow_mut().take();
+        self.me_asked.set(false);
         self.views.borrow_mut().clear();
         let library = self.library();
         library.set_user_image(Image::default());
+        // Until the account's policy says it may.
+        library.set_can_download(false);
         let signing_in = self.sign_in.borrow().is_some();
         match self.account() {
             Some(account) => {
@@ -2119,8 +2208,10 @@ impl LibraryController {
         self.nav_end.set_vec(end);
     }
 
-    /// The account's name and picture.
+    /// The account's name and picture, and its policy, which says whether
+    /// it may download.
     fn load_me(&self, account: &Account) {
+        self.me_asked.set(true);
         let client = account.client.clone();
         let asked = account.client.clone();
         let server_id = account.server.id.clone();
@@ -2138,15 +2229,32 @@ impl LibraryController {
                 match me {
                     Ok(me) => this.me_arrived(me),
                     Err(Error::Unauthorized) => this.session.unauthorized(&server_id, &asked),
-                    Err(error) => log::debug!("no Jellyfin account details: {error}"),
+                    Err(error) => {
+                        log::debug!("no Jellyfin account details: {error}");
+                        this.me_asked.set(false);
+                    }
                 }
             },
         );
     }
 
+    /// Asks for the account's details again when they haven't come and
+    /// aren't on their way. Until they come nothing offers to download, so
+    /// one failure to answer, from a server still waking up, say, would
+    /// otherwise hide downloading for as long as the window shows it.
+    fn load_me_again(&self) {
+        if self.me.borrow().is_none()
+            && !self.me_asked.get()
+            && let Some(account) = self.account()
+        {
+            self.load_me(&account);
+        }
+    }
+
     fn me_arrived(&self, me: UserDto) {
         let library = self.library();
         library.set_user_name(me.name.clone().into());
+        library.set_can_download(me.policy.enable_content_downloading);
         if let (Some(tag), Some(account)) = (&me.primary_image_tag, self.account()) {
             let pixels = self.pixels(USER_WIDTH);
             let url = account
@@ -2181,6 +2289,7 @@ impl LibraryController {
     /// `show_page`, keeping what `kept` holds of the page as it was.
     fn show_page_keeping(&self, kept: Kept) {
         self.next_ticket();
+        self.load_me_again();
         let library = self.library();
         library.set_loads(library.get_loads().wrapping_add(1));
         library.set_tracks_note(SharedString::new());
@@ -3377,7 +3486,7 @@ impl LibraryController {
                             &ItemsQuery::new()
                                 .parent(&season)
                                 .types(&[ItemKind::Episode])
-                                .fields(&["Overview", "PrimaryImageAspectRatio"]),
+                                .fields(EPISODE_FIELDS),
                         ),
                     },
                     |this, page| this.set_tracks(&page.items, Tracks::Episodes),
@@ -4056,6 +4165,108 @@ impl LibraryController {
         }
     }
 
+    // Downloading.
+
+    /// Downloads an item's file, or the files a season, show, album or
+    /// playlist holds, through the Downloads window, which shows them. The
+    /// item is asked for afresh (unless it is the page's, which has every
+    /// field), for whether the server lets it be downloaded and what it
+    /// may be named.
+    fn download(&self, id: &str) {
+        let Some(account) = self.account() else {
+            return;
+        };
+        let Some(policy) = self
+            .me
+            .borrow()
+            .as_ref()
+            .map(|me| me.policy.clone())
+            .filter(|policy| policy.enable_content_downloading)
+        else {
+            self.notify(
+                "Can't Download",
+                "The server doesn't allow this account to download.",
+            );
+            return;
+        };
+        let known = self.detail.borrow().clone().filter(|item| item.id == id);
+        let client = account.client;
+        let asked = client.clone();
+        let server_id = account.server.id;
+        let server_name = account.server.name;
+        let id = id.to_owned();
+        let weak = self.this.clone();
+        background(
+            "jellyfin",
+            move || {
+                let item = match known {
+                    Some(item) => item,
+                    None => client.item(&id)?,
+                };
+                let items = if download::downloads_children(item.kind) {
+                    children(&client, &item, DOWNLOAD_FIELDS)?
+                } else {
+                    vec![item.clone()]
+                };
+                Ok((item, items))
+            },
+            move |result: Result<(BaseItemDto, Vec<BaseItemDto>), Error>| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok((item, items)) => this.start_downloads(&server_id, &policy, &item, items),
+                    Err(Error::Unauthorized) => this.session.unauthorized(&server_id, &asked),
+                    Err(error) => this.notify("Can't Download", &error.about(Some(&server_name))),
+                }
+            },
+        );
+    }
+
+    /// Hands what `item` downloads to the Downloads window, and says how
+    /// many files that is.
+    fn start_downloads(
+        &self,
+        server_id: &str,
+        policy: &UserPolicy,
+        item: &BaseItemDto,
+        items: Vec<BaseItemDto>,
+    ) {
+        let (total, wanted) = download_files(items, policy);
+        if wanted.is_empty() {
+            let detail = if total == 0 {
+                format!("{} has nothing to download.", item.name)
+            } else {
+                format!("The server doesn't offer {} for download.", item.name)
+            };
+            self.notify("Nothing to Download", &detail);
+            return;
+        }
+        let requests: Vec<download::Request> = wanted
+            .iter()
+            .map(|item| download::Request::of(server_id, item, display_title(item)))
+            .collect();
+        let mut added = None;
+        crate::app::App::with_current(|app| added = app.download_jellyfin(requests));
+        let Some(added) = added else {
+            self.notify("Can't Download", "The Downloads window couldn't open.");
+            return;
+        };
+        if added.is_empty() {
+            self.notify("Already Downloading", &item.name);
+            return;
+        }
+        // What was added, which leaves out what was downloading already.
+        let added: Vec<&BaseItemDto> = added.iter().map(|&at| &wanted[at]).collect();
+        let (text, detail) = download_notice(
+            item,
+            &added,
+            wanted.len() - added.len(),
+            total - wanted.len(),
+        );
+        self.notify(&text, &detail);
+    }
+
     /// A message over the library, long enough to read.
     fn notify(&self, text: &str, detail: &str) {
         if let Some(player) = self.player.upgrade() {
@@ -4385,7 +4596,7 @@ mod tests {
         assert_eq!(query["recursive"], "true");
         assert_eq!(query["sortBy"], "SortName");
         assert_eq!(query["sortOrder"], "Ascending");
-        assert_eq!(query["fields"], "PrimaryImageAspectRatio");
+        assert_eq!(query["fields"], "PrimaryImageAspectRatio,CanDownload");
         assert_eq!(query["enableImageTypes"], "Primary");
         assert_eq!(query["startIndex"], "0");
         assert_eq!(query["limit"], "100");
@@ -4405,7 +4616,10 @@ mod tests {
         assert_eq!(query["sortBy"], "DateCreated,SortName");
         assert_eq!(query["sortOrder"], "Descending");
         assert_eq!(query["filters"], "IsUnplayed,IsFavorite");
-        assert_eq!(query["fields"], "PrimaryImageAspectRatio,ChildCount");
+        assert_eq!(
+            query["fields"],
+            "PrimaryImageAspectRatio,ChildCount,CanDownload"
+        );
         assert_eq!(query["startIndex"], "200");
 
         let shows = GridPage {
@@ -4721,6 +4935,103 @@ mod tests {
         ] {
             assert_ne!(item_kind(kind), ItemKind::Unknown, "{kind}");
         }
+    }
+
+    #[test]
+    fn downloads_are_offered_where_the_server_allows_and_say_how_many() {
+        let film =
+            item(r#"{"Id": "m", "Name": "Night Signal", "Type": "Movie", "CanDownload": true}"#);
+        let disc = item(r#"{"Id": "d", "Name": "Disc", "Type": "Movie", "CanDownload": false}"#);
+        let album =
+            item(r#"{"Id": "a", "Name": "Low Tide", "Type": "MusicAlbum", "CanDownload": false}"#);
+        assert!(card_of(&film, Art::Poster, Lines::Own).downloadable);
+        assert!(!card_of(&disc, Art::Poster, Lines::Own).downloadable);
+        assert!(card_of(&album, Art::Poster, Lines::Own).downloadable);
+        assert!(track_of(&film, Tracks::Playlist, false, 0, "").downloadable);
+        assert!(detail_of(&album, &Choice::default()).downloadable);
+        assert!(!detail_of(&disc, &Choice::default()).downloadable);
+
+        let songs = [
+            item(r#"{"Id": "s1", "Name": "One", "Type": "Audio"}"#),
+            item(r#"{"Id": "s2", "Name": "Two", "Type": "Audio"}"#),
+        ];
+        fn refs(items: &[BaseItemDto]) -> Vec<&BaseItemDto> {
+            items.iter().collect()
+        }
+        assert_eq!(
+            download_notice(&album, &refs(&songs), 0, 0),
+            ("Downloading 2 Songs".into(), "Low Tide".into())
+        );
+        assert_eq!(
+            download_notice(&album, &refs(&songs[..1]), 0, 1),
+            (
+                "Downloading 1 Song".into(),
+                "Low Tide · 1 isn't offered for download".into()
+            )
+        );
+        // Counting only what was added: one was downloading already.
+        assert_eq!(
+            download_notice(&album, &refs(&songs[1..]), 1, 2),
+            (
+                "Downloading 1 Song".into(),
+                "Low Tide · 1 already downloading · 2 aren't offered for download".into()
+            )
+        );
+        let season = item(r#"{"Id": "s", "Name": "Season 1", "Type": "Season"}"#);
+        let episodes = [item(
+            r#"{"Id": "e1", "Name": "Pilot", "Type": "Episode", "SeriesName": "Lantern Street",
+                "ParentIndexNumber": 1, "IndexNumber": 1}"#,
+        )];
+        assert_eq!(
+            download_notice(&season, &refs(&episodes), 0, 2).0,
+            "Downloading 1 Episode"
+        );
+        assert_eq!(
+            download_notice(&season, &refs(&episodes), 0, 2).1,
+            "Season 1 · 2 aren't offered for download"
+        );
+        let playlist = item(r#"{"Id": "p", "Name": "Mix", "Type": "Playlist"}"#);
+        let mixed = [film.clone(), songs[0].clone()];
+        assert_eq!(
+            download_notice(&playlist, &refs(&mixed), 0, 0).0,
+            "Downloading 2 Files"
+        );
+        assert_eq!(
+            download_notice(&episodes[0], &refs(&episodes), 0, 0),
+            (
+                "Downloading".into(),
+                "Lantern Street · S1 E1 · Pilot".into()
+            )
+        );
+
+        // A playlist that holds a song twice downloads it once, and says
+        // nothing of the repeat; what the server doesn't offer is counted
+        // once too.
+        let refused =
+            item(r#"{"Id": "s3", "Name": "Three", "Type": "Audio", "CanDownload": false}"#);
+        let repeated = vec![
+            songs[0].clone(),
+            songs[1].clone(),
+            songs[0].clone(),
+            refused.clone(),
+            refused,
+        ];
+        let (total, wanted) = download_files(repeated, &UserPolicy::default());
+        assert_eq!(total, 3);
+        assert_eq!(
+            wanted
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["s1", "s2"]
+        );
+        assert_eq!(
+            download_notice(&playlist, &refs(&wanted), 0, total - wanted.len()),
+            (
+                "Downloading 2 Songs".into(),
+                "Mix · 1 isn't offered for download".into()
+            )
+        );
     }
 
     #[test]

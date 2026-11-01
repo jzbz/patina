@@ -169,6 +169,13 @@ component EpisodeRow inherits Rectangle {
                     Library.set-favorite(root.track.id, !root.track.favorite);
                 }
             }
+            if Library.can-download && root.track.downloadable: MenuSeparator { }
+            if Library.can-download && root.track.downloadable: MenuItem {
+                title: "Download";
+                activated => {
+                    Library.download(root.track.id);
+                }
+            }
         }
     }
 }
@@ -324,6 +331,13 @@ component SongRow inherits Rectangle {
                     Library.set-favorite(root.track.id, !root.track.favorite);
                 }
             }
+            if Library.can-download && root.track.downloadable: MenuSeparator { }
+            if Library.can-download && root.track.downloadable: MenuItem {
+                title: "Download";
+                activated => {
+                    Library.download(root.track.id);
+                }
+            }
         }
     }
 }
@@ -475,8 +489,13 @@ export component DetailPage inherits ScrollView {
     property <bool> round: Library.detail.kind == "artist" || Library.detail.kind == "person";
     property <float> poster-aspect: root.round ? 1 : Library.detail.poster-aspect > 0 ? Library.detail.poster-aspect : 2 / 3;
     property <length> poster-width: root.poster-aspect > 1.2 ? 300px : root.poster-aspect > 0.9 ? 240px : 220px;
-    // Under this the buttons drop their longer words.
-    property <bool> roomy: root.visible-width >= 760px || (!root.wide && root.visible-width >= 520px);
+    // Under this the buttons drop their longer words; later by Download's
+    // button, which the row has then.
+    property <length> download-room: Library.can-download && Library.detail.downloadable ? 40px : 0px;
+    property <bool> roomy: root.visible-width >= 760px + root.download-room || (!root.wide && root.visible-width >= 520px + root.download-room);
+    // Nor is there room then for Download beside Resume and Play from
+    // Beginning: it goes into More's menu.
+    property <bool> download-in-menu: root.download-room > 0 && root.queues && !root.roomy;
     property <bool> has-logo: Library.detail.logo.width > 0;
 
     // As wide as the view: rows of cards scroll by themselves.
@@ -736,6 +755,13 @@ export component DetailPage inherits ScrollView {
                                     Library.queue(Library.detail.id, false);
                                 }
                             }
+                            if root.download-in-menu: MenuSeparator { }
+                            if root.download-in-menu: MenuItem {
+                                title: "Download";
+                                activated => {
+                                    Library.download(Library.detail.id);
+                                }
+                            }
                         }
 
                         SquareButton {
@@ -744,6 +770,15 @@ export component DetailPage inherits ScrollView {
                             clicked => {
                                 more.show({ x: 0, y: self.height + 4px });
                             }
+                        }
+                    }
+                    // Its file, or a season's, show's, album's or
+                    // playlist's files, to the Downloads window.
+                    if Library.can-download && Library.detail.downloadable && !root.download-in-menu: SquareButton {
+                        icon: @image-url("icons/download.svg");
+                        label: "Download";
+                        clicked => {
+                            Library.download(Library.detail.id);
                         }
                     }
                     if LibraryUi.watchable(Library.detail.kind): ToggleButton {

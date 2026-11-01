@@ -1685,6 +1685,103 @@ fn live_played_and_favourite_marks_come_and_go() {
     assert_eq!(after.resume_position(), None);
 }
 
+/// A film downloaded as Patina downloads one: the smallest of the sample,
+/// whole, whose bytes are the server's file's (read where the server keeps
+/// it when that is on this computer, as the generated library's is, and
+/// otherwise as the server streams it), and the largest cancelled after
+/// its first bytes, which leaves no part file. The server notes each
+/// download in its activity log.
+#[test]
+fn live_a_film_downloads_as_its_file_and_a_cancelled_one_leaves_nothing() {
+    use super::download::{self, Failure};
+    let Some(account) = account("patina-tests-download") else {
+        return;
+    };
+    let client = &account.client;
+    if !account.user.policy.enable_content_downloading {
+        expect(false, "the account may download");
+        return;
+    }
+    let size = |film: &BaseItemDto| {
+        film.media_sources
+            .first()
+            .and_then(|source| source.size)
+            .unwrap_or(i64::MAX)
+    };
+    let mut sample: Vec<BaseItemDto> = films(client)
+        .iter()
+        .map(|film| ok(client.item(&film.id)))
+        .filter(|film| film.can_download == Some(true))
+        .collect();
+    sample.sort_by_key(size);
+    let (Some(smallest), Some(largest)) = (sample.first(), sample.last()) else {
+        panic!("no film the server offers for download");
+    };
+    let dir = std::env::temp_dir().join(format!("patina-live-download-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let never = download::Stop::default();
+    let fallback = download::fallback_name(smallest);
+    let saved = download::run(client, &smallest.id, &fallback, &dir, &never, |_| {})
+        .unwrap_or_else(|failure| panic!("{failure:?}"));
+    let bytes = std::fs::read(&saved).unwrap();
+    let local = smallest
+        .path
+        .as_deref()
+        .map(Path::new)
+        .filter(|path| path.is_file());
+    expect(
+        local.is_some(),
+        "the server's media folder is on this computer",
+    );
+    let original = match local {
+        Some(path) => {
+            // Named as the server's file is.
+            assert_eq!(saved.file_name(), path.file_name());
+            std::fs::read(path).unwrap()
+        }
+        None => {
+            let url = client.static_stream_url(&smallest.id, false, &smallest.media_sources[0]);
+            anonymous_get(&url, None).1
+        }
+    };
+    assert_eq!(bytes.len() as i64, size(smallest));
+    assert!(
+        bytes == original,
+        "the download differs from the server's file"
+    );
+
+    let cancel = download::Stop::default();
+    let mut written = 0;
+    let mut part = 0;
+    let fallback = download::fallback_name(largest);
+    let stopped = download::run(client, &largest.id, &fallback, &dir, &cancel, |progress| {
+        if progress.done > 0 && !cancel.stopped() {
+            written = progress.done;
+            part = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".part"))
+                .filter_map(|entry| entry.metadata().ok())
+                .map(|meta| meta.len())
+                .sum();
+            cancel.stop();
+        }
+    });
+    assert_eq!(stopped, Err(Failure::Cancelled));
+    assert!(part > 0, "the part file had nothing in it");
+    expect(
+        (written as i64) < size(largest),
+        "the cancel came before the film's end",
+    );
+    let left: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(left, [saved]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Scan Network against a stand-in that answers as Jellyfin 12.4 does,
 /// since the test server's own discovery is off. The server reports the
 /// address it thinks it has, with the port it listens on: from a

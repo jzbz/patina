@@ -25,6 +25,11 @@ const MAX_REDIRECTS: usize = 5;
 /// A page of items with every field can run to megabytes.
 const JSON_LIMIT: u64 = 64 * 1024 * 1024;
 const BYTES_LIMIT: u64 = 32 * 1024 * 1024;
+/// How long a download may wait for its next bytes before it gives up. A
+/// download has no limit on the whole, which a film over a slow line
+/// would pass, so this is what ends one from a server that has stopped
+/// sending.
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
@@ -48,6 +53,11 @@ pub enum Error {
     Unsupported(String),
     /// The server sent the request on to another host, given here.
     Moved(String),
+    /// The server won't hand out the file: the account may not download
+    /// (403), or the item isn't a file of the server's own (400); or it
+    /// hands it out so that its end can't be told from a lost connection.
+    /// The reason is a sentence.
+    NoDownload(&'static str),
     /// Anything else the server answered with: status and message.
     Server(u16, String),
     /// An answer that wasn't what the server should send.
@@ -84,6 +94,7 @@ impl std::fmt::Display for Error {
                 f,
                 "The server sends Patina on to {address}. Add the server again at that address."
             ),
+            Error::NoDownload(reason) => write!(f, "{reason}"),
             Error::Server(503, _) => write!(
                 f,
                 "The server is starting up or busy; try again in a moment."
@@ -420,6 +431,27 @@ impl ItemsQuery {
     }
 }
 
+/// A file being downloaded: its bytes as they come, and what the server
+/// said about them.
+pub struct Download {
+    /// The `Content-Disposition` header, which names the file.
+    pub disposition: Option<String>,
+    /// The size, when the server gives it (`Content-Length`).
+    pub length: Option<u64>,
+    reader: ureq::BodyReader<'static>,
+}
+
+impl Download {
+    /// Reads the next bytes; 0 at the end. It fails, rather than ending
+    /// early, when the connection is lost before the size the server gave
+    /// or before the last chunk, and when the server sends nothing for a
+    /// minute (`STALL_TIMEOUT`), with the error in the words the other
+    /// requests' are in.
+    pub fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
+        std::io::Read::read(&mut self.reader, buffer).map_err(|error| network(error.into()))
+    }
+}
+
 /// What adding a server found: the address it ended up at, after any
 /// redirects, and what the server says about itself.
 #[derive(Debug, Clone, PartialEq)]
@@ -606,6 +638,50 @@ impl Client {
         follow: Follow,
         json: bool,
     ) -> Result<Reply, Error> {
+        let (mut response, url) = self.exchange(method, url, body, follow, json, false)?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(if json { JSON_LIMIT } else { BYTES_LIMIT })
+            .read_to_vec()
+            .map_err(network)?;
+        Ok(Reply { status, body, url })
+    }
+
+    /// Runs one request, with the timeouts of a download when `download`
+    /// says: none on the whole, which a large file over a slow line would
+    /// pass, but one on waiting for the answer and on each read.
+    fn run<S: ureq::AsSendBody>(
+        &self,
+        request: ureq::http::Request<S>,
+        download: bool,
+    ) -> Result<ureq::http::Response<ureq::Body>, Error> {
+        let request = if download {
+            self.agent
+                .configure_request(request)
+                .timeout_global(None)
+                .timeout_recv_response(Some(TIMEOUT))
+                .timeout_per_read(Some(STALL_TIMEOUT))
+                .build()
+        } else {
+            request
+        };
+        self.agent.run(request).map_err(network)
+    }
+
+    /// `send` up to the answer's head, after any redirects, and where it
+    /// came from: the body is left for the caller to read, whole or as it
+    /// comes.
+    fn exchange(
+        &self,
+        method: &str,
+        url: Url,
+        body: Option<Vec<u8>>,
+        follow: Follow,
+        json: bool,
+        download: bool,
+    ) -> Result<(ureq::http::Response<ureq::Body>, Url), Error> {
         let mut method = method.to_owned();
         let mut url = url;
         let mut body = body;
@@ -625,13 +701,13 @@ impl Client {
                     .header("Content-Type", "application/json")
                     .body(bytes.clone())
                     .map_err(|error| Error::Network(error.to_string()))
-                    .and_then(|request| self.agent.run(request).map_err(network)),
+                    .and_then(|request| self.run(request, download)),
                 None => request
                     .body(())
                     .map_err(|error| Error::Network(error.to_string()))
-                    .and_then(|request| self.agent.run(request).map_err(network)),
+                    .and_then(|request| self.run(request, download)),
             };
-            let mut response = result?;
+            let response = result?;
             let status = response.status().as_u16();
             let location = response
                 .headers()
@@ -666,13 +742,7 @@ impl Client {
                 url = next;
                 continue;
             }
-            let body = response
-                .body_mut()
-                .with_config()
-                .limit(if json { JSON_LIMIT } else { BYTES_LIMIT })
-                .read_to_vec()
-                .map_err(network)?;
-            return Ok(Reply { status, body, url });
+            return Ok((response, url));
         }
         Err(Error::Network(
             "the server redirected the request too many times.".into(),
@@ -977,7 +1047,8 @@ impl Client {
                 .types(kinds)
                 .recursive()
                 .limit(limit)
-                .fields(&["PrimaryImageAspectRatio"])
+                // Whether its card's menu offers Download.
+                .fields(&["PrimaryImageAspectRatio", "CanDownload"])
                 .images(
                     &[ImageType::Primary, ImageType::Thumb, ImageType::Backdrop],
                     1,
@@ -1071,6 +1142,70 @@ impl Client {
             Err(Error::NotFound) => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    // Downloading.
+
+    /// An item's file as the server keeps it (`GET /Items/{id}/Download`),
+    /// to be read as it comes rather than whole, since it can run to
+    /// gigabytes. It needs the account's token, in the header as every
+    /// request has it, and the account's permission to download
+    /// (`Policy.EnableContentDownloading`); a redirect is followed only on
+    /// this server, as every request's is. The server refuses an account
+    /// without that permission with 403, and an item that isn't a file of
+    /// its own (a folder, a stream from elsewhere, a disc's folder) with
+    /// 400.
+    pub fn download(&self, id: &str) -> Result<Download, Error> {
+        let url = self.url(&format!("/Items/{}/Download", segment(id)), &[]);
+        let (mut response, url) =
+            self.exchange("GET", url, None, Follow::SameServer, false, true)?;
+        let status = response.status().as_u16();
+        if !(200..=299).contains(&status) {
+            // What the error says, which is short; a body that can't be
+            // read says nothing.
+            let body = response
+                .body_mut()
+                .with_config()
+                .limit(64 * 1024)
+                .read_to_vec()
+                .unwrap_or_default();
+            let error = match (Reply { status, body, url }).check() {
+                Err(Error::Forbidden) => {
+                    Error::NoDownload("The server doesn't allow this account to download.")
+                }
+                Err(Error::Server(400, _)) => {
+                    Error::NoDownload("The server doesn't offer this for download.")
+                }
+                Err(error) => error,
+                Ok(_) => Error::Server(status, String::new()),
+            };
+            return Err(error);
+        }
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let disposition = header("content-disposition");
+        let length = header("content-length").and_then(|length| length.trim().parse().ok());
+        // Neither a size nor chunks, the file ends where the connection
+        // does, lost or not: a proxy in front of the server may send it so.
+        // Jellyfin itself always gives the size.
+        let chunked = header("transfer-encoding")
+            .is_some_and(|coding| coding.to_ascii_lowercase().contains("chunked"));
+        if length.is_none() && !chunked {
+            return Err(Error::NoDownload(
+                "The server sends this file without its size, so a download cut short \
+                 couldn't be told from a whole one.",
+            ));
+        }
+        Ok(Download {
+            disposition,
+            length,
+            reader: response.into_body().into_reader(),
+        })
     }
 
     // URLs.
@@ -2058,6 +2193,70 @@ mod tests {
             header(&other_requests.recv().unwrap(), "authorization"),
             None
         );
+    }
+
+    #[test]
+    fn a_download_comes_as_it_is_read_and_its_refusals_say_why() {
+        let (address, requests) = serve(|address| {
+            vec![
+                redirect(302, &format!("{address}/elsewhere/Items/m1/Download")),
+                Canned {
+                    status: 200,
+                    headers: vec![(
+                        "Content-Disposition",
+                        "attachment; filename=\"Film.mkv\"".to_owned(),
+                    )],
+                    body: "the film's bytes".into(),
+                },
+                reply(403, ""),
+                reply(400, "Error processing request."),
+                reply(401, ""),
+                redirect(302, "http://localhost:1/Items/m1/Download"),
+            ]
+        });
+        let client = client(&address).with_session("tok", "u1");
+        let mut download = client.download("m1").ok().unwrap();
+        assert_eq!(
+            download.disposition.as_deref(),
+            Some("attachment; filename=\"Film.mkv\"")
+        );
+        assert_eq!(download.length, Some(16));
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 5];
+        loop {
+            let read = download.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        assert_eq!(bytes, b"the film's bytes");
+        // Both requests, the redirect's on the same server too, with the
+        // header and without asking for JSON.
+        for path in ["/Items/m1/Download", "/elsewhere/Items/m1/Download"] {
+            let request = requests.recv().unwrap();
+            assert!(
+                request.starts_with(&format!("GET {path} HTTP/1.1")),
+                "{request}"
+            );
+            assert!(
+                header(&request, "authorization")
+                    .unwrap()
+                    .contains("Token=\"tok\"")
+            );
+            assert_ne!(header(&request, "accept"), Some("application/json"));
+        }
+        let refusal = || client.download("m1").err().map(|error| error.to_string());
+        assert_eq!(
+            refusal().as_deref(),
+            Some("The server doesn't allow this account to download.")
+        );
+        assert_eq!(
+            refusal().as_deref(),
+            Some("The server doesn't offer this for download.")
+        );
+        assert_eq!(client.download("m1").err(), Some(Error::Unauthorized));
+        assert!(matches!(client.download("m1").err(), Some(Error::Moved(_))));
     }
 
     #[test]

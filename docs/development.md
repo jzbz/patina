@@ -158,7 +158,8 @@ its `/privacy/` page) to answer.
 - `src/thumbnails.rs`: seek-bar thumbnails from a headless mpv core.
 - `src/ytdl.rs`: what yt-dlp says about an online video, as qualities for
   the menus and the yt-dlp format for a choice.
-- `src/downloads.rs`: downloads with yt-dlp, and the Downloads window.
+- `src/downloads.rs`: downloads with yt-dlp and from Jellyfin servers,
+  and the Downloads window.
 - `src/opensubtitles.rs`: the OpenSubtitles.com client: hash, search,
   download, sign-in.
 - `src/credentials.rs`: passwords and Jellyfin tokens in the system's
@@ -170,6 +171,7 @@ its `/privacy/` page) to answer.
   `jellyfin.json` and the tokens; `discovery.rs` Scan Network; `images.rs`
   the poster cache; `library.rs` the library view's controller;
   `playback.rs` streams, the load hook, tracks and the reports;
+  `download.rs` downloading an item's file;
   `segments.rs` skipping intros and credits; `trickplay.rs` the seek bar's
   previews; `lyrics.rs` a song's lyrics and the line being sung; `tests.rs`
   and `fixtures/` the tests across them.

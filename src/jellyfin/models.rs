@@ -214,6 +214,9 @@ pub struct UserPolicy {
     pub enable_audio_playback_transcoding: bool,
     pub enable_video_playback_transcoding: bool,
     pub enable_playback_remuxing: bool,
+    /// Whether the account may download files (`GET /Items/{id}/Download`,
+    /// which the server refuses with 403 without it); Patina offers no
+    /// Download then.
     pub enable_content_downloading: bool,
     pub enable_live_tv_access: bool,
     /// Bits per second the server allows this account away from home; 0
@@ -572,6 +575,15 @@ pub struct BaseItemDto {
     pub trickplay: HashMap<String, HashMap<String, TrickplayInfo>>,
     pub container: Option<String>,
     pub location_type: LocationType,
+    /// The file or folder on the server: what a download is named when
+    /// the server gives no name. Sent only when asked for (`Path`).
+    pub path: Option<String>,
+    /// Whether the account may download this item's file: the server's
+    /// own check, of the account's policy and of the item (a file of its
+    /// own, not a stream from elsewhere or a disc's folder; never a
+    /// folder). Sent only when asked for (`CanDownload`); `GET
+    /// /Items/{id}` asks for every field.
+    pub can_download: Option<bool>,
 }
 
 impl BaseItemDto {
@@ -1320,7 +1332,7 @@ mod tests {
             r#"{"Name": "viewer", "Id": "f6a1", "HasPassword": true,
                 "Configuration": {"SubtitleMode": "Smart", "AudioLanguagePreference": "jpn",
                                   "PlayDefaultAudioTrack": false, "SomethingNew": [1, 2]},
-                "Policy": {"EnableVideoPlaybackTranscoding": false}}"#,
+                "Policy": {"EnableVideoPlaybackTranscoding": false, "EnableContentDownloading": false}}"#,
         )
         .unwrap();
         assert_eq!(user.configuration.subtitle_mode, SubtitleMode::Smart);
@@ -1333,6 +1345,7 @@ mod tests {
         assert!(user.configuration.remember_subtitle_selections);
         assert!(!user.policy.enable_video_playback_transcoding);
         assert!(user.policy.enable_media_playback);
+        assert!(!user.policy.enable_content_downloading);
         let public: Vec<UserDto> = serde_json::from_str(
             r#"[{"Name": "a", "Id": "1", "Configuration": {"SubtitleMode": "Sometimes"}}]"#,
         )

@@ -344,7 +344,12 @@ Downloading runs yt-dlp on threads of its own (`downloads.rs`), with
 progress, post-processing and the final file printed in templates of
 Patina's, so nothing depends on the wording of yt-dlp's own output. It is
 looked for as the hook looks for it. Running downloads are stopped when
-Patina quits; yt-dlp picks up their partial files the next time.
+Patina quits; yt-dlp picks up their partial files the next time. The same
+window lists files downloaded from Jellyfin servers, which Patina fetches
+itself (`jellyfin/download.rs`, described in [jellyfin.md](jellyfin.md)),
+one at a time from each server, and reports in yt-dlp's terms; those
+remove their part files as they fail or are stopped, and one left by a
+Patina that was killed goes when a later download wants its name.
 
 ## Online subtitles
 

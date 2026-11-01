@@ -83,7 +83,7 @@ and its state in Patina.
   from the server or converted by it when you ask for a lower quality,
   with your place and what you've watched kept on the server, the next
   episode lined up, intros and credits skipped where the server marks
-  them, and its previews in the seek bar
+  them, its previews in the seek bar, and its files to download
   ([docs/jellyfin.md](docs/jellyfin.md))
 
 Written but not yet tested: drag and drop, playing from standard input,

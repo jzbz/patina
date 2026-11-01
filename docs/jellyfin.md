@@ -28,12 +28,17 @@ In the first release:
   quality menu.
 - **Music.** Albums, artists, playlists and genres, playing through
   Patina's music mode with the playlist as the queue, and lyrics.
+- **Downloading.** A film's, episode's, video's or song's original file,
+  or those of a season, show, album or playlist, into the download folder,
+  in the Downloads window beside yt-dlp's downloads.
 
-Not in it: being a cast or remote-control target in other Jellyfin apps,
-SyncPlay, Live TV, offline downloads, books and photos, server
-administration, and approving other devices' Quick Connect codes. The
-first two need a websocket connection to the server, which nothing here
-does.
+Not in it: offline playback (a downloaded file is a file in the download
+folder like any other, which Patina plays as it would any; nothing of it
+is reported to the server, and the library doesn't know it is there),
+being a cast or remote-control target in other Jellyfin apps, SyncPlay,
+Live TV, books and photos, server administration, and approving other
+devices' Quick Connect codes. The second and third need a websocket
+connection to the server, which nothing here does.
 
 Servers from 10.10.7 on are supported: one code path covers 10.10.7,
 10.11 and 12.x (the endpoints below are the same in all three).
@@ -52,6 +57,7 @@ Servers from 10.10.7 on are supported: one code path covers 10.10.7,
 | `discovery.rs` | Scan Network: the UDP broadcast and its answers. |
 | `images.rs` | Fetching, decoding and caching posters and backdrops, off the interface thread. |
 | `playback.rs` | Choosing a stream, what the load hook sets, mapping tracks, and the reporter. |
+| `download.rs` | Downloading an item's file: what it is named, its part file, and when it is offered. The Downloads window (`src/downloads.rs`) runs it. |
 | `segments.rs` | Media segments: which span plays, and whether to offer skipping it or skip it. |
 | `trickplay.rs` | The seek bar's previews from the server's trickplay tiles. |
 | `lyrics.rs` | A song's lyrics as the Lyrics tab shows them, and the line being sung. |
@@ -204,6 +210,7 @@ shows the library.
 | Search | `GET /Items?searchTerm=…` for movies, shows, episodes, albums and songs, and `GET /Artists?searchTerm=…` |
 | The account | `GET /Users/Me`, and its picture from `GET /UserImage` |
 | Played, favourite | `POST`/`DELETE /UserPlayedItems/{id}`, `POST`/`DELETE /UserFavoriteItems/{id}` |
+| Download | `GET /Items/{id}` (or the page's item), a season's, show's, album's or playlist's items with `fields=Path,CanDownload`, and `GET /Items/{id}/Download` for each file |
 
 Queries name the item types and `recursive=true` (an untyped library query
 is slow on a large library) and the image types they will show. Grids are
@@ -479,19 +486,126 @@ them; clicking a line plays from its start (a line that synced lyrics
 from a provider give no start can't be clicked). Untimed lyrics are plain
 text.
 
+## Downloading
+
+An item's page has a Download button, and its card's menu and a track's a
+Download entry, for a film, an episode, a video or a song, and for a
+season, a show, an album or a playlist, which downloads the files it holds
+(up to 1000, as playing it queues). They are there only when the account
+may download (its policy's `EnableContentDownloading`, from `/Users/Me`,
+which the next page asks for again should the server fail to answer;
+without it the server answers every download with 403) and the item
+doesn't say it can't be (`CanDownload`, which cards, tracks and pages ask
+for; the server says no for a disc's folder, a stream from elsewhere, and
+everything, when the account may not download; it never offers a folder
+itself). Of what a season, show, album or playlist holds, the files the
+server doesn't offer, and episodes it knows only from metadata, are left
+out. Starting says "Downloading" and the title, or how many were added
+("Downloading 12 Episodes") and of what, with how many were downloading
+already, over the library, and shows the Downloads window; a file already
+waiting or downloading isn't added again, and a playlist's repeats are one
+file.
+
+`GET /Items/{id}/Download` gives the original file, as the server keeps
+it, whatever the account's transcoding settings and Patina's quality
+menu say: a download is a copy of the file, not of what would stream. It
+needs the token, which goes in the header as every request's does, and a
+redirect is followed only on the same server, as for every request. The
+answer is read as it comes, a quarter of a megabyte at a time, and never
+held whole; the request has no time limit on the whole, which a film over
+a slow line would pass, but one of 30 seconds for the answer to start and
+of a minute for each read, so that a server that stops sending ends the
+download rather than holding it for ever. A 403 says the account may not
+download, a 400 that the server doesn't offer the item (its "Error
+processing request."), and a 401 signs the account out, as for any
+request. An answer with neither a `Content-Length` nor chunks is
+refused: its end would be wherever the connection ended, lost or not.
+Jellyfin always gives the length, but a proxy in front of it may not.
+
+**Names.** The file takes the name the server gives in
+`Content-Disposition`: its `filename*`, which 12.4 sends beside `filename`
+in UTF-8, and in which `filename` has "_" for each character outside
+ASCII; or else `filename`; or else the last part of the item's `Path` (in
+either separator, since the server may run on Windows); or else
+"<Name>.<Container>", the container's likeliest extension (FFmpeg's
+"mov,mp4,m4a,3gp,3g2,mj2" is "mp4" for a video, "m4a" for audio). The name
+is made fit for the platform: separators and control characters become
+"_", the dots and spaces it starts with go, however they mix (no hidden
+file, so no ". .bashrc" either, and no "." or ".."), and on Windows
+`<>:"|?*` become "_", device names (`CON`, `COM1`...) get "_" in front and
+a dot or space at the end goes; on macOS a colon becomes "_", since the
+Finder shows it as a slash. Characters that change how a name is shown
+without being seen become "_" too: the bidirectional controls (U+202E
+between "Film" and "vkm.exe" shows a file that ends in ".exe" as
+"Filmexe.mkv"), and the invisible spaces and joiners of words. The joiners
+of letters (U+200C, U+200D) stay, since Persian, the Indic scripts and
+emoji need them. A name is cut to 200 bytes, keeping its extension (and on
+Windows losing any dot the cut leaves at its end), so that " (2)" and
+".patina.part" fit under the file systems' 255.
+
+**Writing.** The file is written to "<name>.patina.part" in the download
+folder (Preferences › Network, Downloads unless changed), made only if no
+file of that name is there, and locked while it is written; a name whose
+file or part file is there already becomes "Film (2).mkv", "Film (3).mkv"
+and so on. Once complete, and on the disk, the part file takes the name by
+a hard link, which refuses to replace a file that appeared under it
+meanwhile, and the next free name is taken then; where the file system has
+no hard links (FAT, some network shares) it is renamed after looking. A
+download that fails removes its part file, and one that is stopped
+(cancelled, the account signed out, Patina quitting) has it removed at
+once, rather than when its thread next looks, which a server that has
+stopped sending holds up for a minute. On Windows, where the file system
+gives no POSIX deletion (FAT and exFAT, some network shares), the name
+stays taken until the thread closes the file, and a download that wants it
+meanwhile takes the next number. A stop that comes once the file has its
+name keeps it, and the row says it was downloaded. So a file under a
+finished one's name is whole: complete, by the length the server gave or
+its last chunk. Only a Patina that ends without stopping its downloads
+(killed, or the computer losing power) leaves a part file behind; one that
+no download holds and that nothing has written to for a minute is removed
+when a download wants its name. The ".patina" in the name keeps a
+browser's ".part" of the same name, a paused download, from being taken
+for one. Nothing is resumed: a download cancelled or failed starts again
+from its beginning.
+
+**The Downloads window.** Each file is a row, as yt-dlp's videos are: its
+title, a bar with how much of how much has come, the speed over the last
+three seconds and the time left (or, once nothing has come for five
+seconds, the server's answer included, "Waiting for the server…"), Cancel;
+when done, the file's name and Show (in the file manager); when failed,
+the reason and Retry. A server's downloads go one at a time, in the order
+asked, the others "Waiting for the download before it…" (Cancel takes one
+out of the queue), so that a whole show asked for at once doesn't open a
+connection per episode, and servers download side by side. One cancelled
+reads "Cancelling…", with no buttons, until its thread has ended, which
+the server's next download waits for, so that a server that has stopped
+sending never has two connections open; that is a moment, or up to a
+minute for a read the server keeps waiting. Under the rows Cancel All
+stops everything running or waiting, and Retry Failed starts again what
+failed, each there while it would do more than one row's own button. Each
+download starts with the account's client of the moment, so one retried
+after signing in again goes with the new sign-in; one whose server has no
+sign-in fails, saying to sign in again. Signing out of a server stops its
+downloads, as it stops what plays from it. When the last of a server's
+downloads ends, the window used last says what they came to ("Downloaded",
+or "Downloaded 12 Files", or "Downloaded 9 Files" and "3 failed"), once
+rather than once a file, counting those that failed as they started. The
+rows, the log and the errors hold the item's title, the file's name and
+the client's sentences, never the token.
+
 ## Keeping the token secret
 
 The token is in the keyring, in memory, and in the header of requests to
 its server. It is not in any URL Patina stores or shows, so not in
 History, Recent, the playlist, Copy URL, MPRIS, the Inspector's `path`,
-or logs. The server writes it into the URLs it hands out (a transcode's,
-a subtitle's); the models remove it as they read them, and a transcode
-asks for no trickplay rendition in its HLS playlist, whose URI 12.4 would
-write the token into. The structs that hold a token print it as hidden.
-ureq's trace output is the raw HTTP exchange, every `Authorization`
-header and sign-in answer included, so Patina's log takes ureq's messages
-no further than debug, where ureq hides headers, whatever `RUST_LOG`
-asks for.
+the Downloads window, or logs. The server writes it into the URLs it hands
+out (a transcode's, a subtitle's); the models remove it as they read them,
+and a transcode asks for no trickplay rendition in its HLS playlist, whose
+URI 12.4 would write the token into. The structs that hold a token print
+it as hidden. ureq's trace output is the raw HTTP exchange, every
+`Authorization` header and sign-in answer included, so Patina's log takes
+ureq's messages no further than debug, where ureq hides headers, whatever
+`RUST_LOG` asks for.
 
 mpv gets the header for a transcode only (see What the hook sets), and
 never one that a redirect, the next entry or a transcode on another host
@@ -542,3 +656,15 @@ that finds no server fails there.
 The test server has no media segments, which 12.4 makes only with a
 plugin, so what Patina does with them is checked by unit tests of the
 timing alone.
+
+Downloading is checked against a stand-in that sends a file in pieces (the
+name, the numbering, a cancel after the first bytes, a connection lost
+part-way, each leaving no part file; a cancel while the stand-in has
+stopped sending, whose part file goes at once, with everything that came
+before the stall on its meter; a name the file system refuses passed over;
+an answer without a length refused, a chunked one saved and one cut short
+failed) and against the live server: a film downloaded whole, its bytes
+compared with the file in the server's media folder (when that is on the
+same computer, as the generated library's is, and otherwise with what the
+server streams), and another cancelled after its first bytes. The server
+notes each download in its activity log, which nothing puts back.

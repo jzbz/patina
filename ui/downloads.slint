@@ -1,5 +1,6 @@
-// Videos downloaded with yt-dlp, as in IINA's Online Media plugin: each one
-// with its progress, and what can be done with it.
+// Videos downloaded with yt-dlp, as in IINA's Online Media plugin, and files
+// downloaded from Jellyfin servers: each one with its progress, and what can
+// be done with it.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
@@ -10,7 +11,9 @@ export struct DownloadRow {
     detail: string,
     // 0..1, or -1 while the size isn't known.
     progress: float,
-    // "running", "done", "failed" or "cancelled".
+    // "queued" (a Jellyfin download waiting for the one before it),
+    // "running", "stopping" (a Jellyfin download stopped, until its thread
+    // has ended), "done", "failed" or "cancelled".
     state: string,
 }
 
@@ -78,7 +81,7 @@ component Entry inherits Rectangle {
         HorizontalLayout {
             alignment: end;
             spacing: 6px;
-            if root.entry.state == "running": TextButton {
+            if root.entry.state == "running" || root.entry.state == "queued": TextButton {
                 y: (parent.height - self.height) / 2;
                 text: "Cancel";
                 clicked => {
@@ -99,7 +102,7 @@ component Entry inherits Rectangle {
                     root.retry();
                 }
             }
-            if root.entry.state != "running": TextButton {
+            if root.entry.state == "done" || root.entry.state == "failed" || root.entry.state == "cancelled": TextButton {
                 y: (parent.height - self.height) / 2;
                 text: "Remove";
                 clicked => {
@@ -116,15 +119,20 @@ export component DownloadsWindow inherits Window {
     background: #1c1c1e;
     preferred-width: 560px;
     preferred-height: 420px;
-    min-width: 420px;
+    // Never too narrow for the footer, padding included: with all four of
+    // its buttons it needs more than 420px.
+    min-width: max(420px, footer.min-width + 2 * 14px);
     min-height: 260px;
     default-font-size: Theme.font-normal;
 
     in property <[DownloadRow]> rows;
-    // Where downloads go, and which yt-dlp does them.
+    // Where downloads go, and which yt-dlp downloads online videos.
     in property <string> folder;
     in property <string> program;
     in property <bool> has-finished;
+    // Each there while it does more than one row's own button.
+    in property <bool> can-cancel-all;
+    in property <bool> can-retry-failed;
 
     callback cancel(int);
     callback reveal(int);
@@ -132,6 +140,8 @@ export component DownloadsWindow inherits Window {
     callback remove(int);
     callback open-folder();
     callback clear-finished();
+    callback cancel-all();
+    callback retry-failed();
 
     VerticalLayout {
         padding: 14px;
@@ -165,13 +175,13 @@ export component DownloadsWindow inherits Window {
 
         if root.rows.length == 0: Text {
             vertical-stretch: 1;
-            text: "Videos you download appear here.\nFile › Download Video downloads the one playing.";
+            text: "Videos you download appear here.\nFile › Download Video downloads the one playing,\nand Download on a Jellyfin item its file.";
             color: Theme.tertiary-text;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
 
-        HorizontalLayout {
+        footer := HorizontalLayout {
             spacing: 8px;
             Text {
                 horizontal-stretch: 1;
@@ -180,6 +190,18 @@ export component DownloadsWindow inherits Window {
                 font-size: Theme.font-small;
                 vertical-alignment: center;
                 overflow: elide;
+            }
+            if root.can-cancel-all: TextButton {
+                text: "Cancel All";
+                clicked => {
+                    root.cancel-all();
+                }
+            }
+            if root.can-retry-failed: TextButton {
+                text: "Retry Failed";
+                clicked => {
+                    root.retry-failed();
+                }
             }
             TextButton {
                 text: "Open Folder";

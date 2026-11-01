@@ -63,9 +63,10 @@ finish-args:
   # Screenshots, which go to Pictures/Patina unless the preferences name
   # another folder. ":create" makes the folder the first time.
   - --filesystem=xdg-pictures/Patina:create
-  # Downloads, which yt-dlp writes to the Downloads folder unless the
-  # preferences name another. A folder named there outside these two grants
-  # can be read, through host:ro, but not written.
+  # Downloads, which yt-dlp and Patina's Jellyfin client write to the
+  # Downloads folder unless the preferences name another. A folder named
+  # there outside these two grants can be read, through host:ro, but not
+  # written.
   - --filesystem=xdg-download
 
   # The OpenSubtitles password, kept in the desktop's keyring. The keyring

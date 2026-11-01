@@ -4,6 +4,7 @@
 pub mod api;
 pub mod auth;
 pub mod discovery;
+pub mod download;
 pub mod images;
 pub mod library;
 pub mod lyrics;

@@ -1,26 +1,47 @@
 //! Downloading online videos with yt-dlp, as IINA's Online Media plugin
-//! does: each download runs yt-dlp in the background, and the Downloads
-//! window lists them with their progress.
+//! does, and files from Jellyfin servers: each download runs in the
+//! background, and the Downloads window lists them with their progress.
 //!
 //! yt-dlp is told to print its progress, the post-processing step it is
 //! on, and the file it made in fixed templates of Patina's own, so nothing
-//! depends on the wording of its usual output.
+//! depends on the wording of its usual output. A Jellyfin file is fetched
+//! by Patina itself (`jellyfin::download`), on a thread of its own, one at
+//! a time from each server: the others wait their turn, so that a whole
+//! show asked for at once doesn't open a connection for every episode. The
+//! next one waits for a stopped one's thread to end too, which a server
+//! that has stopped sending can hold up for a minute.
 
 use crate::app::App;
+use crate::jellyfin::api::{Client, Error as JellyfinError};
+use crate::jellyfin::download::{self as jellyfin, Failure, Meter, Progress, Speed, Stop};
+use crate::jellyfin::session::{Change, Listener};
 use crate::settings::Preferences;
 use crate::{DownloadRow, DownloadsWindow};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const PROGRESS: &str = "patina-progress";
 const PROCESS: &str = "patina-process";
 const FILE: &str = "patina-file";
+/// How long quitting waits for the threads of the Jellyfin downloads it
+/// stops to end. Their part files are gone already (see Stop); a thread
+/// that ends in time can't be making one as Patina exits.
+const STOP_WAIT: Duration = Duration::from_secs(1);
+/// How often the rows of the Jellyfin downloads read their meters.
+const TICK: Duration = Duration::from_millis(250);
+/// How long a Jellyfin download may go without a byte, or without its
+/// server's answer as it starts, before its row says it waits for the
+/// server, rather than show a speed it no longer has and the time that
+/// would leave, or "Starting…" for as long as the server takes.
+const STALLED_AFTER: Duration = Duration::from_secs(5);
 
 /// A video to download: what is playing.
 #[derive(Debug, Clone)]
@@ -176,12 +197,17 @@ fn command(program: &Path, request: &Request, folder: &Path, raw: &str) -> Comma
 
 #[derive(Debug, Clone, PartialEq)]
 enum State {
+    /// A Jellyfin download waiting for the one before it from the same
+    /// server.
+    Queued,
     Running {
         done: u64,
         total: Option<u64>,
         speed: Option<f64>,
         eta: Option<u64>,
         merging: bool,
+        /// A Jellyfin download whose server has sent nothing for a while.
+        stalled: bool,
     },
     Done(PathBuf),
     Failed(String),
@@ -196,22 +222,133 @@ impl State {
             speed: None,
             eta: None,
             merging: false,
+            stalled: false,
         }
     }
 }
 
-/// What a download's thread reports to the window.
+/// A running Jellyfin download's state as of `now`, from its meter's
+/// reading: `progress`, as it was when bytes last came, or the download
+/// started (`moved`), and the download's `speed` so far, which this adds
+/// to. A speed of nothing, from
+/// a pause shorter than `STALLED_AFTER` but longer than the speed's span,
+/// goes unsaid. One that has every byte waits for nobody but the disk,
+/// which can take a while to hold a large file, and its row says nothing
+/// of the server.
+fn metered(progress: Progress, moved: Instant, now: Instant, speed: &mut Speed) -> State {
+    let rate = speed.add(now, progress.done);
+    let complete = progress.total.is_some_and(|total| progress.done >= total);
+    let stalled = !complete && now.duration_since(moved) >= STALLED_AFTER;
+    State::Running {
+        done: progress.done,
+        total: progress.total,
+        speed: rate.filter(|rate| *rate > 0.0 && !stalled),
+        eta: progress.eta(rate).filter(|_| !stalled),
+        merging: false,
+        stalled,
+    }
+}
+
+/// What a download's thread reports to the window. A Jellyfin download
+/// reports in yt-dlp's terms the file it saved and its end; the window
+/// reads its progress from its meter (`Downloads::tick`).
 enum Report {
     Line(Line),
+    /// The server no longer takes the sign-in the download went out with.
+    Unauthorized,
     Finished(Result<(), String>),
+}
+
+/// What a row downloads, and what stops it.
+enum Job {
+    Ytdl {
+        request: Request,
+        child: Option<Arc<Mutex<Child>>>,
+    },
+    Jellyfin {
+        request: jellyfin::Request,
+        /// While its thread runs: what stops it, and removes its part file.
+        stop: Option<Arc<Stop>>,
+        /// While its thread runs: how far it has come, which the row reads
+        /// (`Downloads::tick`).
+        meter: Option<Arc<Meter>>,
+        speed: Speed,
+        /// Until its thread has said it ended, stopped or not.
+        thread: Option<JoinHandle<()>>,
+        /// The client it went out with, whose 401 signs the account out.
+        client: Option<Box<Client>>,
+    },
 }
 
 struct Task {
     id: u64,
-    request: Request,
+    job: Job,
     state: State,
-    child: Option<Arc<Mutex<Child>>>,
     file: Option<PathBuf>,
+}
+
+impl Task {
+    fn title(&self) -> String {
+        match &self.job {
+            Job::Ytdl { request, .. } if request.title.is_empty() => request.url.clone(),
+            Job::Ytdl { request, .. } => request.title.clone(),
+            Job::Jellyfin { request, .. } => request.title.clone(),
+        }
+    }
+
+    /// Running or waiting to: not to be removed or cleared.
+    fn active(&self) -> bool {
+        matches!(self.state, State::Queued | State::Running { .. })
+    }
+
+    /// A Jellyfin download stopped whose thread hasn't ended yet: not to be
+    /// removed, cleared or retried, since its server's next download waits
+    /// for it.
+    fn stopping(&self) -> bool {
+        !self.active()
+            && matches!(
+                self.job,
+                Job::Jellyfin {
+                    thread: Some(_),
+                    ..
+                }
+            )
+    }
+
+    /// Done with: neither running, waiting nor stopping.
+    fn finished(&self) -> bool {
+        !self.active() && !self.stopping()
+    }
+
+    /// Holding up its server's next download: running, or stopping.
+    fn downloading(&self) -> bool {
+        matches!(self.state, State::Running { .. }) || self.stopping()
+    }
+
+    /// The Jellyfin server it downloads from.
+    fn server(&self) -> Option<&str> {
+        match &self.job {
+            Job::Jellyfin { request, .. } => Some(&request.server_id),
+            Job::Ytdl { .. } => None,
+        }
+    }
+
+    /// Stops it: yt-dlp is killed, and a Jellyfin download's part file
+    /// removed and its thread told to stop, which it does at its next read.
+    /// False when that comes too late: a Jellyfin download that has saved
+    /// its file, which its thread is about to report, and which stays
+    /// running until then.
+    fn stop(&mut self) -> bool {
+        match &mut self.job {
+            Job::Ytdl { child, .. } => {
+                if let Some(child) = child {
+                    let _ = child.lock().map(|mut child| child.kill());
+                }
+                true
+            }
+            Job::Jellyfin { stop, .. } => stop.as_ref().is_none_or(|stop| stop.stop()),
+        }
+    }
 }
 
 pub struct Downloads {
@@ -220,6 +357,49 @@ pub struct Downloads {
     rows: Rc<VecModel<DownloadRow>>,
     tasks: RefCell<Vec<Task>>,
     next_id: Cell<u64>,
+    /// The Jellyfin downloads that have ended, by server, since its last
+    /// had none after it: an album says it is downloaded once, when its
+    /// last song is, rather than once a song. Those that fail as they
+    /// start count too.
+    ended: RefCell<HashMap<String, Tally>>,
+    /// Reads the Jellyfin downloads' meters while any runs or waits.
+    ticker: slint::Timer,
+}
+
+/// Downloads of one server that ended, for the message when the last does.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Tally {
+    saved: usize,
+    failed: usize,
+    /// The last one's title.
+    title: String,
+}
+
+impl Tally {
+    /// What the message says: the title for one file, how many for more.
+    fn message(&self) -> Option<(String, String)> {
+        let files = |count: usize| {
+            if count == 1 {
+                "1 File".to_owned()
+            } else {
+                format!("{count} Files")
+            }
+        };
+        match (self.saved, self.failed) {
+            (0, 0) => None,
+            (1, 0) => Some(("Downloaded".into(), self.title.clone())),
+            (0, 1) => Some(("Download failed".into(), self.title.clone())),
+            (saved, 0) => Some((format!("Downloaded {}", files(saved)), String::new())),
+            (0, failed) => Some((
+                format!("{} Failed to Download", files(failed)),
+                String::new(),
+            )),
+            (saved, failed) => Some((
+                format!("Downloaded {}", files(saved)),
+                format!("{failed} failed"),
+            )),
+        }
+    }
 }
 
 /// Sizes the way file managers show them, in powers of 1000.
@@ -241,20 +421,30 @@ fn size(bytes: u64) -> String {
 }
 
 fn detail(task: &Task) -> String {
+    if task.stopping() && task.state == State::Cancelled {
+        return "Cancelling…".into();
+    }
     match &task.state {
+        State::Queued => "Waiting for the download before it…".into(),
         State::Running { merging: true, .. } => "Joining the video and audio…".into(),
         State::Running {
             done,
             total,
             speed,
             eta,
+            stalled,
             ..
         } => {
-            let mut parts = vec![match total {
-                Some(total) => format!("{} of {}", size(*done), size(*total)),
-                None if *done > 0 => size(*done),
-                None => "Starting…".into(),
-            }];
+            let mut parts = Vec::new();
+            match total {
+                Some(total) => parts.push(format!("{} of {}", size(*done), size(*total))),
+                None if *done > 0 => parts.push(size(*done)),
+                None if !*stalled => parts.push("Starting…".into()),
+                None => {}
+            }
+            if *stalled {
+                parts.push("Waiting for the server…".into());
+            }
             if let Some(speed) = speed {
                 parts.push(format!("{}/s", size(*speed as u64)));
             }
@@ -274,6 +464,8 @@ fn detail(task: &Task) -> String {
 
 fn row(task: &Task) -> DownloadRow {
     let (state, progress) = match &task.state {
+        _ if task.stopping() => ("stopping", -1.0),
+        State::Queued => ("queued", -1.0),
         State::Running { done, total, .. } => (
             "running",
             match total {
@@ -286,11 +478,7 @@ fn row(task: &Task) -> DownloadRow {
         State::Cancelled => ("cancelled", -1.0),
     };
     DownloadRow {
-        title: if task.request.title.is_empty() {
-            task.request.url.clone().into()
-        } else {
-            task.request.title.clone().into()
-        },
+        title: task.title().into(),
         detail: detail(task).into(),
         progress,
         state: state.into(),
@@ -308,8 +496,12 @@ impl Downloads {
             rows,
             tasks: RefCell::new(Vec::new()),
             next_id: Cell::new(1),
+            ended: RefCell::new(HashMap::new()),
+            ticker: slint::Timer::default(),
         });
         downloads.wire();
+        let listener: Weak<dyn Listener> = Rc::downgrade(&downloads) as Weak<dyn Listener>;
+        app.jellyfin().subscribe(listener);
         Ok(downloads)
     }
 
@@ -335,17 +527,11 @@ impl Downloads {
                 crate::platform::reveal(path);
             }
         });
-        on!(on_retry, |this, index| {
-            let request = this
-                .tasks
-                .borrow()
-                .get(index as usize)
-                .map(|task| task.request.clone());
-            if let Some(request) = request {
-                this.remove(index as usize);
-                this.start(request);
-            }
-        });
+        on!(on_retry, |this, index| this
+            .retry(|_, at| at == index as usize));
+        on!(on_retry_failed, |this| this
+            .retry(|task, _| matches!(task.state, State::Failed(_))));
+        on!(on_cancel_all, |this| this.cancel_all());
         on!(on_remove, |this, index| this.remove(index as usize));
         on!(on_open_folder, |this| {
             let folder = this.app().prefs().download_dir();
@@ -355,11 +541,38 @@ impl Downloads {
             crate::platform::open_path(&folder);
         });
         on!(on_clear_finished, |this| {
-            this.tasks
-                .borrow_mut()
-                .retain(|task| matches!(task.state, State::Running { .. }));
+            this.tasks.borrow_mut().retain(|task| !task.finished());
             this.refresh();
         });
+    }
+
+    /// Starts again the finished downloads `which` picks, given each with
+    /// its row, each in a new row at the end.
+    fn retry(self: &Rc<Self>, which: impl Fn(&Task, usize) -> bool) {
+        let mut videos = Vec::new();
+        let mut files = Vec::new();
+        let mut index = 0;
+        self.tasks.borrow_mut().retain(|task| {
+            let picked = task.finished() && which(task, index);
+            index += 1;
+            if picked {
+                match &task.job {
+                    Job::Ytdl { request, .. } => videos.push(request.clone()),
+                    Job::Jellyfin { request, .. } => files.push(request.clone()),
+                }
+            }
+            !picked
+        });
+        if videos.is_empty() && files.is_empty() {
+            return;
+        }
+        self.refresh();
+        for request in videos {
+            self.start(request);
+        }
+        if !files.is_empty() {
+            self.start_jellyfin(files);
+        }
     }
 
     pub fn show(self: &Rc<Self>) {
@@ -407,24 +620,39 @@ impl Downloads {
     }
 
     fn refresh(&self) {
-        let tasks = self.tasks.borrow();
-        let rows: Vec<DownloadRow> = tasks.iter().map(row).collect();
+        let rows: Vec<DownloadRow> = self.tasks.borrow().iter().map(row).collect();
         self.rows.set_vec(rows);
-        self.window.set_has_finished(
-            tasks
-                .iter()
-                .any(|task| !matches!(task.state, State::Running { .. })),
-        );
+        self.refresh_buttons();
         self.window.set_folder(
             format!("Saving to {}", self.app().prefs().download_dir().display()).into(),
         );
     }
 
     fn refresh_task(&self, id: u64) {
-        let tasks = self.tasks.borrow();
-        if let Some(index) = tasks.iter().position(|task| task.id == id) {
-            self.rows.set_row_data(index, row(&tasks[index]));
+        {
+            let tasks = self.tasks.borrow();
+            if let Some(index) = tasks.iter().position(|task| task.id == id) {
+                self.rows.set_row_data(index, row(&tasks[index]));
+            }
         }
+        self.refresh_buttons();
+    }
+
+    /// The buttons under the list. Cancel All and Retry Failed are there
+    /// only when they would do more than a row's own button does: for a
+    /// whole show asked for at once, say, or a server's downloads failing
+    /// after its sign-in expired.
+    fn refresh_buttons(&self) {
+        let tasks = self.tasks.borrow();
+        self.window
+            .set_has_finished(tasks.iter().any(Task::finished));
+        self.window
+            .set_can_cancel_all(tasks.iter().filter(|task| task.active()).count() > 1);
+        let failed = tasks
+            .iter()
+            .filter(|task| task.finished() && matches!(task.state, State::Failed(_)))
+            .count();
+        self.window.set_can_retry_failed(failed > 1);
     }
 
     /// Starts downloading; false when yt-dlp could not be run, which the
@@ -437,9 +665,11 @@ impl Downloads {
         self.next_id.set(id + 1);
         let mut task = Task {
             id,
-            request: request.clone(),
+            job: Job::Ytdl {
+                request: request.clone(),
+                child: None,
+            },
             state: State::running(),
-            child: None,
             file: None,
         };
         let started = (|| -> Result<Arc<Mutex<Child>>, String> {
@@ -458,7 +688,10 @@ impl Downloads {
         let ok = match started {
             Ok(child) => {
                 watch(id, child.clone());
-                task.child = Some(child);
+                task.job = Job::Ytdl {
+                    request,
+                    child: Some(child),
+                };
                 true
             }
             Err(error) => {
@@ -473,12 +706,26 @@ impl Downloads {
 
     /// A line or the end from a download's thread.
     fn report(&self, id: u64, report: Report) {
+        let ended = matches!(report, Report::Finished(_));
         let finished = {
             let mut tasks = self.tasks.borrow_mut();
             let Some(task) = tasks.iter_mut().find(|task| task.id == id) else {
                 return;
             };
             match report {
+                Report::Unauthorized => {
+                    if let Job::Jellyfin {
+                        request,
+                        client: Some(client),
+                        ..
+                    } = &task.job
+                    {
+                        let (server, client) = (request.server_id.clone(), client.clone());
+                        drop(tasks);
+                        self.app().jellyfin().unauthorized(&server, &client);
+                    }
+                    return;
+                }
                 Report::Line(Line::Progress {
                     done,
                     total,
@@ -492,6 +739,7 @@ impl Downloads {
                             speed,
                             eta,
                             merging: false,
+                            stalled: false,
                         };
                     }
                     None
@@ -507,8 +755,23 @@ impl Downloads {
                     None
                 }
                 Report::Finished(result) => {
-                    task.child = None;
-                    if task.state == State::Cancelled {
+                    match &mut task.job {
+                        Job::Ytdl { child, .. } => *child = None,
+                        Job::Jellyfin {
+                            stop,
+                            meter,
+                            thread,
+                            client,
+                            ..
+                        } => {
+                            *stop = None;
+                            *meter = None;
+                            *thread = None;
+                            *client = None;
+                        }
+                    }
+                    // Cancelled, or stopped by signing out, meanwhile.
+                    if !matches!(task.state, State::Running { .. }) {
                         None
                     } else {
                         task.state = match (result, task.file.clone()) {
@@ -518,62 +781,419 @@ impl Downloads {
                             }
                             (Err(error), _) => State::Failed(error),
                         };
-                        Some((task.request.title.clone(), task.state.clone()))
+                        Some((
+                            task.title(),
+                            task.state.clone(),
+                            task.server().map(str::to_owned),
+                        ))
                     }
                 }
             }
         };
         self.refresh_task(id);
-        if let Some((title, state)) = finished {
-            self.window.set_has_finished(true);
-            let app = self.app();
-            match state {
-                State::Done(_) => app.notify("Downloaded", &title),
-                State::Failed(_) => app.notify("Download failed", &title),
-                _ => {}
+        // Counted before the server's next downloads start, which may fail
+        // as they do, and say what they all came to.
+        if let Some((title, state, Some(server))) = &finished {
+            self.tally(server, title, matches!(state, State::Done(_)));
+        }
+        if ended {
+            // The server's next download, now that this one has ended.
+            self.start_queued();
+        }
+        let Some((title, state, server)) = finished else {
+            return;
+        };
+        match server {
+            Some(server) => self.announce(&server),
+            None => {
+                let app = self.app();
+                match state {
+                    State::Done(_) => app.notify("Downloaded", &title),
+                    State::Failed(_) => app.notify("Download failed", &title),
+                    _ => {}
+                }
             }
         }
     }
 
+    /// Counts a Jellyfin download that ended towards what its server's
+    /// downloads came to.
+    fn tally(&self, server: &str, title: &str, saved: bool) {
+        let mut ended = self.ended.borrow_mut();
+        let tally = ended.entry(server.to_owned()).or_default();
+        if saved {
+            tally.saved += 1;
+        } else {
+            tally.failed += 1;
+        }
+        title.clone_into(&mut tally.title);
+    }
+
+    /// Says what a server's downloads came to once none of them is left
+    /// running or waiting.
+    fn announce(&self, server: &str) {
+        let busy = self
+            .tasks
+            .borrow()
+            .iter()
+            .any(|task| task.active() && task.server() == Some(server));
+        if busy {
+            return;
+        }
+        let tally = self.ended.borrow_mut().remove(server);
+        if let Some((text, detail)) = tally.as_ref().and_then(Tally::message) {
+            self.app().notify(&text, &detail);
+        }
+    }
+
+    /// Cancels the download in row `index`. A Jellyfin download's part
+    /// file goes at once, but its server's next download waits for its
+    /// thread to end, a moment later unless the server has stopped sending.
+    /// One that has saved its file already is left to say so.
     fn cancel(&self, index: usize) {
-        {
+        let (id, server) = {
             let mut tasks = self.tasks.borrow_mut();
             let Some(task) = tasks.get_mut(index) else {
                 return;
             };
-            if let Some(child) = &task.child {
-                let _ = child.lock().map(|mut child| child.kill());
-                task.state = State::Cancelled;
+            if !task.active() || !task.stop() {
+                return;
+            }
+            task.state = State::Cancelled;
+            (task.id, task.server().map(str::to_owned))
+        };
+        self.refresh_task(id);
+        if let Some(server) = server {
+            self.announce(&server);
+        }
+    }
+
+    /// Cancels every download running or waiting, but those that have
+    /// saved their files already.
+    fn cancel_all(&self) {
+        let mut servers: Vec<String> = Vec::new();
+        for task in self.tasks.borrow_mut().iter_mut() {
+            if !task.active() || !task.stop() {
+                continue;
+            }
+            task.state = State::Cancelled;
+            if let Some(server) = task.server()
+                && !servers.iter().any(|known| known == server)
+            {
+                servers.push(server.to_owned());
             }
         }
-        if let Some(id) = self.tasks.borrow().get(index).map(|task| task.id) {
-            self.refresh_task(id);
+        self.refresh();
+        for server in servers {
+            self.announce(&server);
         }
-        self.window.set_has_finished(true);
     }
 
     fn remove(&self, index: usize) {
-        let removable = self
-            .tasks
-            .borrow()
-            .get(index)
-            .is_some_and(|task| !matches!(task.state, State::Running { .. }));
+        let removable = self.tasks.borrow().get(index).is_some_and(Task::finished);
         if removable {
             self.tasks.borrow_mut().remove(index);
             self.refresh();
         }
     }
 
-    /// Stops every running download; yt-dlp picks up its partial files the
-    /// next time.
+    /// Stops every download as Patina quits. yt-dlp picks up its partial
+    /// files the next time; a Jellyfin download's part file goes at once,
+    /// and its thread, like those of downloads stopped before that haven't
+    /// ended yet, is given a moment to end.
     pub fn stop_all(&self) {
+        let mut threads = Vec::new();
         for task in self.tasks.borrow_mut().iter_mut() {
-            if let Some(child) = task.child.take() {
-                let _ = child.lock().map(|mut child| child.kill());
+            if task.active() {
+                // As Patina quits, a file saved meanwhile needs no row.
+                task.stop();
                 task.state = State::Cancelled;
+            }
+            match &mut task.job {
+                Job::Ytdl { child, .. } => *child = None,
+                Job::Jellyfin { thread, .. } => threads.extend(thread.take()),
+            }
+        }
+        let deadline = Instant::now() + STOP_WAIT;
+        while threads.iter().any(|thread| !thread.is_finished()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Adds Jellyfin downloads, each to wait its turn from its server, and
+    /// gives which of `requests` were added, by their place: one already
+    /// waiting or running, or asked for twice, is not added again.
+    pub fn start_jellyfin(self: &Rc<Self>, requests: Vec<jellyfin::Request>) -> Vec<usize> {
+        let mut added = Vec::new();
+        {
+            let mut tasks = self.tasks.borrow_mut();
+            for (at, request) in requests.into_iter().enumerate() {
+                let already = tasks.iter().any(|task| {
+                    task.active()
+                        && matches!(&task.job, Job::Jellyfin { request: other, .. }
+                            if other.server_id == request.server_id
+                                && other.item_id == request.item_id)
+                });
+                if already {
+                    continue;
+                }
+                let id = self.next_id.get();
+                self.next_id.set(id + 1);
+                tasks.push(Task {
+                    id,
+                    job: Job::Jellyfin {
+                        request,
+                        stop: None,
+                        meter: None,
+                        speed: Speed::default(),
+                        thread: None,
+                        client: None,
+                    },
+                    state: State::Queued,
+                    file: None,
+                });
+                added.push(at);
+            }
+        }
+        self.refresh();
+        self.start_queued();
+        self.follow();
+        added
+    }
+
+    /// Reads the meters of the Jellyfin downloads while any runs or waits.
+    fn follow(self: &Rc<Self>) {
+        if self.ticker.running() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        self.ticker
+            .start(slint::TimerMode::Repeated, TICK, move || {
+                if let Some(this) = weak.upgrade() {
+                    this.tick();
+                }
+            });
+    }
+
+    /// Shows how far each running Jellyfin download has come, from its
+    /// meter, and that it waits for its server once nothing has come for a
+    /// while, its answer included; stops the ticker once none runs or
+    /// waits.
+    fn tick(&self) {
+        let now = Instant::now();
+        let mut busy = false;
+        let mut changed = Vec::new();
+        let mut tasks = self.tasks.borrow_mut();
+        for (index, task) in tasks.iter_mut().enumerate() {
+            let Job::Jellyfin { meter, speed, .. } = &mut task.job else {
+                continue;
+            };
+            busy |= matches!(task.state, State::Queued | State::Running { .. });
+            let (State::Running { .. }, Some(meter)) = (&task.state, meter) else {
+                continue;
+            };
+            let (progress, moved) = meter.read();
+            let state = metered(progress, moved, now, speed);
+            if state != task.state {
+                task.state = state;
+                changed.push(index);
+            }
+        }
+        for index in changed {
+            self.rows.set_row_data(index, row(&tasks[index]));
+        }
+        if !busy {
+            self.ticker.stop();
+        }
+    }
+
+    /// Starts the first waiting download of each server that has none
+    /// running or stopping.
+    fn start_queued(&self) {
+        loop {
+            let next = {
+                let tasks = self.tasks.borrow();
+                tasks
+                    .iter()
+                    .filter(|task| task.state == State::Queued)
+                    .find(|queued| {
+                        !tasks
+                            .iter()
+                            .any(|task| task.downloading() && task.server() == queued.server())
+                    })
+                    .map(|task| task.id)
+            };
+            let Some(id) = next else {
+                return;
+            };
+            self.launch(id);
+            let waiting = self
+                .tasks
+                .borrow()
+                .iter()
+                .any(|task| task.id == id && task.state == State::Queued);
+            if waiting {
+                // `launch` always moves it on; were it ever not to, this
+                // would go round for ever.
+                return;
             }
         }
     }
+
+    /// Starts a waiting Jellyfin download on a thread of its own, or fails
+    /// it at once when its server has no sign-in. One that fails counts
+    /// towards its server's message as one that fails later does.
+    fn launch(&self, id: u64) {
+        let app = self.app();
+        let session = app.jellyfin();
+        let folder = app.prefs().download_dir();
+        let mut tasks = self.tasks.borrow_mut();
+        let Some(task) = tasks.iter_mut().find(|task| task.id == id) else {
+            return;
+        };
+        let title = task.title();
+        let Job::Jellyfin {
+            request,
+            stop,
+            meter,
+            thread,
+            client,
+            ..
+        } = &mut task.job
+        else {
+            return;
+        };
+        let server = request.server_id.clone();
+        let failed = match session.account(&server) {
+            None => {
+                let name = session
+                    .server(&server)
+                    .map(|server| server.name)
+                    .unwrap_or_else(|| "the server".to_owned());
+                Some(format!("Sign in to {name} again to download this."))
+            }
+            Some(account) => {
+                let stopper = Arc::new(Stop::default());
+                let metering = Arc::new(Meter::started());
+                let spawned = spawn_jellyfin(
+                    id,
+                    account.client.clone(),
+                    account.server.name,
+                    request.clone(),
+                    folder,
+                    stopper.clone(),
+                    metering.clone(),
+                );
+                match spawned {
+                    Ok(handle) => {
+                        *stop = Some(stopper);
+                        *meter = Some(metering);
+                        *thread = Some(handle);
+                        *client = Some(Box::new(account.client));
+                        None
+                    }
+                    Err(error) => Some(format!("Could not start the download: {error}")),
+                }
+            }
+        };
+        task.state = match &failed {
+            Some(reason) => State::Failed(reason.clone()),
+            None => State::running(),
+        };
+        drop(tasks);
+        self.refresh_task(id);
+        if failed.is_some() {
+            self.tally(&server, &title, false);
+            self.announce(&server);
+        }
+    }
+}
+
+impl Listener for Downloads {
+    /// Signing out of a server stops its downloads, as it stops what plays
+    /// from it: the user is done with the account. They can be retried
+    /// once it is signed in again.
+    fn session_changed(&self, change: &Change) {
+        let Change::SigningOut(server_id) = change else {
+            return;
+        };
+        let name = self
+            .app()
+            .jellyfin()
+            .server(server_id)
+            .map(|server| server.name)
+            .unwrap_or_default();
+        self.ended.borrow_mut().remove(server_id);
+        let mut stopped = Vec::new();
+        for task in self.tasks.borrow_mut().iter_mut() {
+            if task.active() && task.server() == Some(server_id.as_str()) && task.stop() {
+                task.state = State::Failed(format!("Signed out of {name}."));
+                stopped.push(task.id);
+            }
+        }
+        for id in stopped {
+            self.refresh_task(id);
+        }
+    }
+}
+
+/// A Jellyfin download's thread: the file, written as `jellyfin::run`
+/// does, its progress noted on `meter` for the window to read, and its
+/// end reported to the window in the event loop, as yt-dlp's is. Nothing
+/// it reports holds the token: errors are the client's sentences, which
+/// never name it.
+fn spawn_jellyfin(
+    id: u64,
+    client: Client,
+    server_name: String,
+    request: jellyfin::Request,
+    folder: PathBuf,
+    stop: Arc<Stop>,
+    meter: Arc<Meter>,
+) -> std::io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("jellyfin download".into())
+        .spawn(move || {
+            let result = jellyfin::run(
+                &client,
+                &request.item_id,
+                &request.fallback,
+                &folder,
+                &stop,
+                |progress| meter.note(progress),
+            );
+            let finished = match result {
+                Ok(path) => {
+                    log::info!("downloaded {}", path.display());
+                    send(id, Report::Line(Line::File(path)));
+                    Ok(())
+                }
+                Err(Failure::Cancelled) => Err("Cancelled".to_owned()),
+                Err(Failure::Server(error)) => {
+                    log::warn!("could not download {}: {error}", request.title);
+                    if error == JellyfinError::Unauthorized {
+                        send(id, Report::Unauthorized);
+                    }
+                    Err(error.about(Some(&server_name)))
+                }
+                Err(Failure::Disk(error)) => {
+                    log::warn!("could not download {}: {error}", request.title);
+                    Err(error)
+                }
+            };
+            send(id, Report::Finished(finished));
+        })
+}
+
+/// Reports to the downloads in the event loop, from a download's thread.
+fn send(id: u64, report: Report) {
+    let _ = slint::invoke_from_event_loop(move || {
+        App::with_current(|app| {
+            if let Some(downloads) = app.existing_downloads() {
+                downloads.report(id, report);
+            }
+        });
+    });
 }
 
 /// Reads a download's output on threads of their own, reporting to the
@@ -583,15 +1203,7 @@ fn watch(id: u64, child: Arc<Mutex<Child>>) {
         Ok(mut child) => (child.stdout.take(), child.stderr.take()),
         Err(_) => return,
     };
-    let send = move |report: Report| {
-        let _ = slint::invoke_from_event_loop(move || {
-            App::with_current(|app| {
-                if let Some(downloads) = app.existing_downloads() {
-                    downloads.report(id, report);
-                }
-            });
-        });
-    };
+    let send = move |report: Report| send(id, report);
     // The last error yt-dlp wrote, for a failure; read apart from stdout so
     // neither pipe fills while the other is read.
     let errors = stderr.and_then(|stderr| {
@@ -700,16 +1312,49 @@ mod tests {
     }
 
     #[test]
+    fn a_servers_downloads_say_once_what_they_came_to() {
+        let tally = |saved, failed| Tally {
+            saved,
+            failed,
+            title: "Night Ferry".into(),
+        };
+        assert_eq!(tally(0, 0).message(), None);
+        assert_eq!(
+            tally(1, 0).message(),
+            Some(("Downloaded".into(), "Night Ferry".into()))
+        );
+        assert_eq!(
+            tally(0, 1).message(),
+            Some(("Download failed".into(), "Night Ferry".into()))
+        );
+        assert_eq!(
+            tally(4, 0).message(),
+            Some(("Downloaded 4 Files".into(), String::new()))
+        );
+        assert_eq!(
+            tally(0, 2).message(),
+            Some(("2 Files Failed to Download".into(), String::new()))
+        );
+        assert_eq!(
+            tally(3, 1).message(),
+            Some(("Downloaded 3 Files".into(), "1 failed".into()))
+        );
+    }
+
+    #[test]
     fn sizes_and_progress_read_like_a_file_manager() {
         assert_eq!(size(999), "999 B");
         assert_eq!(size(1_500), "1.5 kB");
         assert_eq!(size(12_345_678), "12.3 MB");
         let task = Task {
             id: 1,
-            request: Request {
-                url: "https://example.com/v".into(),
-                title: String::new(),
-                format: None,
+            job: Job::Ytdl {
+                request: Request {
+                    url: "https://example.com/v".into(),
+                    title: String::new(),
+                    format: None,
+                },
+                child: None,
             },
             state: State::Running {
                 done: 5_000_000,
@@ -717,13 +1362,122 @@ mod tests {
                 speed: Some(2_000_000.0),
                 eta: Some(75),
                 merging: false,
+                stalled: false,
             },
-            child: None,
             file: None,
         };
         assert_eq!(detail(&task), "5.0 MB of 20.0 MB · 2.0 MB/s · 01:15 left");
         let row = row(&task);
         assert_eq!(row.title, "https://example.com/v");
         assert!((row.progress - 0.25).abs() < f32::EPSILON);
+    }
+
+    fn jellyfin_task(stop: Option<Arc<Stop>>) -> Task {
+        Task {
+            id: 2,
+            job: Job::Jellyfin {
+                request: jellyfin::Request {
+                    server_id: "s".into(),
+                    item_id: "i".into(),
+                    title: "The Long Field".into(),
+                    fallback: "The Long Field.mkv".into(),
+                },
+                stop,
+                meter: None,
+                speed: Speed::default(),
+                thread: None,
+                client: None,
+            },
+            state: State::running(),
+            file: None,
+        }
+    }
+
+    /// A Jellyfin download's row reads its meter: its speed and time left
+    /// while bytes come, and once none has come for a while, that it waits
+    /// for the server, with what came before that, rather than the last
+    /// speed it had.
+    #[test]
+    fn a_stalled_download_says_it_waits_for_the_server() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let progress = |done| Progress {
+            done,
+            total: Some(717_900),
+        };
+        let mut speed = Speed::default();
+        metered(progress(0), at(0), at(0), &mut speed);
+        let mut task = jellyfin_task(None);
+        task.state = metered(progress(200_000), at(2000), at(2000), &mut speed);
+        assert_eq!(
+            detail(&task),
+            "200.0 kB of 717.9 kB · 100.0 kB/s · 00:06 left"
+        );
+        // The last bytes came at 2.5 s, and nothing since.
+        task.state = metered(progress(500_000), at(2500), at(4000), &mut speed);
+        assert!(detail(&task).ends_with("left"), "{}", detail(&task));
+        // Past the speed's span, before it counts as stalled: no speed.
+        task.state = metered(progress(500_000), at(2500), at(6000), &mut speed);
+        assert_eq!(detail(&task), "500.0 kB of 717.9 kB");
+        task.state = metered(
+            progress(500_000),
+            at(2500),
+            at(2500) + STALLED_AFTER,
+            &mut speed,
+        );
+        assert_eq!(
+            detail(&task),
+            "500.0 kB of 717.9 kB · Waiting for the server…"
+        );
+        // Bytes again.
+        task.state = metered(progress(600_000), at(8000), at(8000), &mut speed);
+        assert!(!detail(&task).contains("Waiting"), "{}", detail(&task));
+        // Every byte has come, and the file goes to the disk.
+        task.state = metered(progress(717_900), at(9000), at(20_000), &mut speed);
+        assert!(!detail(&task).contains("Waiting"), "{}", detail(&task));
+    }
+
+    /// A server slow to answer is waited for as one slow to send is: once
+    /// it has been as long, the row says so, rather than "Starting…" for as
+    /// long as the server takes to answer, half a minute at most.
+    #[test]
+    fn a_download_the_server_has_not_answered_says_it_waits_for_the_server() {
+        let meter = Meter::started();
+        let (progress, started) = meter.read();
+        assert_eq!(progress, Progress::default());
+        let mut speed = Speed::default();
+        let mut task = jellyfin_task(None);
+        for waited in [0, 1000, 4900] {
+            let now = started + Duration::from_millis(waited);
+            task.state = metered(progress, started, now, &mut speed);
+            // As it was as it started, so that its row isn't redrawn.
+            assert_eq!(task.state, State::running());
+        }
+        assert_eq!(detail(&task), "Starting…");
+        task.state = metered(progress, started, started + STALLED_AFTER, &mut speed);
+        assert_eq!(detail(&task), "Waiting for the server…");
+        // The answer comes, with the size, and then nothing for as long.
+        meter.note(Progress {
+            done: 0,
+            total: Some(717_900),
+        });
+        let (progress, answered) = meter.read();
+        assert!(answered >= started);
+        task.state = metered(progress, answered, answered, &mut speed);
+        assert_eq!(detail(&task), "0 B of 717.9 kB");
+        task.state = metered(progress, answered, answered + STALLED_AFTER, &mut speed);
+        assert_eq!(detail(&task), "0 B of 717.9 kB · Waiting for the server…");
+    }
+
+    /// A cancel that comes after the file was saved stops nothing: the
+    /// download stays running until its thread says it is done.
+    #[test]
+    fn a_download_that_saved_its_file_is_not_cancelled() {
+        let mut saved = jellyfin_task(Some(Arc::new(Stop::saved())));
+        assert!(!saved.stop());
+        let mut writing = jellyfin_task(Some(Arc::new(Stop::default())));
+        assert!(writing.stop());
+        let mut queued = jellyfin_task(None);
+        assert!(queued.stop());
     }
 }

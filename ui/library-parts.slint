@@ -565,6 +565,14 @@ export component Card inherits Rectangle {
                     Library.set-favorite(root.card.id, !root.card.favorite);
                 }
             }
+            if Library.can-download && root.card.downloadable: MenuSeparator { }
+            if Library.can-download && root.card.downloadable: MenuItem {
+                title: "Download";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    Library.download(root.card.id);
+                }
+            }
         }
     }
 }
