@@ -79,6 +79,11 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2-foundation = "0.3.2"
 objc2-media-player = "0.3.2"
 
+[dev-dependencies]
+# Slint's testing backend, for the tests that put a window through key
+# presses. At Slint's exact version, as i_slint_core is (see src/backend.rs).
+i-slint-backend-testing = "=1.18.1"
+
 [build-dependencies]
 slint-build = "1.18.1"
 

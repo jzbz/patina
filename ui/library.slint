@@ -442,6 +442,10 @@ component SortMenu inherits Rectangle {
 // the controller splits the items into lines of as many cards as fit
 // (columns) and is asked for more as the end comes into sight.
 component GridPage inherits VerticalLayout {
+    // The controller has split the items into lines anew, for another
+    // number of columns: the cards are made again, the one with the
+    // keyboard's focus among them.
+    callback lines-made;
     property <float> aspect: Library.rows.length > 0 ? LibraryUi.row-aspect(Library.rows[0].cards) : 2 / 3;
     property <length> available: root.width - 2 * LibraryUi.inset;
     // Rounded, so that cards stay within about an eighth of their size.
@@ -479,6 +483,7 @@ component GridPage inherits VerticalLayout {
     changed columns => {
         if root.width > 0 {
             Library.columns(root.columns);
+            root.lines-made();
         }
     }
     // Asks again now and then while the end is in sight: the controller
@@ -685,6 +690,8 @@ component GridPage inherits VerticalLayout {
 }
 
 component SearchPage inherits VerticalLayout {
+    // A dialog over the library has the keyboard.
+    in property <bool> covered;
     // The load (Library.loads) the list has gone where scroll-offset
     // says for, and whether it is there now: once it has stayed there a
     // moment, or the user scrolls, it records where it is.
@@ -706,6 +713,15 @@ component SearchPage inherits VerticalLayout {
     init => {
         field.focus();
         field.set-selection-offsets(1000000, 1000000);
+    }
+    // Loaded again in place, the results are made again: one of them
+    // may have had the keyboard's focus, which Slint would keep on it,
+    // gone (see LibraryView's loads).
+    property <int> loads: Library.loads;
+    changed loads => {
+        if !root.covered {
+            field.focus();
+        }
     }
 
     HorizontalLayout {
@@ -850,6 +866,9 @@ component DropOverlay inherits Rectangle {
 
 export component LibraryView inherits Rectangle {
     in property <bool> drop-active;
+    // A dialog over the library has the keyboard, which the library leaves
+    // it.
+    in property <bool> covered;
     callback clear-recent;
     // Where the bar starts: under Patina's title bar, which is drawn over
     // the window's top.
@@ -867,6 +886,19 @@ export component LibraryView inherits Rectangle {
     function take-focus() {
         if !keys.has-focus {
             keys.focus();
+        }
+    }
+
+    // A page loaded again in place (a server switched to, Home or a tab
+    // picked again, a grid sorted) makes its cards and tabs again without
+    // being made again itself, and its init doesn't run. Slint keeps the
+    // focus on the gone card and hands every key to nothing, Ctrl+Q's too,
+    // until Tab gives the focus back. A page with a field gives it the
+    // focus instead (Search), or keeps its own (signing in).
+    property <int> loads: Library.loads;
+    changed loads => {
+        if !root.covered && Library.page != "search" && Library.page != "sign-in" {
+            root.take-focus();
         }
     }
 
@@ -970,6 +1002,11 @@ export component LibraryView inherits Rectangle {
             init => {
                 root.take-focus();
             }
+            lines-made => {
+                if !root.covered {
+                    root.take-focus();
+                }
+            }
         }
         if !root.failed && Library.page == "detail": DetailPage {
             y: root.content-top;
@@ -981,6 +1018,7 @@ export component LibraryView inherits Rectangle {
         if !root.failed && Library.page == "search": SearchPage {
             y: root.content-top;
             height: root.content-height;
+            covered: root.covered;
         }
         if Library.page == "sign-in": SignInPage {
             y: root.content-top;

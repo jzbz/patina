@@ -5814,6 +5814,171 @@ mod tests {
         assert!(!leaves_full_screen(&enter, bindings.get(&enter).unwrap()));
     }
 
+    /// The library takes the keyboard's focus as it shows. Once it has gone,
+    /// for the welcome screen or for a file, the window's shortcuts still
+    /// reach the window: after signing out they reached nothing, Ctrl+Q
+    /// included, until Tab gave the focus back.
+    #[test]
+    fn shortcuts_reach_the_window_after_the_library_goes() {
+        use slint::platform::{Key, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let window = PlayerWindow::new().unwrap();
+        let quits = Rc::new(Cell::new(0));
+        let counted = quits.clone();
+        window
+            .global::<Actions>()
+            .on_key(move |text, _, ctrl, _, _, _| {
+                if text == "q" && ctrl {
+                    counted.set(counted.get() + 1);
+                }
+                true
+            });
+        window.show().unwrap();
+        let ctrl_q = || {
+            let control = SharedString::from(Key::Control);
+            let q = SharedString::from("q");
+            for text in [&control, &q] {
+                let text = text.clone();
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::KeyPressed { text });
+            }
+            for text in [q, control] {
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::KeyReleased { text });
+            }
+        };
+        for how in ["signed out", "a file opened"] {
+            window.global::<Playback>().set_has_media(false);
+            window.global::<Library>().set_shown(true);
+            let before = quits.get();
+            ctrl_q();
+            assert_eq!(quits.get(), before + 1, "in the library, before {how}");
+            if how == "signed out" {
+                window.global::<Library>().set_shown(false);
+            } else {
+                window.global::<Playback>().set_has_media(true);
+            }
+            ctrl_q();
+            assert_eq!(quits.get(), before + 2, "after the library went: {how}");
+        }
+    }
+
+    /// A page that loads again in place (a server switched to, Home or a
+    /// tab picked again) makes its cards again, and so does a grid split
+    /// into lines anew for another width. Slint left the keyboard's focus
+    /// on the card that had it, gone, and every key went nowhere, Ctrl+Q's
+    /// too, until Tab gave the focus back. The library takes it back, and
+    /// Search gives it to its field.
+    #[test]
+    fn shortcuts_reach_the_window_after_a_page_makes_its_cards_again() {
+        use crate::{LibraryCard, LibraryRow};
+        use slint::platform::{Key, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let window = PlayerWindow::new().unwrap();
+        let resize = |width| {
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 800))
+        };
+        resize(1280);
+        let press = |keys: &[SharedString]| {
+            for text in keys {
+                let text = text.clone();
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::KeyPressed { text });
+            }
+            for text in keys.iter().rev() {
+                let text = text.clone();
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::KeyReleased { text });
+            }
+        };
+        let ctrl_q = [SharedString::from(Key::Control), "q".into()];
+        let quits = Rc::new(Cell::new(0));
+        let counted = quits.clone();
+        window
+            .global::<Actions>()
+            .on_key(move |text, _, ctrl, _, _, _| {
+                let quit = text == "q" && ctrl;
+                if quit {
+                    counted.set(counted.get() + 1);
+                }
+                quit
+            });
+        let library = window.global::<Library>();
+        let opened = Rc::new(Cell::new(0));
+        let counted = opened.clone();
+        library.on_open(move |_, _| counted.set(counted.get() + 1));
+        let row = || {
+            let card = LibraryCard {
+                id: "show".into(),
+                kind: "series".into(),
+                title: "A Show".into(),
+                aspect: 2.0 / 3.0,
+                progress: -1.0,
+                ..Default::default()
+            };
+            LibraryRow {
+                id: "row".into(),
+                title: "Shows".into(),
+                cards: ModelRc::new(VecModel::from(vec![card; 3])),
+            }
+        };
+        let rows = Rc::new(VecModel::from(vec![row()]));
+        library.set_rows(rows.clone().into());
+        // As the controller does, a grid's lines are made again for
+        // another number of columns.
+        let lines = rows.clone();
+        library.on_columns(move |_| lines.set_vec(vec![row()]));
+        library.set_shown(true);
+        window.show().unwrap();
+
+        for how in ["home", "grid", "grid resized", "search"] {
+            resize(1280);
+            let page = how.split(' ').next().unwrap();
+            library.set_page(page.into());
+            library.set_loads(library.get_loads() + 1);
+            // Tab until a card has the focus, which Enter on it shows.
+            let before = opened.get();
+            for _ in 0..8 {
+                press(&[Key::Tab.into()]);
+                press(&[Key::Return.into()]);
+                if opened.get() > before {
+                    break;
+                }
+            }
+            assert_eq!(opened.get(), before + 1, "no card took the focus: {how}");
+            if how == "grid resized" {
+                resize(700);
+            } else {
+                rows.set_vec(vec![row()]);
+                library.set_loads(library.get_loads() + 1);
+            }
+            let before = quits.get();
+            press(&ctrl_q);
+            assert_eq!(quits.get(), before + 1, "once made again: {how}");
+            if how == "search" {
+                library.set_search_text(SharedString::new());
+                press(&["x".into()]);
+                assert_eq!(library.get_search_text(), "x", "the field has the focus");
+            }
+        }
+
+        // A dialog over the library keeps the keyboard through a load.
+        library.set_page("home".into());
+        window.set_dialog("open-url".into());
+        window.set_dialog_text(SharedString::new());
+        press(&["a".into()]);
+        rows.set_vec(vec![row()]);
+        library.set_loads(library.get_loads() + 1);
+        press(&["b".into()]);
+        assert_eq!(window.get_dialog_text(), "ab", "the dialog kept the focus");
+    }
+
     /// The playlist and the entry playing after `steps`, as mpv makes
     /// them: `insert-at` past the end appends.
     fn played(

@@ -78,6 +78,8 @@ export component PlayerWindow inherits Window {
     // A file is open: the library and the welcome view have gone, with the
     // keyboard's focus if one of them had it.
     property <bool> media-open: Playback.has-media;
+    // The library is on screen, in the welcome screen's place.
+    property <bool> library-open: !Playback.has-media && !root.music-mode && Library.shown;
     // A Jellyfin item's intro, credits or the like plays (Playback.skip-label).
     // The button shows for a few seconds as the span begins, and again with
     // the controller or a key: in a small window it would sit over the
@@ -313,6 +315,17 @@ export component PlayerWindow inherits Window {
     // reaching nothing.
     changed media-open => {
         if self.media-open && root.dialog == "" {
+            keys.focus();
+        }
+    }
+    // The same when the library goes for the welcome screen, its last
+    // server signed out of or signing in cancelled: Slint keeps the focus
+    // on the library's gone items and hands every key to nothing, Ctrl+Q's
+    // too, until Tab or a menu gives the focus back. A menu's item that
+    // hides the library gives the focus back to it as the menu closes,
+    // before it goes; this runs once it has gone.
+    changed library-open => {
+        if !self.library-open && root.dialog == "" {
             keys.focus();
         }
     }
@@ -1185,10 +1198,11 @@ export component PlayerWindow inherits Window {
 
             // A signed-in Jellyfin server's library, in the welcome
             // screen's place; This Computer shows the welcome screen in it.
-            if !Playback.has-media && !root.music-mode && Library.shown: LibraryView {
+            if root.library-open: LibraryView {
                 width: parent.width;
                 height: parent.height;
                 drop-active: root.drop-active;
+                covered: root.dialog != "";
                 clear-recent => {
                     root.dialog = "clear-recent";
                 }
