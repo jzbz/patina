@@ -1320,7 +1320,14 @@ mod tests {
         assert!(endpoint.path("sock").exists() && endpoint.path("id").exists());
         drop(first);
         assert!(!endpoint.path("sock").exists() && !endpoint.path("id").exists());
-        assert!(endpoint.try_lock().unwrap().is_some());
+        // A process another test starts at that moment holds a copy of the
+        // lock's descriptor until it has started its program, and with it
+        // the lock, so the lock may come free a moment later.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while endpoint.try_lock().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the lock was never given up");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// A lock file removed while its Patina runs: the next launch becomes a
