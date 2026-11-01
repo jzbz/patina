@@ -125,6 +125,12 @@ impl InspectorController {
         self.app.upgrade().expect("the app outlives its inspector")
     }
 
+    /// Its window, where a paste made in it is explained (`App::explain`).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub fn window(&self) -> &InspectorWindow {
+        &self.window
+    }
+
     pub fn show(self: &Rc<Self>) {
         if let Err(error) = self.window.show() {
             log::warn!("could not show the inspector: {error}");

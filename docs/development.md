@@ -122,8 +122,11 @@ its `/privacy/` page) to answer.
 
 ## Source map
 
-- `src/main.rs`: command line, the single instance, backend selection,
-  startup.
+- `src/main.rs`: command line, the single instance, startup.
+- `src/backend.rs`: the Slint platform: Slint's winit backend, with the
+  Wayland clipboard in place of its own on Linux and the BSDs.
+- `src/clipboard.rs`: the Wayland clipboard and primary selection,
+  through smithay-clipboard on winit's connection.
 - `src/instance.rs`: one Patina at a time: the lock, the socket or pipe,
   and requests from later launches.
 - `src/scheme.rs`: patina:// links and the mpv options they may set.

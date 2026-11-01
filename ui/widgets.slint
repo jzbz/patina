@@ -26,6 +26,61 @@ export global Format {
     }
 }
 
+// A short message that goes by itself, saying why something just done came
+// to nothing: so far a paste, when the app that copied doesn't answer. Each
+// window has its own, which src/app.rs shows in the window pasted in.
+export global Toast {
+    in property <string> text;
+    in property <string> detail;
+    in property <bool> shown;
+}
+
+// Toast's plate, at the foot of a window. Each window has it as its last
+// child, so that it comes over everything else, a dialog and its scrim
+// included, and it doesn't depend on the playback messages being turned on
+// or on music mode, as the OSD does; opaque, so nothing shows through it.
+// It covers the window, as an element without a size of its own does, and
+// takes no clicks.
+export component ToastView inherits Rectangle {
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 16px;
+        width: min(layout.preferred-width, root.width - 24px);
+        height: layout.preferred-height;
+        border-radius: 8px;
+        background: #1d1d1f;
+        border-width: 1px;
+        border-color: Theme.osc-border;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #00000080;
+        opacity: Toast.shown ? 1 : 0;
+        visible: self.opacity > 0;
+        animate opacity { duration: Toast.shown ? 80ms : 300ms; }
+
+        layout := VerticalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-top: 8px;
+            padding-bottom: 9px;
+            spacing: 3px;
+
+            Text {
+                text: Toast.text;
+                color: Theme.text;
+                font-size: Theme.font-normal;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            if Toast.detail != "": Text {
+                text: Toast.detail;
+                color: Theme.secondary-text;
+                font-size: Theme.font-normal;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
 export component IconButton inherits Rectangle {
     in property <image> icon;
     in property <length> icon-size: 18px;

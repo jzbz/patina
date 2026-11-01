@@ -182,6 +182,35 @@ bindings use (`#@patina KEY action`), so every action is reachable from the
 interface, the menu and the keyboard alike. They're implemented in
 `PlayerController::run_action`.
 
+Slint draws with its winit backend, which `backend.rs` sets up. On Linux
+and the BSDs the backend is wrapped to put Wayland's ordinary clipboard in
+place of Slint's: Slint's goes through arboard, which on Wayland speaks only
+the data-control protocols meant for clipboard managers, and KWin keeps
+those from a Flatpak, which has no X11 to fall back on either, so nothing
+pasted into a text field there. `clipboard.rs` reaches the clipboard and the
+primary selection through smithay-clipboard on winit's own connection, as
+any client may while it has the keyboard focus; Patina's own Copy and Paste
+use it too on Wayland. Copies go to a thread of their own, which never
+pastes, so they always land. A paste waits two seconds at most for the
+clipboard's owner; the thread that asked is then left waiting until the
+owner answers, and the next paste goes to another. Until Patina sets a
+selection itself, or the keyboard focus has left all of Patina's windows
+(an ordinary program can only take a selection while it has the focus),
+a paste doesn't ask an owner that may be the one that hangs, and a toast
+in the window pasted in, over any dialog there, says the app isn't
+responding: a hung owner costs one wait each time the focus comes back to
+Patina from another program. Should a paste asked then find it hanging
+still, nothing more is asked until an owner answers, but for what Patina
+copied itself, which the last of three paste threads is kept for. A
+clipboard manager, or wl-copy, can set a selection without the focus,
+which smithay-clipboard doesn't tell of: its text isn't pasted while the
+owner before it is taken to be hung, until the focus has been elsewhere.
+No smithay-clipboard worker is stopped while Patina runs, since
+destroying one's data device as the compositor sends it a selection
+breaks the connection; and as the workers run on winit's display, Slint's
+platform, which closes it, is kept as Patina exits if one still waits on
+an owner that never answered, or hasn't opened its handle yet.
+
 The application menu reads `MenuPlayback` and `MenuMedia` rather than
 `Playback` and `Media`: copies of what it shows, made when it opens. Slint
 (1.18) numbers a menu's entries afresh whenever anything the menu reads
@@ -278,10 +307,11 @@ free of mpv so it is unit-tested: the selection, kept by mpv's entry ids so
 it follows entries as they move; turning "move these rows there" into the
 one-entry `playlist-move` commands mpv has; the series prefix each name
 shares with another, folded in the list; and reading pasted text as paths
-and URLs. The clipboard is `arboard`; moving files to the trash is the
-`trash` crate, on a thread of its own, or in a Flatpak the desktop portal's
-Trash, which moves only files the sandbox may write. Patina says it moved
-them once that is done, or that it couldn't.
+and URLs. The clipboard is `arboard`, or on Wayland `clipboard.rs` (see
+Interface); moving files to the trash is the `trash` crate, on a thread of
+its own, or in a Flatpak the desktop portal's Trash, which moves only files
+the sandbox may write. Patina says it moved them once that is done, or that
+it couldn't.
 
 ## Subtitle matching
 

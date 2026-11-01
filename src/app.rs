@@ -82,6 +82,12 @@ pub struct App {
     accepted: RefCell<Option<Vec<Request>>>,
     /// The Jellyfin servers signed in, which every window's library shows.
     jellyfin: Rc<crate::jellyfin::session::Session>,
+    /// Takes the toast shown last down (`explain`).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    toast_timer: slint::Timer,
+    /// What takes it down, which a toast in another window does first.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    toast_hide: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl App {
@@ -125,6 +131,10 @@ impl App {
             last_open: RefCell::new(None),
             accepted: RefCell::new(Some(Vec::new())),
             jellyfin,
+            #[cfg(all(unix, not(target_os = "macos")))]
+            toast_timer: slint::Timer::default(),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            toast_hide: RefCell::new(None),
         });
         CURRENT.with(|current| *current.borrow_mut() = Rc::downgrade(&app));
         // The saved sign-ins come back from the keyring while the first
@@ -855,6 +865,73 @@ impl App {
         }
     }
 
+    /// A message that explains why something just done came to nothing,
+    /// up for `seconds` in `window` (winit's), or in the window used most
+    /// recently when that isn't one of Patina's, over everything else
+    /// there, a dialog included: the toast, which unlike the playback
+    /// messages is shown in music mode too, and in every window with a text
+    /// field. Only the Wayland clipboard has one to give, for a paste in
+    /// the window that has the keyboard focus.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub fn explain(
+        &self,
+        window: Option<slint::winit_030::winit::window::WindowId>,
+        text: &str,
+        detail: &str,
+        seconds: f32,
+    ) {
+        let is = |shown: &slint::Window| {
+            window.is_some() && shown.with_winit_window(|winit| winit.id()) == window
+        };
+        let players = self.windows.borrow().clone();
+        if let Some(player) = players.iter().find(|player| is(player.window().window())) {
+            return self.show_toast(player.window(), text, detail, seconds);
+        }
+        let preferences = self.preferences.borrow().clone();
+        if let Some(preferences) = preferences.filter(|shown| is(shown.window().window())) {
+            return self.show_toast(preferences.window(), text, detail, seconds);
+        }
+        let history = self.history_window.borrow().clone();
+        if let Some(history) = history.filter(|shown| is(shown.window().window())) {
+            return self.show_toast(history.window(), text, detail, seconds);
+        }
+        let inspector = self.inspector.borrow().clone();
+        if let Some(inspector) = inspector.filter(|shown| is(shown.window().window())) {
+            return self.show_toast(inspector.window(), text, detail, seconds);
+        }
+        if let Some(player) = self.active_window() {
+            self.show_toast(player.window(), text, detail, seconds);
+        }
+    }
+
+    /// Shows the toast in `window`, taking down the one shown before.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn show_toast<W>(&self, window: &W, text: &str, detail: &str, seconds: f32)
+    where
+        W: ComponentHandle + 'static,
+        for<'a> crate::Toast<'a>: slint::Global<'a, W>,
+    {
+        if let Some(hide) = self.toast_hide.take() {
+            hide();
+        }
+        let toast = window.global::<crate::Toast>();
+        toast.set_text(text.into());
+        toast.set_detail(detail.into());
+        toast.set_shown(true);
+        let window = window.as_weak();
+        let hide: Rc<dyn Fn()> = Rc::new(move || {
+            if let Some(window) = window.upgrade() {
+                window.global::<crate::Toast>().set_shown(false);
+            }
+        });
+        self.toast_hide.replace(Some(Rc::clone(&hide)));
+        self.toast_timer.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_secs_f32(seconds),
+            move || hide(),
+        );
+    }
+
     // ---- Subtitle choices -------------------------------------------------
 
     /// The choices, shared with the threads that load files.
@@ -928,7 +1005,8 @@ impl App {
     // ---- Clipboard --------------------------------------------------------
 
     /// Runs `use` with the system clipboard, opened on first use and kept:
-    /// on X11 copied text lasts only while its owner does.
+    /// on X11 copied text lasts only while its owner does. On Wayland the
+    /// clipboard is clipboard.rs's instead, as it is for Slint's text fields.
     fn with_clipboard<R>(
         &self,
         r#use: impl FnOnce(&mut arboard::Clipboard) -> Result<R, arboard::Error>,
@@ -950,10 +1028,18 @@ impl App {
     }
 
     pub fn set_clipboard_text(&self, text: String) {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if crate::clipboard::on_wayland() {
+            return crate::clipboard::set_text(slint::platform::Clipboard::DefaultClipboard, text);
+        }
         self.with_clipboard(|clipboard| clipboard.set_text(text));
     }
 
     pub fn clipboard_text(&self) -> Option<String> {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if crate::clipboard::on_wayland() {
+            return crate::clipboard::text(slint::platform::Clipboard::DefaultClipboard);
+        }
         self.with_clipboard(|clipboard| clipboard.get_text())
     }
 

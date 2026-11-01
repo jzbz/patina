@@ -1,6 +1,6 @@
 import { LineEdit, ComboBox, TextEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Switch, TextButton, IconButton } from "widgets.slint";
+import { Switch, TextButton, IconButton, ToastView } from "widgets.slint";
 
 // One row of a preferences page. `kind` is "heading", "switch", "number",
 // "choice", "text", "path", "lines" or "button".
@@ -722,4 +722,6 @@ export component PreferencesWindow inherits Window {
             root.editor-cancel();
         }
     }
+
+    ToastView { }
 }

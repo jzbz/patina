@@ -3,7 +3,7 @@
 
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Segmented, TextButton } from "widgets.slint";
+import { Segmented, TextButton, ToastView } from "widgets.slint";
 
 // A day or folder heading (`header`), or one file.
 export struct HistoryRow {
@@ -311,4 +311,6 @@ export component HistoryWindow inherits Window {
             }
         }
     }
+
+    ToastView { }
 }

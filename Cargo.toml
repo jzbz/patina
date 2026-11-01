@@ -44,6 +44,9 @@ url = "2.5.8"
 libc = "0.2.191"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+i-slint-backend-winit = "=1.18.1"
+i-slint-core = { version = "=1.18.1", default-features = false }
+smithay-clipboard = "0.7.3"
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }

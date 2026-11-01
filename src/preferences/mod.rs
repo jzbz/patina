@@ -157,6 +157,12 @@ impl PreferencesController {
         Ok(controller)
     }
 
+    /// Its window, where a paste made in it is explained (`App::explain`).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub fn window(&self) -> &PreferencesWindow {
+        &self.window
+    }
+
     pub fn show(&self) {
         if let Err(error) = self.window.show() {
             log::warn!("could not show the preferences: {error}");

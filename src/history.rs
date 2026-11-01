@@ -55,6 +55,12 @@ impl HistoryController {
         Ok(controller)
     }
 
+    /// Its window, where a paste made in it is explained (`App::explain`).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub fn window(&self) -> &HistoryWindow {
+        &self.window
+    }
+
     pub fn show(self: &Rc<Self>) {
         self.refresh();
         self.check_missing();

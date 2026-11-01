@@ -3,7 +3,10 @@
 
 mod app;
 mod associations;
+mod backend;
 mod cli;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod clipboard;
 mod credentials;
 mod downloads;
 mod formats;
@@ -111,12 +114,7 @@ fn main() -> ExitCode {
     // mpv draws through OpenGL, so Slint renders with OpenGL too, unless
     // this is the software fallback (see the end of this function).
     let software = video::software::enabled();
-    if let Err(error) = slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .renderer_name(if software { "software" } else { "femtovg" }.into())
-        .with_winit_custom_application_handler(CloseOnExit)
-        .select()
-    {
+    if let Err(error) = backend::select(software, CloseOnExit) {
         eprintln!("patina: could not start the user interface: {error}");
         return ExitCode::FAILURE;
     }
@@ -161,6 +159,10 @@ fn main() -> ExitCode {
     }
 
     let mut result = slint::run_event_loop_until_quit();
+    // While winit's display is still open, which it is until Slint's
+    // platform goes, as this function returns.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    clipboard::shut_down();
     app.quit();
     if result.is_ok()
         && let Some(reason) = video::software::restart_reason()
@@ -195,10 +197,48 @@ fn main() -> ExitCode {
 
 /// Closes the windows, which saves where each file was, however the event
 /// loop ends. On macOS the app menu's Quit, which Slint adds, ends the
-/// process from inside the event loop, so nothing after it would run.
+/// process from inside the event loop, so nothing after it would run. On
+/// Linux it tells the Wayland clipboard about the keyboard focus too.
 struct CloseOnExit;
 
 impl slint::winit_030::CustomApplicationHandler for CloseOnExit {
+    /// Tells the Wayland clipboard which window has the keyboard focus: it
+    /// starts as the first gets it, a moment before the first copy or paste
+    /// can come, and says why a paste got nothing in the one that has it
+    /// (see clipboard.rs).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn window_event(
+        &mut self,
+        _event_loop: &slint::winit_030::winit::event_loop::ActiveEventLoop,
+        window_id: slint::winit_030::winit::window::WindowId,
+        winit_window: Option<&slint::winit_030::winit::window::Window>,
+        _slint_window: Option<&slint::Window>,
+        event: &slint::winit_030::winit::event::WindowEvent,
+    ) -> slint::winit_030::EventResult {
+        use slint::winit_030::winit::event::WindowEvent;
+        match (event, winit_window) {
+            (WindowEvent::Focused(true), Some(window)) => clipboard::focused(window),
+            (WindowEvent::Focused(false) | WindowEvent::Destroyed, _) => {
+                clipboard::unfocused(window_id);
+            }
+            _ => {}
+        }
+        slint::winit_030::EventResult::Propagate
+    }
+
+    /// Lets the Wayland clipboard see, once a batch of events is through,
+    /// whether the focus has left Patina's windows, after which another
+    /// program may own what is on it; the focus only moving from one of
+    /// them to another comes as a loss and a gain in the same batch.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn about_to_wait(
+        &mut self,
+        _event_loop: &slint::winit_030::winit::event_loop::ActiveEventLoop,
+    ) -> slint::winit_030::EventResult {
+        clipboard::settle();
+        slint::winit_030::EventResult::Propagate
+    }
+
     fn exiting(
         &mut self,
         _event_loop: &slint::winit_030::winit::event_loop::ActiveEventLoop,

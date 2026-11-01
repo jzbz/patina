@@ -3,7 +3,7 @@
 
 import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { IconButton, Segmented, TextButton } from "widgets.slint";
+import { IconButton, Segmented, TextButton, ToastView } from "widgets.slint";
 
 // A section heading (`section`), or a label and its value.
 export struct InspectorRow {
@@ -152,4 +152,6 @@ export component InspectorWindow inherits Window {
             }
         }
     }
+
+    ToastView { }
 }
