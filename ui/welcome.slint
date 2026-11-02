@@ -65,71 +65,100 @@ export component WelcomeView inherits Rectangle {
         padding-top: 52px;
         spacing: 28px;
 
-        VerticalLayout {
+        Rectangle {
             width: min(300px, root.width * 0.45);
-            spacing: 6px;
-            alignment: start;
 
-            // The icon's tile fills 208 of its 256 units (Flathub's grid);
-            // the margin around it is cropped so the tile lines up with the
-            // title below.
-            Rectangle {
-                width: 67px;
-                height: 67px;
-                Image {
-                    x: -(self.width - parent.width) / 2;
-                    y: -(self.height - parent.height) / 2;
-                    width: parent.width * 256 / 208;
-                    height: parent.height * 256 / 208;
-                    source: @image-url("icons/patina.svg");
-                }
-            }
-            Text {
-                text: "Patina";
-                color: Theme.text;
-                font-size: 26px;
-                font-weight: 700;
-            }
-            Text {
-                text: "Version " + Platform.version;
-                color: Theme.tertiary-text;
-                font-size: Theme.font-small;
-            }
-            Rectangle {
-                height: 18px;
-            }
-            if Media.resume-title != "": WelcomeAction {
-                icon: @image-url("icons/play.svg");
-                title: "Resume Last Playback";
-                detail: Media.resume-title;
-                clicked => {
-                    Actions.open-recent(0);
-                }
-            }
-            WelcomeAction {
-                icon: @image-url("icons/folder-open.svg");
-                title: "Open…";
-                detail: "Files or a folder";
-                clicked => {
-                    Actions.patina("open-file");
-                }
-            }
-            WelcomeAction {
-                icon: @image-url("icons/link.svg");
-                title: "Open URL…";
-                detail: "Streams and online video";
-                clicked => {
-                    Actions.patina("open-url");
-                }
-            }
-            // Once a server is signed in the library takes this screen's
-            // place, and adds others from its account menu.
-            if !Library.signed-in: WelcomeAction {
-                icon: @image-url("icons/server.svg");
-                title: "Jellyfin…";
-                detail: "Browse a Jellyfin server";
-                clicked => {
-                    Actions.patina("jellyfin-sign-in");
+            // Scrolls only when the window is too short for it, as with many
+            // servers; otherwise a press here still moves the window. It
+            // starts a pixel up and to the left of the column, whose padding
+            // takes the pixel back, since it clips and the logo's soft edge
+            // falls just outside the tile.
+            actions := Flickable {
+                x: -1px;
+                y: -1px;
+                width: parent.width + 1px;
+                height: parent.height + 1px;
+                interactive: column.preferred-height > self.height;
+                content-height: column.preferred-height;
+
+                column := VerticalLayout {
+                    width: actions.width;
+                    height: self.preferred-height;
+                    padding-left: 1px;
+                    padding-top: 1px;
+                    spacing: 6px;
+
+                    // The icon's tile fills 208 of its 256 units (Flathub's
+                    // grid); the margin around it is cropped so the tile lines
+                    // up with the title below.
+                    Rectangle {
+                        width: 67px;
+                        height: 67px;
+                        Image {
+                            x: -(self.width - parent.width) / 2;
+                            y: -(self.height - parent.height) / 2;
+                            width: parent.width * 256 / 208;
+                            height: parent.height * 256 / 208;
+                            source: @image-url("icons/patina.svg");
+                        }
+                    }
+                    Text {
+                        text: "Patina";
+                        color: Theme.text;
+                        font-size: 26px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: "Version " + Platform.version;
+                        color: Theme.tertiary-text;
+                        font-size: Theme.font-small;
+                    }
+                    Rectangle {
+                        height: 18px;
+                    }
+                    if Media.resume-title != "": WelcomeAction {
+                        icon: @image-url("icons/play.svg");
+                        title: "Resume Last Playback";
+                        detail: Media.resume-title;
+                        clicked => {
+                            Actions.open-recent(0);
+                        }
+                    }
+                    WelcomeAction {
+                        icon: @image-url("icons/folder-open.svg");
+                        title: "Open…";
+                        detail: "Files or a folder";
+                        clicked => {
+                            Actions.patina("open-file");
+                        }
+                    }
+                    WelcomeAction {
+                        icon: @image-url("icons/link.svg");
+                        title: "Open URL…";
+                        detail: "Streams and online video";
+                        clicked => {
+                            Actions.patina("open-url");
+                        }
+                    }
+                    // The servers signed in to, and those asking to be signed
+                    // in to again: each opens its library, which is never where
+                    // Patina starts.
+                    for server in Library.all-servers: WelcomeAction {
+                        icon: @image-url("icons/server.svg");
+                        title: server.title;
+                        detail: server.detail;
+                        clicked => {
+                            Library.open-server(server.id);
+                        }
+                    }
+                    WelcomeAction {
+                        icon: Library.all-servers.length > 0 ? @image-url("icons/plus.svg") : @image-url("icons/server.svg");
+                        title: Library.all-servers.length > 0 ? "Add Server…" : "Jellyfin…";
+                        detail: Library.all-servers.length > 0 ? "Browse another Jellyfin server" : "Browse a Jellyfin server";
+                        clicked => {
+                            Actions.patina("jellyfin-sign-in");
+                        }
+                    }
                 }
             }
         }

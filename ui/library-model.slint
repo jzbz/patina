@@ -151,7 +151,7 @@ export struct LibrarySignIn {
 }
 
 export global Library {
-    // Shown in place of the welcome screen: a server is signed in, or
+    // Shown in place of the welcome screen: this window has a server, or
     // signing in is under way.
     in property <bool> shown;
     in property <bool> signed-in;
@@ -160,6 +160,9 @@ export global Library {
     in property <image> user-image;
     // Other signed-in servers, to switch to.
     in property <[LibraryChoice]> servers;
+    // Every server signed in to or asking to be, the one showing too, for
+    // the welcome screen.
+    in property <[LibraryChoice]> all-servers;
     // The account may download files: Download shows where an item offers
     // it.
     in property <bool> can-download;
@@ -260,5 +263,7 @@ export global Library {
     callback cancel-sign-in();
     callback add-server();
     callback switch-server(string);
+    // A server picked on the welcome screen: its Home.
+    callback open-server(string);
     callback sign-out();
 }

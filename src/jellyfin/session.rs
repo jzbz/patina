@@ -1,7 +1,7 @@
 //! The app-wide Jellyfin session, owned by the app on the interface
 //! thread: the servers Patina knows (`jellyfin.json`), the accounts signed
 //! in on them with a client each, the image cache every window draws from,
-//! the server chosen last, and the registry of what the library opened.
+//! and the registry of what the library opened.
 //! Windows follow it through `Listener`.
 //!
 //! Nothing here blocks the interface thread. The keyring and the network
@@ -289,6 +289,9 @@ pub enum Change {
     /// The server no longer takes the account's token: the windows showing
     /// it ask to sign in again.
     Expired(String),
+    /// Signing in again was declined: the server stays, without an account,
+    /// and comes off the welcome screen's list.
+    Forgotten(String),
     /// The server took the report of a playback's end: what the library
     /// shows of that server (played marks, resume positions, Next Up) may
     /// have changed, less of it when what ended was played as audio.
@@ -307,10 +310,9 @@ pub struct Session {
     clients: Clients,
     accounts: RefCell<Vec<Account>>,
     /// Servers whose sign-in was lost, by a 401 or because no token was
-    /// saved for them; signing in is asked again until the user cancels.
+    /// saved for them; the welcome screen lists them, asking to be signed
+    /// in to again, until the user declines.
     expired: RefCell<Vec<String>>,
-    /// The server chosen last, which new windows show.
-    current: RefCell<Option<String>>,
     /// The saved tokens have been asked for.
     loaded: Cell<bool>,
     images_dir: PathBuf,
@@ -340,7 +342,6 @@ impl Session {
             clients: Clients::new(),
             accounts: RefCell::new(Vec::new()),
             expired: RefCell::new(Vec::new()),
-            current: RefCell::new(None),
             loaded: Cell::new(false),
             images_dir,
             image_limit: Cell::new(images::Options::default().disk_limit),
@@ -425,11 +426,20 @@ impl Session {
         self.loaded.get()
     }
 
-    /// Whether signed-in servers are waiting for their tokens, which the
-    /// windows show as the library loading rather than as the welcome
-    /// screen.
-    pub fn loading(&self) -> bool {
+    /// Whether signed-in servers are waiting for their tokens.
+    fn loading(&self) -> bool {
         !self.loaded.get() && self.store.borrow().servers().iter().any(Server::signed_in)
+    }
+
+    /// Whether the keyring has yet to say if it has this server's token,
+    /// which picking the server has to wait for.
+    pub fn waiting_for_token(&self, server_id: &str) -> bool {
+        self.loading()
+            && self.account(server_id).is_none()
+            && !self.expired.borrow().iter().any(|id| id == server_id)
+            && self
+                .server(server_id)
+                .is_some_and(|server| server.signed_in())
     }
 
     pub fn identity(&self) -> Identity {
@@ -557,23 +567,6 @@ impl Session {
         !self.accounts.borrow().is_empty()
     }
 
-    /// The server a window shows when it has none of its own: the one
-    /// chosen last while it is signed in, or else the first.
-    pub fn default_server(&self) -> Option<String> {
-        let current = self.current.borrow().clone();
-        current.filter(|id| self.account(id).is_some()).or_else(|| {
-            self.accounts
-                .borrow()
-                .first()
-                .map(|account| account.server.id.clone())
-        })
-    }
-
-    /// Makes `server_id` the server new windows show.
-    pub fn choose(&self, server_id: &str) {
-        *self.current.borrow_mut() = Some(server_id.to_owned());
-    }
-
     /// The servers that asked to be signed in again, oldest first.
     pub fn expired(&self) -> Vec<Server> {
         let store = self.store.borrow();
@@ -581,6 +574,29 @@ impl Session {
             .borrow()
             .iter()
             .filter_map(|id| store.server(id).cloned())
+            .collect()
+    }
+
+    /// The servers the welcome screen lists: those signed in, those asking
+    /// to be signed in to again, and those the keyring has yet to answer
+    /// for, which `jellyfin.json` knows by name from the first frame though
+    /// the keyring may take long to answer, or wait to be unlocked. They
+    /// come in the file's order, so that a row stays where it is as its
+    /// sign-in changes.
+    pub fn listed_servers(&self) -> Vec<Server> {
+        let store = self.store.borrow();
+        let loading = self.loading();
+        let expired = self.expired.borrow();
+        store
+            .servers()
+            .iter()
+            .filter(|server| {
+                server.signed_in()
+                    && (loading
+                        || expired.contains(&server.id)
+                        || self.account(&server.id).is_some())
+            })
+            .cloned()
             .collect()
     }
 
@@ -645,8 +661,8 @@ impl Session {
         }
     }
 
-    /// Signs `server`'s account in with `token`: keeps the server, makes
-    /// its client and chooses it. The token is the caller's to save.
+    /// Signs `server`'s account in with `token`: keeps the server and makes
+    /// its client. The token is the caller's to save.
     /// Another account signed in on the same server before is returned, to
     /// be signed out.
     pub fn add_account(&self, server: Server, token: &str) -> Result<Option<Account>, Error> {
@@ -663,7 +679,6 @@ impl Session {
         });
         self.store.borrow_mut().add(server.clone());
         self.expired.borrow_mut().retain(|id| *id != server.id);
-        *self.current.borrow_mut() = Some(server.id.clone());
         let mut accounts = self.accounts.borrow_mut();
         let replaced = accounts
             .iter()
@@ -675,8 +690,8 @@ impl Session {
     }
 
     /// Forgets a server's account and its client. With `keep_user` the
-    /// account stays in `jellyfin.json`, so that the next start asks for it
-    /// again; otherwise only the server stays.
+    /// account stays in `jellyfin.json`, so that the welcome screen goes on
+    /// listing it; otherwise only the server stays.
     fn remove_account(&self, server_id: &str, keep_user: bool) -> Option<Account> {
         let account = {
             let mut accounts = self.accounts.borrow_mut();
@@ -713,6 +728,7 @@ impl Session {
         token: String,
         unsaved: impl FnOnce() + 'static,
     ) -> Result<(), Error> {
+        let id = server.id.clone();
         let replaced = self.add_account(server.clone(), &token)?;
         if let Some(old) = replaced {
             revoke(old, None);
@@ -731,7 +747,6 @@ impl Session {
                 }
             },
         );
-        let id = self.current.borrow().clone().unwrap_or_default();
         self.notify(&Change::SignedIn(id));
         Ok(())
     }
@@ -783,7 +798,8 @@ impl Session {
 
     /// A request made with `failed` was answered 401: the token is gone,
     /// signed out elsewhere, the password changed or the device removed.
-    /// Patina forgets it and asks to sign in again. A request still under
+    /// Patina forgets it, and the windows showing the server ask to sign in
+    /// again. A request still under
     /// way when the user signed in again carries the old token, which the
     /// new sign-in revoked; its 401 says nothing about the new one.
     pub fn unauthorized(&self, server_id: &str, failed: &Client) {
@@ -816,7 +832,8 @@ impl Session {
     }
 
     /// The user declined signing in again: the server stays, without an
-    /// account, and isn't asked about again.
+    /// account, and isn't asked about again. Every window hears, since each
+    /// lists it until then.
     pub fn forget_expired(&self, server_id: &str) {
         let had = {
             let mut expired = self.expired.borrow_mut();
@@ -838,6 +855,7 @@ impl Session {
                 server.user_name.clear();
             });
             self.clear_images();
+            self.notify(&Change::Forgotten(server_id.to_owned()));
         }
     }
 
@@ -1604,7 +1622,6 @@ mod tests {
         let folder = Folder::new("accounts");
         let session = session(&folder);
         assert!(!session.signed_in());
-        assert_eq!(session.default_server(), None);
 
         assert!(
             session
@@ -1618,10 +1635,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        // The last signed in is the one chosen.
-        assert_eq!(session.default_server().as_deref(), Some("s2"));
-        session.choose("s1");
-        assert_eq!(session.default_server().as_deref(), Some("s1"));
         let account = session.account("s1").unwrap();
         assert_eq!(account.client.token(), Some("token-1"));
         assert_eq!(account.client.user_id(), Some("u1"));
@@ -1649,7 +1662,6 @@ mod tests {
         session.expire("s1");
         assert!(session.account("s1").is_none());
         assert!(session.clients().for_url(&image).is_none());
-        assert_eq!(session.default_server().as_deref(), Some("s2"));
         assert_eq!(session.expired()[0].user_id, "u9");
         let reloaded = Store::load(&folder.0);
         assert!(reloaded.server("s1").unwrap().signed_in());
@@ -1709,9 +1721,82 @@ mod tests {
             store.add(server("s1", ""));
         }
         assert!(!session(&folder).loading());
+        assert!(!session(&folder).waiting_for_token("s1"));
+        assert!(session(&folder).listed_servers().is_empty());
         Store::load(&folder.0).add(server("s1", "u1"));
         let session = session(&folder);
         assert!(session.loading() && !session.loaded());
+        assert!(session.waiting_for_token("s1"));
+        assert!(!session.waiting_for_token("elsewhere"));
+    }
+
+    #[test]
+    fn the_list_keeps_its_order_as_the_keyring_answers() {
+        let folder = Folder::new("listed");
+        {
+            let mut store = Store::load(&folder.0);
+            store.add(server("gone", "u1"));
+            store.add(server("kept", "u2"));
+            store.add(server("no account", ""));
+            store.add(server("failed", "u3"));
+        }
+        let session = session(&folder);
+        let listed = |session: &Session| -> Vec<String> {
+            let servers = session.listed_servers().into_iter();
+            servers.map(|server| server.id).collect()
+        };
+        // Named from the file before the keyring has said anything.
+        assert_eq!(listed(&session), ["gone", "kept", "failed"]);
+        assert!(session.waiting_for_token("kept"));
+
+        // The keyring has no token for the first, and the last's address
+        // can't be used, so that it signs in to neither.
+        let gone = session.server("gone").unwrap();
+        session.token_loaded(gone, Ok(None));
+        let kept = session.server("kept").unwrap();
+        session.token_loaded(kept, Ok(Some("token".into())));
+        session.store.borrow_mut().update("failed", |server| {
+            server.address = "not an address".into();
+        });
+        let failed = session.server("failed").unwrap();
+        session.token_loaded(failed, Ok(Some("token".into())));
+        assert!(!session.waiting_for_token("gone"));
+        assert!(!session.waiting_for_token("kept"));
+        assert_eq!(listed(&session), ["gone", "kept", "failed"]);
+
+        // The keyring is done: the one it left neither way goes.
+        session.loaded.set(true);
+        assert_eq!(listed(&session), ["gone", "kept"]);
+        assert!(!session.waiting_for_token("failed"));
+    }
+
+    #[test]
+    fn declining_to_sign_in_again_tells_the_windows() {
+        #[derive(Default)]
+        struct Heard(RefCell<Vec<Change>>);
+        impl Listener for Heard {
+            fn session_changed(&self, change: &Change) {
+                self.0.borrow_mut().push(change.clone());
+            }
+        }
+
+        let folder = Folder::new("forgotten");
+        Store::load(&folder.0).add(server("s1", "u1"));
+        let session = session(&folder);
+        session.loaded.set(true);
+        session.expire("s1");
+        assert_eq!(session.listed_servers().len(), 1);
+
+        let heard = Rc::new(Heard::default());
+        let listener: Weak<dyn Listener> = Rc::downgrade(&heard) as Weak<dyn Listener>;
+        session.subscribe(listener);
+        session.forget_expired("s1");
+        assert_eq!(*heard.0.borrow(), [Change::Forgotten("s1".into())]);
+        assert!(session.listed_servers().is_empty());
+
+        // Once is enough: there was nothing left to decline.
+        session.forget_expired("s1");
+        assert_eq!(heard.0.borrow().len(), 1);
     }
 
     #[test]

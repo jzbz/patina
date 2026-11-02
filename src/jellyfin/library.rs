@@ -1873,6 +1873,7 @@ pub struct LibraryController {
     tabs: Rc<VecModel<LibraryChoice>>,
     sorts: Rc<VecModel<LibraryChoice>>,
     servers: Rc<VecModel<LibraryChoice>>,
+    all_servers: Rc<VecModel<LibraryChoice>>,
     /// Where rows go, by id: those of a page arrive in any order.
     rank: RefCell<HashMap<String, usize>>,
     grid: RefCell<GridState>,
@@ -1885,6 +1886,9 @@ pub struct LibraryController {
     sign_in: RefCell<Option<Rc<SignIn>>>,
     /// The server signing in again, after its sign-in was lost.
     renewing: RefCell<Option<String>>,
+    /// The server picked on the welcome screen while the keyring has yet to
+    /// answer for it, which opens when it has.
+    awaited: RefCell<Option<String>>,
 }
 
 impl LibraryController {
@@ -1926,6 +1930,7 @@ impl LibraryController {
             tabs: Rc::new(VecModel::default()),
             sorts: Rc::new(VecModel::default()),
             servers: Rc::new(VecModel::default()),
+            all_servers: Rc::new(VecModel::default()),
             rank: RefCell::new(HashMap::new()),
             grid: RefCell::new(GridState::default()),
             items: RefCell::new(HashMap::new()),
@@ -1934,6 +1939,7 @@ impl LibraryController {
             search_timer: Timer::default(),
             sign_in: RefCell::new(None),
             renewing: RefCell::new(None),
+            awaited: RefCell::new(None),
         });
         let library = controller.library();
         library.set_rows(ModelRc::from(controller.rows.clone()));
@@ -1945,6 +1951,7 @@ impl LibraryController {
         library.set_tabs(ModelRc::from(controller.tabs.clone()));
         library.set_sorts(ModelRc::from(controller.sorts.clone()));
         library.set_servers(ModelRc::from(controller.servers.clone()));
+        library.set_all_servers(ModelRc::from(controller.all_servers.clone()));
         controller.wire();
         let listener: Weak<dyn Listener> = Rc::downgrade(&controller) as Weak<dyn Listener>;
         session.subscribe(listener);
@@ -2055,6 +2062,7 @@ impl LibraryController {
         on!(on_cancel_sign_in, |this| this.cancel_sign_in());
         on!(on_add_server, |this| this.begin_sign_in());
         on!(on_switch_server, |this, id| this.switch_server(&id));
+        on!(on_open_server, |this, id| this.open_server(&id));
         on!(on_sign_out, |this| {
             let server = this.server.borrow().clone();
             if let Some(server) = server {
@@ -2074,23 +2082,19 @@ impl LibraryController {
     // The session.
 
     /// Follows the session: keeps this window's server while it is signed
-    /// in, or takes the one new windows get.
+    /// in. A window takes a server only when one is opened from the welcome
+    /// screen or signed in to there, so it starts on the welcome screen,
+    /// and goes back to it when its server goes.
     fn refresh_session(&self) {
         let current = self.server.borrow().clone();
-        let kept = current
+        let next = current
             .clone()
             .filter(|id| self.session.account(id).is_some());
-        let next = kept.or_else(|| self.session.default_server());
         if next != current {
             *self.server.borrow_mut() = next;
             self.server_changed();
         } else if next.is_none() && self.sign_in.borrow().is_none() {
-            // Still waiting for the saved sign-ins, or none came back.
-            self.pages.borrow_mut().set(if self.session.loading() {
-                vec![Page::Home]
-            } else {
-                Vec::new()
-            });
+            self.pages.borrow_mut().set(Vec::new());
             self.set_nav();
             self.show_page();
         }
@@ -2130,8 +2134,6 @@ impl LibraryController {
                 self.set_nav();
                 self.pages.borrow_mut().set(if signing_in {
                     vec![Page::SignIn]
-                } else if self.session.loading() {
-                    vec![Page::Home]
                 } else {
                     Vec::new()
                 });
@@ -2140,12 +2142,10 @@ impl LibraryController {
         self.show_page();
     }
 
-    /// The library shows in place of the welcome screen while a server is
-    /// signed in, while signing in, and while the saved sign-ins load.
+    /// The library shows in place of the welcome screen while this window
+    /// has a server, and while signing in.
     fn update_shown(&self) {
-        let shown = self.server.borrow().is_some()
-            || self.sign_in.borrow().is_some()
-            || self.session.loading();
+        let shown = self.server.borrow().is_some() || self.sign_in.borrow().is_some();
         self.library().set_shown(shown);
     }
 
@@ -2163,13 +2163,64 @@ impl LibraryController {
             })
             .collect();
         self.servers.set_vec(others);
+        let awaited = self.awaited.borrow().clone();
+        let listed: Vec<LibraryChoice> = self
+            .session
+            .listed_servers()
+            .into_iter()
+            .map(|server| {
+                let detail = if awaited.as_ref() == Some(&server.id) {
+                    format!("Waiting for {}…", crate::credentials::STORE_NAME).into()
+                } else if self.session.account(&server.id).is_some()
+                    || self.session.waiting_for_token(&server.id)
+                {
+                    server.user_name.into()
+                } else {
+                    "Sign in again".into()
+                };
+                LibraryChoice {
+                    id: server.id.into(),
+                    title: server.name.into(),
+                    detail,
+                }
+            })
+            .collect();
+        self.all_servers.set_vec(listed);
+    }
+
+    /// A server picked on the welcome screen: its Home, whether this window
+    /// has it already (This Computer shows the welcome screen in the
+    /// library) or it is another, or signing in again where its sign-in
+    /// has been lost. While the keyring has yet to say which, the row says
+    /// what it waits for, and `open_after_loading` goes on from there.
+    fn open_server(&self, id: &str) {
+        let waiting = self.session.waiting_for_token(id);
+        *self.awaited.borrow_mut() = waiting.then(|| id.to_owned());
+        if !waiting {
+            if self.server.borrow().as_deref() == Some(id) {
+                self.navigate("home");
+            } else if self.session.account(id).is_some() {
+                self.switch_server(id);
+            } else {
+                self.sign_in_to(id, "Sign in again to see this server's library.");
+            }
+        }
+        self.update_servers();
+    }
+
+    /// The keyring has answered: the server picked while it hadn't opens,
+    /// unless the user has since gone on to something else in this window.
+    fn open_after_loading(&self, id: &str) {
+        let on_welcome = matches!(self.top(), None | Some(Page::Local));
+        if on_welcome && self.player.upgrade().is_some_and(|player| player.is_idle()) {
+            self.open_server(id);
+        }
     }
 
     fn switch_server(&self, id: &str) {
         if self.session.account(id).is_none() {
             return;
         }
-        self.session.choose(id);
         self.cancel_flow();
         *self.server.borrow_mut() = Some(id.to_owned());
         self.server_changed();
@@ -2178,8 +2229,6 @@ impl LibraryController {
     }
 
     /// The bar: Home, the account's libraries, Search and This Computer;
-    /// while the saved sign-ins load, Home and This Computer, so that a
-    /// keyring slow to answer doesn't keep the user from their files; and
     /// nothing without a server.
     fn set_nav(&self) {
         let nav = |id: &str, title: &str, kind: &str| LibraryNav {
@@ -2187,25 +2236,22 @@ impl LibraryController {
             title: title.into(),
             kind: kind.into(),
         };
-        let signed_in = self.account().is_some();
-        if !signed_in && !self.session.loading() {
+        if self.account().is_none() {
             self.nav.set_vec(Vec::new());
             self.nav_end.set_vec(Vec::new());
             return;
         }
         let mut entries = vec![nav("home", "Home", "home")];
-        let mut end = Vec::new();
-        if signed_in {
-            for view in self.views.borrow().iter() {
-                if let Some(collection) = Collection::of(view.collection_type) {
-                    entries.push(nav(&view.id, &view.name, collection.nav_kind()));
-                }
+        for view in self.views.borrow().iter() {
+            if let Some(collection) = Collection::of(view.collection_type) {
+                entries.push(nav(&view.id, &view.name, collection.nav_kind()));
             }
-            end.push(nav("search", "Search", "search"));
         }
-        end.push(nav("local", "This Computer", "local"));
         self.nav.set_vec(entries);
-        self.nav_end.set_vec(end);
+        self.nav_end.set_vec(vec![
+            nav("search", "Search", "search"),
+            nav("local", "This Computer", "local"),
+        ]);
     }
 
     /// The account's name and picture, and its policy, which says whether
@@ -2319,8 +2365,6 @@ impl LibraryController {
             return;
         };
         if self.account().is_none() && !matches!(page, Page::SignIn | Page::Local) {
-            // The saved sign-ins are still on their way.
-            library.set_loading(self.session.loading());
             return;
         }
         match page {
@@ -2493,8 +2537,7 @@ impl LibraryController {
     }
 
     fn navigate(&self, id: &str) {
-        // While the saved sign-ins load, This Computer is still there.
-        if self.account().is_none() && !(self.session.loading() && matches!(id, "home" | "local")) {
+        if self.account().is_none() {
             return;
         }
         let page = match id {
@@ -4369,7 +4412,9 @@ impl LibraryController {
             flow.cancel();
             self.pages.borrow_mut().remove_sign_in();
         }
-        if let Some(server) = self.renewing.borrow_mut().take() {
+        // Taken first: the session tells this window too.
+        let renewing = self.renewing.borrow_mut().take();
+        if let Some(server) = renewing {
             self.session.forget_expired(&server);
         }
     }
@@ -4388,17 +4433,13 @@ impl LibraryController {
 impl Listener for LibraryController {
     fn session_changed(&self, change: &Change) {
         match change {
+            // A sign-in lost since last time waits on the welcome screen's
+            // list for the server to be picked.
             Change::Loaded => {
+                let awaited = self.awaited.borrow_mut().take();
                 self.refresh_session();
-                let expired = self.session.expired();
-                if self.server.borrow().is_none()
-                    && self.sign_in.borrow().is_none()
-                    && let Some(server) = expired.first()
-                {
-                    self.begin_sign_in_to(
-                        Some(server),
-                        "Sign in again to see this server's library.",
-                    );
+                if let Some(id) = awaited {
+                    self.open_after_loading(&id);
                 }
             }
             // Another window signed the server in again: this one's
@@ -4421,6 +4462,7 @@ impl Listener for LibraryController {
                 }
             }
             Change::SignedIn(_) | Change::SignedOut(_) => self.refresh_session(),
+            Change::Forgotten(_) => self.update_servers(),
             // A playback in some window ended, and the server has its
             // progress: an idle window showing that server shows it again,
             // when its page shows what that changes.

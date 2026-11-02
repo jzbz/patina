@@ -1,8 +1,9 @@
 # Jellyfin client
 
 Patina browses and plays a Jellyfin server's library inside the player
-window: once a server is signed in, the idle player shows the library in
-place of the welcome screen, and what it plays it plays in that same window.
+window: the welcome screen lists the servers signed in to, one picked or
+signed in to puts its library in the idle player in that screen's place, and
+what it plays it plays in that same window.
 This page is the design: what is in, how it fits Patina, and the rules the
 code keeps. The API facts behind it were read from Jellyfin 12.4's source
 and OpenAPI description and from 10.10.7's and 10.11.11's.
@@ -141,14 +142,16 @@ a space). The token is never put into a URL. The legacy headers and the
 optional CA file (see Certificates) and the account's id and name. The token goes into the
 keyring, under the service "Patina Jellyfin" and the account
 `<server id>/<user id>`. Without a keyring the token lives only as long as
-Patina runs, and the next start asks to sign in again. A `jellyfin.json`
+Patina runs, and the next start lists the server as asking to be signed in
+to again. A `jellyfin.json`
 that can't be read (written by a later Patina, say) is copied aside as
 `jellyfin.json.bad` and saved over only when something changes, keeping
 what can be read of it: a new device id would make Patina a new device on
 every server, and the servers it lists would be lost with their tokens
 left in the keyring. A 401 from a server
 means the token is gone (signed out elsewhere, the password changed, the
-device removed): Patina forgets it and asks again. Signing out stops
+device removed): Patina forgets it, a window showing that server asks
+again, and every other lists the server as asking. Signing out stops
 what any window plays from that server, after reporting where it
 stopped, then calls `/Sessions/Logout` (once the reports on their way
 have gone, or five seconds have passed, since they carry the same token)
@@ -174,9 +177,15 @@ checked as the API's are.
 
 ## Browsing
 
-The library view replaces the welcome view in an idle player window while
-any server is signed in. Its bar has Home, the account's libraries, Search
-and This Computer, which is the welcome view's Open, Open URL and Recent.
+A window starts on the welcome view, which lists the servers signed in to
+under Open and Open URL, and those whose sign-in was lost, which ask for it
+again when picked. The servers saved as signed in are listed from
+`jellyfin.json` while the keyring has yet to answer, which it may take long
+to do, or wait to be unlocked first; one picked meanwhile says what it waits
+for and opens when the keyring has answered. Picking a server, or signing in
+to one, puts the library view in the welcome view's place in that idle
+player window, until the server is signed out of. Its bar has Home, the account's libraries, Search
+and This Computer, which is the welcome view again.
 Pages stack: opening an item pushes its page, Back (the button, the mouse's
 back button, Backspace) pops it. What plays from the library plays in its
 place; Escape (outside full screen, where it does nothing as bound by

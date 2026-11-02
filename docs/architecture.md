@@ -384,9 +384,10 @@ rules about the account's token; this is how it sits among the rest.
   takes, and a playback's end that the server has taken.
 - **The library.** Each player window has a `LibraryController`
   (`jellyfin/library.rs`), which fills the window's `Library` global and
-  answers its callbacks. While a server is signed in, an idle window shows
-  the library where the welcome view would be, and its This Computer tab
-  is the welcome view's Open, Open URL and Recent. Page loads, from every
+  answers its callbacks. A window starts on the welcome view, which lists
+  the servers; one picked or signed in to puts the library in that idle
+  window where the welcome view was, and its This Computer tab is the
+  welcome view again. Page loads, from every
   window, share six threads (`session::load`), and an answer for a page
   the user has left is dropped.
 - **Playing.** What the library plays goes into mpv's playlist as
