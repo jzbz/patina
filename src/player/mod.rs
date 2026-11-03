@@ -10,6 +10,7 @@ pub mod state;
 pub use props::Prop;
 
 use crate::mpv::{Event, Mpv, Value};
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -298,7 +299,7 @@ fn coalesce_property_changes(batch: &mut Vec<Event>) {
 }
 
 fn log_mpv_message(message: &crate::mpv::LogMessage) {
-    let text = message.text.trim_end();
+    let text = trim_stream_addresses(message.text.trim_end());
     let level = match message.level.as_str() {
         "fatal" | "error" => log::Level::Error,
         "warn" => log::Level::Warn,
@@ -307,6 +308,37 @@ fn log_mpv_message(message: &crate::mpv::LogMessage) {
         _ => log::Level::Trace,
     };
     log::log!(target: "mpv", level, "[{}] {text}", message.prefix);
+}
+
+/// A message from mpv with the addresses of YouTube's streams cut down to
+/// their host's name. They are signed for this user, and carry the user's
+/// public IP address, in `ip=` or `/ip/`. mpv says them when one fails to
+/// open, and for every live stream, at the level Patina logs by default, so
+/// they would otherwise reach a terminal or a journal, and from there a bug
+/// report.
+///
+/// The cut goes to the next space or quote, whatever comes first, since an
+/// `edl://` address holds several others, and their query strings hold commas
+/// and semicolons.
+fn trim_stream_addresses(text: &str) -> Cow<'_, str> {
+    const HOST: &str = "googlevideo.com";
+    let ends = |c: char| c.is_ascii_whitespace() || c == '\'' || c == '"';
+    if !text.contains(HOST) {
+        return Cow::Borrowed(text);
+    }
+    let mut trimmed = String::new();
+    let mut rest = text;
+    while let Some(found) = rest.find(HOST) {
+        let start = rest[..found].rfind(ends).map_or(0, |end| end + 1);
+        let end = rest[found..]
+            .find(ends)
+            .map_or(rest.len(), |end| found + end);
+        trimmed.push_str(&rest[..start]);
+        trimmed.push_str("https://….googlevideo.com/…");
+        rest = &rest[end..];
+    }
+    trimmed.push_str(rest);
+    Cow::Owned(trimmed)
 }
 
 #[cfg(test)]
@@ -340,6 +372,50 @@ mod tests {
         let (mut player, _events) = Player::start(&options).unwrap();
         player.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stream_addresses_stay_out_of_the_log() {
+        const SIGNED: &str = "https://rr3---sn-abc123.googlevideo.com/videoplayback?expire=1\
+            &ip=203.0.113.7&mn=sn-abc,sn-def&sparams=expire,ip;x&sig=AOq0";
+        const TRIMMED: &str = "https://….googlevideo.com/…";
+        assert_eq!(
+            trim_stream_addresses(&format!("Failed to open {SIGNED}")),
+            format!("Failed to open {TRIMMED}")
+        );
+        assert_eq!(
+            trim_stream_addresses(&format!("EDL: Could not open source file '{SIGNED}'.")),
+            format!("EDL: Could not open source file '{TRIMMED}'.")
+        );
+        // An edl:// address with several in it is one address.
+        let edl =
+            format!("edl://!delay_open,media_type=video;%214%{SIGNED};!new_stream;%214%{SIGNED}");
+        assert_eq!(
+            trim_stream_addresses(&format!("Cannot open file '{edl}': x")),
+            format!("Cannot open file '{TRIMMED}': x")
+        );
+        // Two in a message, with the words around them kept.
+        assert_eq!(
+            trim_stream_addresses(&format!("{SIGNED} then {SIGNED} ended")),
+            format!("{TRIMMED} then {TRIMMED} ended")
+        );
+        // A live stream's manifest has its address in its path.
+        let manifest =
+            "https://manifest.googlevideo.com/api/manifest/hls_playlist/ip/203.0.113.7/x";
+        let said = trim_stream_addresses(manifest);
+        assert_eq!(said, TRIMMED);
+        assert!(!said.contains("203.0.113.7"));
+    }
+
+    #[test]
+    fn other_messages_are_logged_as_they_are() {
+        for text in [
+            "",
+            "[ffmpeg] https: HTTP error 403 Forbidden",
+            "Failed to open https://example.com/video.mp4?ip=1",
+        ] {
+            assert!(matches!(trim_stream_addresses(text), Cow::Borrowed(same) if same == text));
+        }
     }
 
     fn change(userdata: u64, value: f64) -> Event {

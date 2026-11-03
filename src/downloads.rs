@@ -15,7 +15,7 @@ use crate::app::App;
 use crate::jellyfin::api::{Client, Error as JellyfinError};
 use crate::jellyfin::download::{self as jellyfin, Failure, Meter, Progress, Speed, Stop};
 use crate::jellyfin::session::{Change, Listener};
-use crate::settings::Preferences;
+use crate::settings::{Preferences, read_ytdl_raw_options, ytdl_youtube_clients};
 use crate::{DownloadRow, DownloadsWindow};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
@@ -98,14 +98,10 @@ pub fn download_format(playing: Option<&str>) -> Option<String> {
 /// way mpv's yt-dlp hook passes them.
 fn raw_options(raw: &str) -> Vec<String> {
     let mut args = Vec::new();
-    for option in raw
-        .split(',')
-        .map(str::trim)
-        .filter(|option| !option.is_empty())
-    {
-        let (key, value) = option.split_once('=').unwrap_or((option, ""));
-        args.push(format!("--{}", key.trim()));
-        if !value.is_empty() || key.trim() == "proxy" {
+    for (key, value) in read_ytdl_raw_options(raw) {
+        let value = value.trim();
+        args.push(format!("--{key}"));
+        if !value.is_empty() || key == "proxy" {
             args.push(value.to_owned());
         }
     }
@@ -181,6 +177,12 @@ fn command(program: &Path, request: &Request, folder: &Path, raw: &str) -> Comma
         .arg(folder);
     if let Some(format) = &request.format {
         command.args(["--format", format]);
+    }
+    // yt-dlp waits by itself for what these clients avoid, so a download
+    // would work without them. With them it needn't wait, and the format
+    // that is playing is one these clients offered.
+    if let Some(clients) = ytdl_youtube_clients(raw) {
+        command.args(["--extractor-args", clients]);
     }
     command
         .args(raw_options(raw))
@@ -1309,6 +1311,74 @@ mod tests {
             ]
         );
         assert!(raw_options("").is_empty());
+        // A flag with no `=`, which mpv can't read, and spaces around things.
+        assert_eq!(
+            raw_options("no-mtime,format-sort=res , write-subs"),
+            ["--no-mtime", "--format-sort", "res", "--write-subs"]
+        );
+        // Quoted, as mpv needs a value with a comma to be.
+        assert_eq!(
+            raw_options("extractor-args=\"youtube:player_client=tv,web\",proxy=[http://a:1]"),
+            [
+                "--extractor-args",
+                "youtube:player_client=tv,web",
+                "--proxy",
+                "http://a:1"
+            ]
+        );
+    }
+
+    /// yt-dlp's arguments for downloading with these raw options.
+    fn download_args(raw: &str) -> Vec<String> {
+        let request = Request {
+            url: "https://example.com/v".into(),
+            title: String::new(),
+            format: Some("18".into()),
+        };
+        command(Path::new("yt-dlp"), &request, Path::new("/videos"), raw)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The value after each `--extractor-args`.
+    fn extractor_args(args: &[String]) -> Vec<&str> {
+        args.windows(2)
+            .filter(|pair| pair[0] == "--extractor-args")
+            .map(|pair| pair[1].as_str())
+            .collect()
+    }
+
+    #[test]
+    fn downloads_ask_youtube_for_the_same_clients_as_mpv() {
+        let args = download_args("");
+        assert_eq!(
+            extractor_args(&args),
+            ["youtube:player_client=visionos,default"]
+        );
+        // The clients are one argument, whatever else there is, and the
+        // address stays last, behind the end of the options.
+        let args = download_args("no-mtime=");
+        assert_eq!(
+            extractor_args(&args),
+            ["youtube:player_client=visionos,default"]
+        );
+        assert!(args.iter().any(|arg| arg == "--no-mtime"));
+        assert_eq!(args[args.len() - 2..], ["--", "https://example.com/v"]);
+    }
+
+    #[test]
+    fn a_downloads_own_extractor_args_or_cookies_win() {
+        let args = download_args("extractor-args=\"youtube:player_client=tv,web\"");
+        assert_eq!(extractor_args(&args), ["youtube:player_client=tv,web"]);
+        for raw in [
+            "cookies=/home/me/cookies.txt",
+            "cookies-from-browser=firefox",
+            "no-mtime,cookies=/home/me/cookies.txt",
+        ] {
+            let args = download_args(raw);
+            assert!(extractor_args(&args).is_empty(), "{raw}");
+        }
     }
 
     #[test]

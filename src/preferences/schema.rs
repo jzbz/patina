@@ -990,7 +990,7 @@ pub const ITEMS: &[Item] = &[
             "Online video",
             "ytdl-raw-options",
             "yt-dlp options",
-            "key=value pairs, comma-separated.",
+            "key=value pairs, comma-separated. A flag is written flag=.",
             Text,
         ),
         "ytdl",

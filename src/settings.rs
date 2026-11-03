@@ -458,6 +458,46 @@ impl Preferences {
         format!("bestvideo{filter}+bestaudio/best{filter}/best")
     }
 
+    /// The yt-dlp options as mpv is given them, with YouTube's clients added
+    /// (`ytdl_youtube_clients`). Theirs is quoted because the value has a
+    /// comma, which ends an unquoted value for mpv. It stays out of
+    /// `ytdl_raw_options` so that the preference holds only what the user
+    /// wrote.
+    ///
+    /// Added to options mpv can't read, they would be lost with them or be
+    /// read as part of a name that yt-dlp exits on. So those options go and
+    /// the clients stay.
+    fn ytdl_raw_options_for_mpv(&self) -> String {
+        let own = self.ytdl_raw_options.trim_end().trim_end_matches(',');
+        let readable = read_ytdl_raw_options_checked(own).1;
+        if !readable {
+            // Not the options themselves: they can hold a proxy's password.
+            log::warn!(
+                "ignoring the yt-dlp options, which mpv can't read: a flag is written flag="
+            );
+        }
+        let own = if readable { own } else { "" };
+        let clients = ytdl_youtube_clients(own).filter(|_| !self.ytdl_is_youtube_dl());
+        match clients {
+            Some(clients) if own.is_empty() => format!("extractor-args=\"{clients}\""),
+            Some(clients) => format!("{own},extractor-args=\"{clients}\""),
+            None => own.to_owned(),
+        }
+    }
+
+    /// Whether the program mpv's hook will run is youtube-dl, which it still
+    /// falls back to, and which stops at an option it doesn't have.
+    fn ytdl_is_youtube_dl(&self) -> bool {
+        let mpv_config = Paths::discover().mpv_config_dir();
+        crate::downloads::find_ytdl(self, &mpv_config).is_some_and(|program| {
+            program.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .starts_with("youtube-dl")
+            })
+        })
+    }
+
     /// The mpv options these preferences set, in the order they apply. They
     /// are set before a core starts and again on running cores when the
     /// preferences change, so each must also work as a runtime property.
@@ -517,7 +557,7 @@ impl Preferences {
             ("http-proxy", self.http_proxy.clone()),
             ("rtsp-transport", self.rtsp_transport.clone()),
             ("ytdl", yes_no(self.ytdl)),
-            ("ytdl-raw-options", self.ytdl_raw_options.clone()),
+            ("ytdl-raw-options", self.ytdl_raw_options_for_mpv()),
             ("ytdl-format", self.ytdl_format()),
             (
                 "keep-open",
@@ -553,6 +593,129 @@ impl Preferences {
         }
         options
     }
+}
+
+/// The clients yt-dlp is to ask YouTube for, as `--extractor-args` takes
+/// them, unless the yt-dlp options `raw` say otherwise.
+///
+/// A YouTube video with an ad fails to open otherwise. yt-dlp's default
+/// clients are given stream addresses that answer 403 until the ad's skip
+/// time has passed, which yt-dlp waits for and mpv's hook, before its PR
+/// #18193, doesn't. `visionos` is given addresses that work at once.
+/// `default` stays after it for the formats and the fallback it brings, and
+/// because `visionos` alone chooses a format that takes merging, which fails
+/// without ffmpeg.
+///
+/// Remove this once every package's libmpv has that fix: Windows' has, the
+/// Flatpak's and macOS's 0.41.0 don't. It rests on how yt-dlp and YouTube
+/// treat that client today, which any yt-dlp release can change, so a video
+/// with an ad failing to open again means looking here first.
+///
+/// An `extractor-args` of the user's wins, since mpv's options keep only one
+/// of a name. So do cookies, since yt-dlp skips `visionos` with them, with a
+/// warning each time.
+///
+/// Only Patina's own yt-dlp options can be seen here, not yt-dlp's config
+/// file. yt-dlp reads that first, and the argument made of this then replaces
+/// its whole `youtube` entry, so a `lang` or `po_token` there is lost as well
+/// as its clients. Whoever needs those writes the `extractor-args` in Patina's
+/// yt-dlp options, which then wins. Cookies in that file aren't seen either,
+/// which costs only the warning.
+///
+/// youtube-dl has no such option. mpv's hook can still run it, so mpv isn't
+/// given this for it (`Preferences::ytdl_is_youtube_dl`); downloads already
+/// need yt-dlp, for `--progress-template`.
+pub fn ytdl_youtube_clients(raw: &str) -> Option<&'static str> {
+    let own = read_ytdl_raw_options(raw)
+        .iter()
+        .any(|(key, _)| matches!(*key, "extractor-args" | "cookies" | "cookies-from-browser"));
+    (!own).then_some("youtube:player_client=visionos,default")
+}
+
+/// mpv's `ytdl-raw-options` ("key=value,flag=") as names and values, so that
+/// Patina's downloads read what mpv reads. A flag with no `=` and spaces
+/// around a name, which mpv's hook can't use, are also read as what they
+/// plainly mean, as downloads always have.
+pub fn read_ytdl_raw_options(raw: &str) -> Vec<(&str, &str)> {
+    read_ytdl_raw_options_checked(raw).0
+}
+
+/// Those options, and whether mpv's hook can use the text as it is, when they
+/// are exactly what mpv reads. mpv reads a name up to the next `=`, past any
+/// comma, not knowing flags: a flag at the end makes it refuse the whole text,
+/// and one before another option makes a name with a comma in it, which yt-dlp
+/// exits on, on every site. A name with a space in it or none at all does the
+/// same. So does a colon after the last value: mpv takes it, between options,
+/// but then nothing can be added behind it.
+fn read_ytdl_raw_options_checked(raw: &str) -> (Vec<(&str, &str)>, bool) {
+    let mut options = Vec::new();
+    let mut usable = true;
+    let mut rest = raw;
+    while !rest.is_empty() {
+        let key = ytdl_raw_option_part(&mut rest, &['=', ','], &mut usable);
+        usable &= !key.is_empty() && !key.contains(char::is_whitespace);
+        let value = match rest.strip_prefix('=') {
+            Some(after) => {
+                rest = after;
+                ytdl_raw_option_part(&mut rest, &[','], &mut usable)
+            }
+            None => {
+                usable = false;
+                ""
+            }
+        };
+        if let Some(after) = rest.strip_prefix(',') {
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix(':') {
+            usable &= !after.is_empty();
+            rest = after;
+        } else if !rest.is_empty() {
+            usable = false;
+            rest = rest.split_once(',').map_or("", |(_, after)| after);
+        }
+        let key = key.trim();
+        if !key.is_empty() {
+            options.push((key, value));
+        }
+    }
+    (options, usable)
+}
+
+/// The name or value `rest` starts with, up to the next of `ends`. As for mpv,
+/// one in `"…"`, `[…]` or `%length%…` can hold those. Left open it isn't
+/// quoted at all, and mpv refuses it.
+fn ytdl_raw_option_part<'a>(rest: &mut &'a str, ends: &[char], usable: &mut bool) -> &'a str {
+    fn quoted(text: &str) -> Option<(&str, &str)> {
+        let inner = text.get(1..)?;
+        match text.chars().next()? {
+            '"' => inner.split_once('"'),
+            '[' => {
+                let mut depth = 1;
+                let end = inner.find(|c: char| {
+                    match c {
+                        '[' => depth += 1,
+                        ']' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })?;
+                Some((&inner[..end], &inner[end + 1..]))
+            }
+            '%' => {
+                let (length, after) = inner.split_once('%')?;
+                let length: usize = length.parse().ok()?;
+                Some((after.get(..length)?, &after[length..]))
+            }
+            _ => None,
+        }
+    }
+    let text = *rest;
+    let (part, after) = quoted(text).unwrap_or_else(|| {
+        *usable &= !text.starts_with(['"', '[', '%']);
+        text.split_at(text.find(ends).unwrap_or(text.len()))
+    });
+    *rest = after;
+    part
 }
 
 /// One played file, newest first in the history.
@@ -675,6 +838,7 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mpv::Node;
 
     #[test]
     fn missing_fields_take_defaults() {
@@ -701,6 +865,206 @@ mod tests {
                 panic!("{name}={value}: {error}");
             }
         }
+    }
+
+    const CLIENTS: &str = "extractor-args=\"youtube:player_client=visionos,default\"";
+
+    fn raw_options_for_mpv_with(own: &str, program: &str) -> String {
+        let prefs = Preferences {
+            ytdl_raw_options: own.into(),
+            ytdl_path: program.into(),
+            ..Default::default()
+        };
+        prefs
+            .mpv_options()
+            .into_iter()
+            .find(|(name, _)| *name == "ytdl-raw-options")
+            .unwrap()
+            .1
+    }
+
+    /// Named, so that these don't depend on what this machine has installed.
+    fn raw_options_for_mpv(own: &str) -> String {
+        raw_options_for_mpv_with(own, "yt-dlp")
+    }
+
+    #[test]
+    fn mpv_is_told_which_clients_to_ask_youtube_for() {
+        assert_eq!(raw_options_for_mpv(""), CLIENTS);
+        assert_eq!(raw_options_for_mpv("  "), CLIENTS);
+        assert_eq!(
+            raw_options_for_mpv("no-mtime="),
+            format!("no-mtime=,{CLIENTS}")
+        );
+        // A comma left at the end would make two in a row, which mpv refuses.
+        assert_eq!(
+            raw_options_for_mpv("format-sort=res,"),
+            format!("format-sort=res,{CLIENTS}")
+        );
+    }
+
+    #[test]
+    fn the_users_own_extractor_args_or_cookies_win() {
+        for own in [
+            "extractor-args=\"youtube:player_client=tv,web\"",
+            "no-mtime=,extractor-args=\"youtube:player_client=tv\"",
+            "cookies=/home/me/cookies.txt",
+            "cookies-from-browser=firefox",
+            "cookies-from-browser=firefox,no-mtime=",
+        ] {
+            assert_eq!(raw_options_for_mpv(own), own);
+            assert_eq!(ytdl_youtube_clients(own), None, "{own}");
+        }
+        // Only an option's name counts, not what a value happens to say.
+        for own in [
+            "user-agent=\"a,cookies=b\"",
+            "no-cookies=",
+            "add-header=\"extractor-args:1\"",
+        ] {
+            assert!(ytdl_youtube_clients(own).is_some(), "{own}");
+        }
+    }
+
+    /// With these, yt-dlp would exit on every site, or mpv would refuse them
+    /// whole. The clients must not go down with them.
+    #[test]
+    fn options_mpv_cant_read_give_way_to_the_clients() {
+        for own in [
+            "no-mtime",
+            "format-sort=res,no-mtime",
+            "no-mtime,format-sort=res",
+            "no-mtime,cookies=a",
+            " no-mtime=",
+            "format-sort=res, no-mtime=",
+            "=res",
+            "format-sort=\"res",
+            "format-sort=[res",
+            "format-sort=%9%res",
+            "format-sort=\"res\"fps",
+            "format-sort=\"res\":",
+        ] {
+            assert_eq!(raw_options_for_mpv(own), CLIENTS, "{own}");
+        }
+    }
+
+    #[test]
+    fn youtube_dl_is_not_given_an_option_it_stops_at() {
+        let dir = std::env::temp_dir().join(format!("patina-ytdl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = |name: &str| {
+            let path = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+            std::fs::write(&path, "").unwrap();
+            path.to_str().unwrap().to_owned()
+        };
+        let old = program("youtube-dl");
+        assert_eq!(raw_options_for_mpv_with("", &old), "");
+        assert_eq!(raw_options_for_mpv_with("no-mtime=", &old), "no-mtime=");
+        assert_eq!(raw_options_for_mpv_with("no-mtime", &old), "");
+        assert_eq!(raw_options_for_mpv_with("", &program("yt-dlp")), CLIENTS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Text the reader calls usable is read as mpv reads it. The rest, mpv
+    /// refuses or reads as a name no option has.
+    #[test]
+    fn the_reader_knows_what_mpv_makes_of_any_text() {
+        let Some(mpv) = crate::mpv::testing::headless() else {
+            return;
+        };
+        for raw in [
+            "",
+            "a=b",
+            "a=b,",
+            "a=",
+            "a=b:c=d",
+            "a=b ,c=d",
+            "a=\"b\":c=d",
+            "a=\"b,c\",d=e",
+            "a=[x[y],z],b=c",
+            "a=%3%x,y,b=c",
+            "a=%0%,b=c",
+            "\"a\"=b",
+            "no-mtime",
+            "a=b,no-mtime",
+            "no-mtime,a=b",
+            "a=b,,",
+            " a=b",
+            "a=b, c=d",
+            "a =b",
+            "=b",
+            "a=\"b",
+            "a=[b",
+            "a=[b]]",
+            "a=%x",
+            "a=%9%b",
+            "a=\"b\"c",
+            "\"a\"b=c",
+        ] {
+            let (read, usable) = read_ytdl_raw_options_checked(raw);
+            let took = mpv.set_property("ytdl-raw-options", raw).is_ok();
+            if !took {
+                assert!(!usable, "{raw}: mpv refuses it");
+                continue;
+            }
+            let Node::Map(seen) = mpv.get_property("ytdl-raw-options").unwrap() else {
+                panic!("{raw}: not a map");
+            };
+            if usable {
+                let mut seen: Vec<(&str, &str)> = seen
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str().unwrap()))
+                    .collect();
+                seen.sort_unstable();
+                let mut read = read;
+                read.sort_unstable();
+                assert_eq!(read, seen, "{raw}");
+            } else {
+                assert!(
+                    seen.iter()
+                        .any(|(key, _)| key.is_empty() || key.contains([',', ' '])),
+                    "{raw}: mpv reads it well enough"
+                );
+            }
+        }
+    }
+
+    /// The options Patina's downloads read are the ones mpv reads, and the
+    /// clients reach mpv's yt-dlp hook in one piece.
+    #[test]
+    fn raw_options_read_as_mpv_reads_them() {
+        let Some(mpv) = crate::mpv::testing::headless() else {
+            return;
+        };
+        for own in [
+            "",
+            "no-mtime=",
+            "no-mtime",
+            "format-sort=res,no-mtime",
+            "format-sort=res,",
+            "proxy=\"http://127.0.0.1:8080\",no-mtime=",
+            "extractor-args=\"youtube:player_client=tv,web\"",
+            "extractor-args=[youtube:player_client=tv,web],no-mtime=",
+            "\"format-sort\"=\"res,fps\"",
+        ] {
+            let raw = raw_options_for_mpv(own);
+            mpv.set_property("ytdl-raw-options", raw.as_str())
+                .unwrap_or_else(|error| panic!("{raw}: {error}"));
+            let Node::Map(seen) = mpv.get_property("ytdl-raw-options").unwrap() else {
+                panic!("{raw}: not a map");
+            };
+            let mut seen: Vec<(&str, &str)> = seen
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str().unwrap()))
+                .collect();
+            seen.sort_unstable();
+            let mut read = read_ytdl_raw_options(&raw);
+            read.sort_unstable();
+            assert_eq!(read, seen, "{raw}");
+        }
+        assert_eq!(
+            read_ytdl_raw_options(&raw_options_for_mpv("")),
+            [("extractor-args", "youtube:player_client=visionos,default")]
+        );
     }
 
     #[test]

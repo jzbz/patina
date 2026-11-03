@@ -340,6 +340,24 @@ shift down by 50) and sets the yt-dlp format for that file, and its start
 at the position it was playing, before yt-dlp is asked. Choices are kept
 per address for as long as the window is open.
 
+mpv 0.41's hook can't open a YouTube video with an ad under yt-dlp's default
+clients: their stream addresses answer 403 until the ad's skip time has
+passed, and the hook doesn't wait. So Patina adds
+`extractor-args=youtube:player_client=visionos,default` to what mpv and
+downloads pass to yt-dlp, unless Patina's yt-dlp options have their own
+`extractor-args` or cookies (`settings::ytdl_youtube_clients`, which says when
+it can go). It isn't kept in the preference, and mpv needs its value quoted.
+mpv isn't given it when its hook would run youtube-dl, which has no such
+option. Options mpv can't read, such as a flag with no `=`, are dropped with a
+warning and it goes alone, as adding to them would stop every online video;
+downloads still read those as they plainly mean. yt-dlp's own config file
+can't be seen from here, and the argument replaces that file's whole `youtube`
+entry, `lang` or `po_token` included, so those belong in Patina's yt-dlp
+options if they are to last.
+mpv says the signed stream address, with the user's IP address in it, when
+one fails to open, so `player/mod.rs` cuts `googlevideo.com` addresses out of
+what it logs.
+
 Downloading runs yt-dlp on threads of its own (`downloads.rs`), with
 progress, post-processing and the final file printed in templates of
 Patina's, so nothing depends on the wording of yt-dlp's own output. It is
