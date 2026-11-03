@@ -908,7 +908,7 @@ pub const ITEMS: &[Item] = &[
         "Connection",
         "http-proxy",
         "HTTP proxy",
-        "e.g. http://proxy:8080",
+        "e.g. http://proxy:8080. Also for yt-dlp.",
         Text,
     ),
     item(

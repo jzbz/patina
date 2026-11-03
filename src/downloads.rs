@@ -680,8 +680,10 @@ impl Downloads {
             )?;
             std::fs::create_dir_all(&folder)
                 .map_err(|error| format!("Could not make {}: {error}", folder.display()))?;
-            let mut command = command(&program, &request, &folder, &prefs.ytdl_raw_options);
-            log::debug!("downloading: {command:?}");
+            let raw = prefs.ytdl_raw_options_with_proxy(&prefs.ytdl_raw_options);
+            let mut command = command(&program, &request, &folder, &raw);
+            // Not the whole command: its options can hold a proxy's password.
+            log::debug!("downloading {} with {}", request.url, program.display());
             let child = command
                 .spawn()
                 .map_err(|error| format!("Could not run {}: {error}", program.display()))?;
@@ -1339,6 +1341,27 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    /// A download goes through the proxy as everything else does.
+    #[test]
+    fn downloads_go_through_the_proxy() {
+        let prefs = Preferences {
+            http_proxy: "http://user:p,w@proxy.example:8080".into(),
+            ..Default::default()
+        };
+        let args = download_args(&prefs.ytdl_raw_options_with_proxy(""));
+        let at = args.iter().position(|arg| arg == "--proxy").unwrap();
+        assert_eq!(args[at + 1], "http://user:p,w@proxy.example:8080");
+
+        let own = prefs.ytdl_raw_options_with_proxy("proxy=http://own:1,no-mtime=");
+        let args = download_args(&own);
+        let at = args.iter().position(|arg| arg == "--proxy").unwrap();
+        assert_eq!(args[at + 1], "http://own:1");
+        assert_eq!(args.iter().filter(|arg| *arg == "--proxy").count(), 1);
+
+        let none = Preferences::default().ytdl_raw_options_with_proxy("");
+        assert!(!download_args(&none).iter().any(|arg| arg == "--proxy"));
     }
 
     /// The value after each `--extractor-args`.

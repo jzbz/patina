@@ -358,6 +358,12 @@ mpv says the signed stream address, with the user's IP address in it, when
 one fails to open, so `player/mod.rs` cuts `googlevideo.com` addresses out of
 what it logs.
 
+The HTTP proxy preference also goes to yt-dlp, from mpv's hook and from
+downloads, as a `proxy` in its options, unless Patina's yt-dlp options have
+their own (`Preferences::proxy`). mpv's hook gives yt-dlp only what is in those
+options, so otherwise yt-dlp would go direct while the stream went through the
+proxy.
+
 Downloading runs yt-dlp on threads of its own (`downloads.rs`), with
 progress, post-processing and the final file printed in templates of
 Patina's, so nothing depends on the wording of yt-dlp's own output. It is

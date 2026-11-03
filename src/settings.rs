@@ -478,10 +478,59 @@ impl Preferences {
         }
         let own = if readable { own } else { "" };
         let clients = ytdl_youtube_clients(own).filter(|_| !self.ytdl_is_youtube_dl());
-        match clients {
+        let own = match clients {
             Some(clients) if own.is_empty() => format!("extractor-args=\"{clients}\""),
             Some(clients) => format!("{own},extractor-args=\"{clients}\""),
             None => own.to_owned(),
+        };
+        if readable {
+            return self.ytdl_raw_options_with_proxy(&own);
+        }
+        // A proxy among those that went still holds, as it does everywhere else
+        // (`proxy`): this must not go direct, or by another one.
+        let Some(proxy) = self.proxy() else {
+            return own;
+        };
+        let proxy = format!("proxy=%{}%{proxy}", proxy.len());
+        if own.is_empty() {
+            proxy
+        } else {
+            format!("{own},{proxy}")
+        }
+    }
+
+    /// The proxy for yt-dlp, whichever part of Patina runs it. A `proxy` in the
+    /// yt-dlp options is the more particular wish and wins, an empty one
+    /// meaning direct; otherwise it is the HTTP proxy preference. None leaves
+    /// the system's proxy settings to apply.
+    ///
+    /// mpv's hook passes yt-dlp only what is in its raw options, so without this
+    /// a proxy set for privacy would cover the stream but not yt-dlp's requests.
+    pub fn proxy(&self) -> Option<&str> {
+        let own = read_ytdl_raw_options(&self.ytdl_raw_options)
+            .into_iter()
+            .find(|(key, _)| *key == "proxy")
+            .map(|(_, value)| value.trim());
+        own.or(Some(self.http_proxy.trim()).filter(|proxy| !proxy.is_empty()))
+    }
+
+    /// yt-dlp options with the proxy preference added, unless they have their
+    /// own. The address is given with its length, as mpv reads that form
+    /// whatever the address holds, a comma or a quote among them.
+    pub fn ytdl_raw_options_with_proxy(&self, own: &str) -> String {
+        let has_own = read_ytdl_raw_options(own)
+            .iter()
+            .any(|(key, _)| *key == "proxy");
+        let proxy = self.http_proxy.trim();
+        if has_own || proxy.is_empty() {
+            return own.to_owned();
+        }
+        let own = own.trim_end().trim_end_matches(',');
+        let proxy = format!("proxy=%{}%{proxy}", proxy.len());
+        if own.is_empty() {
+            proxy
+        } else {
+            format!("{own},{proxy}")
         }
     }
 
@@ -1065,6 +1114,100 @@ mod tests {
             read_ytdl_raw_options(&raw_options_for_mpv("")),
             [("extractor-args", "youtube:player_client=visionos,default")]
         );
+    }
+
+    fn prefs_with_proxy(own: &str, proxy: &str) -> Preferences {
+        Preferences {
+            ytdl_raw_options: own.into(),
+            http_proxy: proxy.into(),
+            ..Default::default()
+        }
+    }
+
+    fn proxy_seen_by_mpv(prefs: &Preferences) -> Option<String> {
+        read_ytdl_raw_options(&prefs.ytdl_raw_options_for_mpv())
+            .into_iter()
+            .find(|(key, _)| *key == "proxy")
+            .map(|(_, value)| value.to_owned())
+    }
+
+    /// One rule for whatever runs yt-dlp: the preference, unless the yt-dlp
+    /// options name their own, and none leaves the system's to apply.
+    #[test]
+    fn the_proxy_preference_reaches_yt_dlp() {
+        let none = prefs_with_proxy("", "");
+        assert_eq!(none.proxy(), None);
+        assert_eq!(proxy_seen_by_mpv(&none), None);
+
+        let set = prefs_with_proxy("", " http://proxy.example:8080 ");
+        assert_eq!(set.proxy(), Some("http://proxy.example:8080"));
+        assert_eq!(
+            proxy_seen_by_mpv(&set).as_deref(),
+            Some("http://proxy.example:8080")
+        );
+
+        // What the user wrote for yt-dlp is the more particular wish.
+        let own = prefs_with_proxy("proxy=socks5://a:1", "http://b:2");
+        assert_eq!(own.proxy(), Some("socks5://a:1"));
+        assert_eq!(proxy_seen_by_mpv(&own).as_deref(), Some("socks5://a:1"));
+
+        // Empty means direct.
+        let direct = prefs_with_proxy("proxy=,no-mtime=", "http://b:2");
+        assert_eq!(direct.proxy(), Some(""));
+        assert_eq!(proxy_seen_by_mpv(&direct).as_deref(), Some(""));
+
+        // Other options stay, and options mpv can't read don't lose it.
+        let other = prefs_with_proxy("no-mtime=,", "http://b:2");
+        assert_eq!(
+            read_ytdl_raw_options(&other.ytdl_raw_options_for_mpv())
+                .iter()
+                .map(|(key, _)| *key)
+                .collect::<Vec<_>>(),
+            ["no-mtime", "extractor-args", "proxy"]
+        );
+        let unreadable = prefs_with_proxy("no-mtime", "http://b:2");
+        assert_eq!(
+            proxy_seen_by_mpv(&unreadable).as_deref(),
+            Some("http://b:2")
+        );
+
+        // A proxy among options mpv can't read is still the one that holds.
+        for http in ["", "http://a.example:1"] {
+            let lost = prefs_with_proxy("proxy=http://b.example:2,no-mtime", http);
+            assert_eq!(lost.proxy(), Some("http://b.example:2"));
+            assert_eq!(
+                proxy_seen_by_mpv(&lost).as_deref(),
+                Some("http://b.example:2")
+            );
+        }
+    }
+
+    /// An address holding what ends a value for mpv, read as mpv reads it.
+    #[test]
+    fn a_proxy_address_reaches_mpv_whole() {
+        let Some(mpv) = crate::mpv::testing::headless() else {
+            return;
+        };
+        for proxy in [
+            "http://proxy.example:8080",
+            "http://user:p,a=s\"s[w]@proxy.example:8080",
+            "socks5://名前:1",
+        ] {
+            for own in ["", "no-mtime=", "extractor-args=\"youtube:x=1,2\""] {
+                let raw = prefs_with_proxy(own, proxy).ytdl_raw_options_for_mpv();
+                mpv.set_property("ytdl-raw-options", raw.as_str())
+                    .unwrap_or_else(|error| panic!("{raw}: {error}"));
+                let Node::Map(seen) = mpv.get_property("ytdl-raw-options").unwrap() else {
+                    panic!("{raw}: not a map");
+                };
+                let seen = seen
+                    .iter()
+                    .find(|(key, _)| key == "proxy")
+                    .and_then(|(_, value)| value.as_str())
+                    .map(str::to_owned);
+                assert_eq!(seen.as_deref(), Some(proxy), "{raw}");
+            }
+        }
     }
 
     #[test]
