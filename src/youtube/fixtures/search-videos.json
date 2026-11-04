@@ -1,0 +1,37 @@
+{
+  "id": "bread",
+  "title": "bread",
+  "_type": "playlist",
+  "extractor": "youtube:search",
+  "entries": [
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "searchVideo",
+      "url": "https://www.youtube.com/watch?v=searchVideo",
+      "title": "A found video",
+      "description": "Some words.",
+      "duration": 1377,
+      "channel_id": "UCsomeoneelsesomeoneelse",
+      "channel": "Someone",
+      "channel_url": "https://www.youtube.com/channel/UCsomeoneelsesomeoneelse",
+      "uploader": "Someone",
+      "uploader_id": "@someone",
+      "thumbnails": [{"url": "https://i.ytimg.com/vi/searchVideo/hq720.jpg?sqp=x&rs=y", "height": 202, "width": 360}],
+      "timestamp": null,
+      "view_count": 1292750,
+      "live_status": null
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "searchLive0",
+      "url": "https://www.youtube.com/watch?v=searchLive0",
+      "title": "A found stream",
+      "channel_id": null,
+      "channel": null,
+      "uploader": "Someone Else",
+      "live_status": "is_live"
+    }
+  ]
+}

@@ -622,7 +622,10 @@ impl PreferencesController {
         };
         match key {
             "clear-history" => app.clear_history(),
-            "clear-resume" => clear(paths.watch_later_dir()),
+            "clear-resume" => {
+                clear(paths.watch_later_dir());
+                app.youtube().clear_positions();
+            }
             "clear-thumbnails" => clear(paths.thumbnail_cache_dir()),
             "clear-jellyfin-images" => {
                 self.image_usage.set(None);

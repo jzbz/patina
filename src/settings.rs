@@ -66,6 +66,22 @@ impl Paths {
         self.data.join("history.json")
     }
 
+    /// The YouTube section's lists: subscriptions, Watch Later and marks.
+    pub fn youtube_file(&self) -> PathBuf {
+        self.data.join("youtube.json")
+    }
+
+    /// The YouTube section's saved feed, which can always be fetched again.
+    pub fn youtube_feed_file(&self) -> PathBuf {
+        self.data.join("youtube-feed.json")
+    }
+
+    /// Thumbnails and channel pictures. Apart from Jellyfin's, which signing out
+    /// of a server empties.
+    pub fn youtube_images_dir(&self) -> PathBuf {
+        self.data.join("youtube-images")
+    }
+
     /// Posters and backdrops from Jellyfin servers.
     pub fn jellyfin_images_dir(&self) -> PathBuf {
         self.data.join("jellyfin").join("images")
@@ -199,6 +215,9 @@ pub struct Preferences {
     pub ytdl_quality: String,
     /// A yt-dlp format (`-f`) that takes the place of `ytdl_quality`.
     pub ytdl_format: String,
+    /// What the YouTube section plays and downloads: "screen" for up to the
+    /// screen's resolution, "best", or the tallest video to choose.
+    pub youtube_quality: String,
     pub download_dir: String,
 
     // Jellyfin.
@@ -330,6 +349,7 @@ impl Default for Preferences {
             ytdl_raw_options: String::new(),
             ytdl_quality: "best".into(),
             ytdl_format: String::new(),
+            youtube_quality: "screen".into(),
             download_dir: String::new(),
             jellyfin_skip_intro: "ask".into(),
             jellyfin_skip_outro: "ask".into(),
@@ -499,10 +519,11 @@ impl Preferences {
         }
     }
 
-    /// The proxy for yt-dlp, whichever part of Patina runs it. A `proxy` in the
-    /// yt-dlp options is the more particular wish and wins, an empty one
-    /// meaning direct; otherwise it is the HTTP proxy preference. None leaves
-    /// the system's proxy settings to apply.
+    /// The proxy for what talks to YouTube: yt-dlp, whichever part of Patina
+    /// runs it, and the YouTube section's own requests. A `proxy` in the yt-dlp
+    /// options is the more particular wish and wins, an empty one meaning
+    /// direct; otherwise it is the HTTP proxy preference. None leaves the
+    /// system's proxy settings to apply.
     ///
     /// mpv's hook passes yt-dlp only what is in its raw options, so without this
     /// a proxy set for privacy would cover the stream but not yt-dlp's requests.
@@ -512,6 +533,21 @@ impl Preferences {
             .find(|(key, _)| *key == "proxy")
             .map(|(_, value)| value.trim());
         own.or(Some(self.http_proxy.trim()).filter(|proxy| !proxy.is_empty()))
+    }
+
+    /// yt-dlp's options for what the YouTube section plays and downloads: the
+    /// clients and the proxy, and nothing of the user's. Their options or their
+    /// yt-dlp config could hold cookies, which would sign a section that has no
+    /// account in to Google.
+    pub fn ytdl_options_for_section(&self) -> String {
+        let mut options = vec!["ignore-config=".to_owned()];
+        if let Some(clients) = ytdl_youtube_clients("") {
+            options.push(format!("extractor-args=\"{clients}\""));
+        }
+        if let Some(proxy) = self.proxy() {
+            options.push(format!("proxy=%{}%{proxy}", proxy.len()));
+        }
+        options.join(",")
     }
 
     /// yt-dlp options with the proxy preference added, unless they have their
@@ -778,6 +814,10 @@ pub struct HistoryEntry {
     pub duration: f64,
     #[serde(default)]
     pub position: f64,
+    /// The YouTube section sent it, which is how it opens from here again: with
+    /// none of the user's yt-dlp options, as a section with no account keeps to.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub section: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -935,6 +975,38 @@ mod tests {
     /// Named, so that these don't depend on what this machine has installed.
     fn raw_options_for_mpv(own: &str) -> String {
         raw_options_for_mpv_with(own, "yt-dlp")
+    }
+
+    /// Whatever the user has set for other sites, the section stays signed out.
+    #[test]
+    fn the_sections_options_take_nothing_of_the_users() {
+        let prefs = Preferences {
+            ytdl_raw_options: "cookies-from-browser=firefox,no-mtime=".into(),
+            http_proxy: "http://user:p,w@proxy.example:8080".into(),
+            ..Default::default()
+        };
+        let options = prefs.ytdl_options_for_section();
+        let read = read_ytdl_raw_options(&options);
+        assert_eq!(
+            read,
+            [
+                ("ignore-config", ""),
+                ("extractor-args", "youtube:player_client=visionos,default"),
+                ("proxy", "http://user:p,w@proxy.example:8080"),
+            ]
+        );
+        assert!(read_ytdl_raw_options_checked(&options).1, "{options}");
+        // A proxy in the user's own options still says which way to go.
+        let prefs = Preferences {
+            ytdl_raw_options: "cookies=/a/b,proxy=http://own:1".into(),
+            http_proxy: "http://other:2".into(),
+            ..Default::default()
+        };
+        let options = prefs.ytdl_options_for_section();
+        assert!(!options.contains("cookies"), "{options}");
+        assert!(options.ends_with("proxy=%12%http://own:1"), "{options}");
+        let plain = Preferences::default().ytdl_options_for_section();
+        assert!(!plain.contains("proxy"), "{plain}");
     }
 
     #[test]
@@ -1131,8 +1203,8 @@ mod tests {
             .map(|(_, value)| value.to_owned())
     }
 
-    /// One rule for whatever runs yt-dlp: the preference, unless the yt-dlp
-    /// options name their own, and none leaves the system's to apply.
+    /// One rule for all that talks to YouTube: the preference, unless the
+    /// yt-dlp options name their own, and none leaves the system's to apply.
     #[test]
     fn the_proxy_preference_reaches_yt_dlp() {
         let none = prefs_with_proxy("", "");
@@ -1210,6 +1282,50 @@ mod tests {
         }
     }
 
+    /// mpv reads the section's options as they are meant, whatever the proxy
+    /// holds, and the hook then passes them on as they are read.
+    #[test]
+    fn the_sections_options_reach_mpv_whole() {
+        let Some(mpv) = crate::mpv::testing::headless() else {
+            return;
+        };
+        let prefs = prefs_with_proxy("cookies=/a/b", "http://user:p,a=s\"s[w]@proxy.example:8080");
+        let raw = prefs.ytdl_options_for_section();
+        mpv.set_property("ytdl-raw-options", raw.as_str())
+            .unwrap_or_else(|error| panic!("{raw}: {error}"));
+        let Node::Map(seen) = mpv.get_property("ytdl-raw-options").unwrap() else {
+            panic!("{raw}: not a map");
+        };
+        let value = |name: &str| {
+            seen.iter()
+                .find(|(key, _)| key == name)
+                .and_then(|(_, value)| value.as_str())
+        };
+        assert_eq!(seen.len(), 3, "{raw}");
+        assert_eq!(value("ignore-config"), Some(""));
+        assert_eq!(
+            value("extractor-args"),
+            Some("youtube:player_client=visionos,default")
+        );
+        assert_eq!(
+            value("proxy"),
+            Some("http://user:p,a=s\"s[w]@proxy.example:8080")
+        );
+    }
+
+    /// A plain entry reads and writes as it always has, and a video the YouTube
+    /// section sent stays that way across a restart.
+    #[test]
+    fn history_remembers_what_the_section_sent() {
+        let plain = r#"{"path":"a","title":"A","played_at":1,"duration":0.0,"position":0.0}"#;
+        let mut entry: HistoryEntry = serde_json::from_str(plain).unwrap();
+        assert!(!entry.section);
+        assert_eq!(serde_json::to_string(&entry).unwrap(), plain);
+        entry.section = true;
+        let text = serde_json::to_string(&entry).unwrap();
+        assert!(serde_json::from_str::<HistoryEntry>(&text).unwrap().section);
+    }
+
     #[test]
     fn history_keeps_one_entry_per_file_newest_first() {
         let mut history = History::default();
@@ -1219,6 +1335,7 @@ mod tests {
             played_at,
             duration: 0.0,
             position: 0.0,
+            section: false,
         };
         history.record(entry("a", 1));
         history.record(entry("b", 2));

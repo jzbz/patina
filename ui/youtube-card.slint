@@ -1,0 +1,500 @@
+// A video's card and a channel's row, and what the YouTube section's pages
+// share. Rust's controller fills them (src/youtube/view.rs).
+
+import { Theme } from "theme.slint";
+import { IconButton, TextButton } from "widgets.slint";
+import { YouTube, YouTubeCard, YouTubeChannel } from "youtube-model.slint";
+import { LibraryUi, Artwork, Avatar, Badge, KeyFocus, PlayOverlay, ProgressStrip } from "library-parts.slint";
+
+export global YouTubeUi {
+    // The title's two lines, the channel's and the facts'.
+    out property <length> caption-height: 76px;
+    out property <length> heading-height: 34px;
+    out property <length> channel-height: 66px;
+
+    // Goes to a page of the bar or a channel's. The controller saves where
+    // the page it leaves was scrolled to while it handles the call; the page
+    // it opens starts at the top.
+    public function navigate(id: string) {
+        YouTube.navigate(id);
+        YouTube.scroll-offset = 0;
+    }
+
+    public function open-channel(id: string) {
+        YouTube.open-channel(id);
+        YouTube.scroll-offset = 0;
+    }
+
+    // As LibraryUi's of the same names, for YouTube.scroll-offset: a list
+    // goes as far down as that says or its content reaches so far, and
+    // records where it is only once it has got there.
+    public pure function place(content-height: length, visible-height: length) -> length {
+        return -min(YouTube.scroll-offset, max(0px, content-height - visible-height));
+    }
+
+    public pure function placed(content-y: length, content-height: length, visible-height: length) -> bool {
+        return abs(content-y - self.place(content-height, visible-height)) <= 1px;
+    }
+
+    public pure function reached(content-y: length, content-height: length, visible-height: length) -> bool {
+        return self.placed(content-y, content-height, visible-height) && -content-y >= YouTube.scroll-offset - 1px;
+    }
+}
+
+// A small plate over a card's image, for a word or a length.
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <color> plate: #000000c8;
+    width: label.preferred-width + 10px;
+    height: 18px;
+    border-radius: 4px;
+    background: root.plate;
+    label := Text {
+        text: root.text;
+        color: Theme.accent-text;
+        font-size: Theme.font-small;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+}
+
+// A button over a card's image, on a plate so that it shows on any picture.
+component ImageAction inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: touch.pressed ? #2368d0 : touch.has-hover || root.active ? Theme.accent : #000000b0;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    Image {
+        source: root.icon;
+        width: 15px;
+        height: 15px;
+        colorize: white;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+    }
+}
+
+// A video: its picture, title, channel and facts. A click plays it, as there
+// is no more to see of it than this. Right-clicking or the … button offers the
+// rest. From the keyboard, Tab reaches it, Enter or Space plays it, and the
+// Menu key opens its menu.
+export component VideoCard inherits Rectangle {
+    in property <YouTubeCard> card;
+    property <length> image-height: root.width * 9 / 16;
+    // Marked as hovered while the pointer is on it, and while its menu is
+    // open, so that a menu drawn over the next card is seen to be this one's.
+    property <bool> marked: touch.has-hover || (LibraryUi.menu-card == root.card.id && root.card.id != "");
+
+    height: root.image-height + YouTubeUi.caption-height;
+    accessible-role: button;
+    accessible-label: root.card.title;
+    accessible-description: root.card.channel + ", " + root.card.facts + (root.card.watched ? ", watched" : "");
+    accessible-action-default => {
+        root.play();
+    }
+
+    function play() {
+        if !repeat-guard.running {
+            repeat-guard.running = true;
+            YouTube.play(root.card.id);
+        }
+    }
+
+    function show-menu(x: length, y: length) {
+        LibraryUi.menu-card = root.card.id;
+        menu.show({ x: x, y: y });
+    }
+
+    // So that a double-click plays it once.
+    repeat-guard := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+        }
+    }
+
+    keys := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if LibraryUi.presses(event) {
+                root.play();
+                return accept;
+            }
+            if event.text == Key.Menu {
+                root.show-menu(8px, root.image-height / 2);
+                return accept;
+            }
+            reject
+        }
+        focus-gained => {
+            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height);
+        }
+    }
+
+    touch := TouchArea {
+        // A menu says nothing when it closes without a choice; the pointer
+        // coming back to a card says it has.
+        changed has-hover => {
+            if self.has-hover {
+                LibraryUi.menu-card = "";
+            }
+        }
+        clicked => {
+            root.play();
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.show-menu(self.mouse-x, self.mouse-y);
+            }
+            LibraryUi.pointer(event);
+        }
+
+        Artwork {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: root.image-height;
+            border-radius: Theme.panel-radius;
+            source: root.card.image;
+            kind: "video";
+            aspect: 16 / 9;
+
+            if root.card.progress >= 0 && !root.card.watched: ProgressStrip {
+                y: parent.height - self.height;
+                value: root.card.progress;
+            }
+            if root.marked: Rectangle {
+                background: #ffffff0f;
+            }
+        }
+
+        // The hover ring, outside the image's clip; the keyboard's focus
+        // draws it in the accent colour.
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: root.image-height;
+            border-radius: Theme.panel-radius;
+            border-width: keys.has-focus ? 3px : 2px;
+            border-color: keys.has-focus ? Theme.accent : root.marked ? #ffffffb8 : transparent;
+            animate border-color { duration: 120ms; }
+        }
+
+        if root.card.live == "live": Pill {
+            x: 6px;
+            y: 6px;
+            text: "LIVE";
+            plate: #d32f2f;
+        }
+        if root.card.live == "upcoming": Pill {
+            x: 6px;
+            y: 6px;
+            text: "Upcoming";
+            plate: Theme.accent;
+        }
+        if root.card.shorts && root.card.live == "": Pill {
+            x: 6px;
+            y: 6px;
+            text: "Short";
+        }
+
+        Badge {
+            x: 6px;
+            y: root.image-height - self.height - 8px;
+            played: root.card.watched;
+        }
+        if root.card.downloaded: Rectangle {
+            x: root.card.watched ? 30px : 6px;
+            y: root.image-height - self.height - 8px;
+            width: 20px;
+            height: 20px;
+            border-radius: 10px;
+            background: #000000c8;
+            Image {
+                source: @image-url("icons/download.svg");
+                width: 12px;
+                height: 12px;
+                colorize: Theme.playing;
+            }
+        }
+        if root.card.duration != "": Pill {
+            x: parent.width - self.width - 6px;
+            y: root.image-height - self.height - 8px;
+            text: root.card.duration;
+        }
+
+        if touch.has-hover: PlayOverlay {
+            x: (parent.width - self.width) / 2;
+            y: (root.image-height - self.height) / 2;
+            label: "Play " + root.card.title;
+            clicked => {
+                root.play();
+            }
+            menu(x, y) => {
+                root.show-menu(self.x + x, self.y + y);
+            }
+        }
+
+        // Kept in sight once on, so that saved videos can be told from others
+        // without the pointer.
+        if touch.has-hover || root.card.saved: ImageAction {
+            x: parent.width - self.width - 6px;
+            y: 6px;
+            icon: @image-url("icons/clock.svg");
+            active: root.card.saved;
+            label: root.card.saved ? "Remove from Watch Later" : "Save to Watch Later";
+            clicked => {
+                YouTube.set-saved(root.card.id, !root.card.saved);
+            }
+        }
+        if touch.has-hover && !root.card.downloaded && root.card.live == "": ImageAction {
+            x: parent.width - self.width - 38px;
+            y: 6px;
+            icon: @image-url("icons/download.svg");
+            label: "Download";
+            clicked => {
+                YouTube.download(root.card.id);
+            }
+        }
+
+        // The longest titles run to the end of this, cut short there.
+        Text {
+            x: 0;
+            y: root.image-height + 6px;
+            width: parent.width;
+            height: 36px;
+            text: root.card.title;
+            color: root.marked || keys.has-focus ? Theme.icon-hover : Theme.text;
+            font-size: Theme.font-normal;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        channel-touch := TouchArea {
+            x: 0;
+            y: root.image-height + 42px;
+            width: parent.width - 28px;
+            height: 16px;
+            enabled: root.card.channel-id != "";
+            mouse-cursor: self.enabled ? pointer : default;
+            clicked => {
+                YouTubeUi.open-channel(root.card.channel-id);
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                    root.show-menu(self.x + self.mouse-x, self.y + self.mouse-y);
+                }
+                LibraryUi.pointer(event);
+            }
+            Text {
+                x: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.card.channel;
+                color: channel-touch.has-hover && channel-touch.enabled ? Theme.text : Theme.secondary-text;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+        Text {
+            x: 0;
+            y: root.image-height + 58px;
+            width: parent.width - 28px;
+            height: 15px;
+            text: root.card.facts;
+            color: Theme.tertiary-text;
+            font-size: Theme.font-small;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        IconButton {
+            x: parent.width - self.width + 4px;
+            y: root.image-height + 44px;
+            icon: @image-url("icons/ellipsis.svg");
+            icon-size: 16px;
+            hover-background: true;
+            tooltip: "More for " + root.card.title;
+            clicked => {
+                root.show-menu(self.x, self.y + self.height);
+            }
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            MenuItem {
+                title: "Play";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    root.play();
+                }
+            }
+            MenuItem {
+                title: "Play From Here";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    YouTube.play-from(root.card.id);
+                }
+            }
+            MenuItem {
+                title: root.card.saved ? "Remove from Watch Later" : "Save to Watch Later";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    YouTube.set-saved(root.card.id, !root.card.saved);
+                }
+            }
+            if !root.card.downloaded && root.card.live == "": MenuItem {
+                title: "Download";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    YouTube.download(root.card.id);
+                }
+            }
+            if root.card.downloaded: MenuItem {
+                title: "Move Download to Trash";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    YouTube.remove-download(root.card.id);
+                }
+            }
+            MenuItem {
+                title: root.card.watched ? "Mark as Unwatched" : "Mark as Watched";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    YouTube.set-watched(root.card.id, !root.card.watched);
+                }
+            }
+            if root.card.channel-id != "": MenuSeparator { }
+            if root.card.channel-id != "": MenuItem {
+                title: "Go to Channel";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    YouTubeUi.open-channel(root.card.channel-id);
+                }
+            }
+        }
+    }
+}
+
+// Subscribe or Unsubscribe, the keyboard reaching it too.
+export component SubscribeButton inherits Rectangle {
+    in property <string> id;
+    in property <bool> subscribed;
+    height: 28px;
+    width: button.min-width;
+    accessible-role: none;
+
+    KeyFocus {
+        activated => {
+            YouTube.set-subscribed(root.id, !root.subscribed);
+        }
+    }
+    button := TextButton {
+        width: parent.width;
+        text: root.subscribed ? "Unsubscribe" : "Subscribe";
+        primary: !root.subscribed;
+        clicked => {
+            YouTube.set-subscribed(root.id, !root.subscribed);
+        }
+    }
+}
+
+// A channel: its name, who it is, how its last update went, and a way to
+// subscribe or stop. A click opens its page.
+export component ChannelRow inherits Rectangle {
+    in property <YouTubeChannel> channel;
+    height: YouTubeUi.channel-height - 6px;
+    border-radius: Theme.control-radius;
+    background: touch.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.channel.title;
+    accessible-description: root.channel.detail + " " + root.channel.state + " " + root.channel.failure;
+    accessible-action-default => {
+        YouTubeUi.open-channel(root.channel.id);
+    }
+
+    KeyFocus {
+        activated => {
+            YouTubeUi.open-channel(root.channel.id);
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            YouTubeUi.open-channel(root.channel.id);
+        }
+        pointer-event(event) => {
+            LibraryUi.pointer(event);
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 12px;
+        alignment: stretch;
+        VerticalLayout {
+            alignment: center;
+            Avatar {
+                size: 40px;
+                source: root.channel.image;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 1px;
+            min-width: 0px;
+            Text {
+                text: root.channel.title;
+                color: Theme.text;
+                font-size: Theme.font-normal;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.channel.detail;
+                color: Theme.secondary-text;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+            // One line, so that the rows don't change height as a refresh
+            // goes along. What failed is the more use.
+            Text {
+                text: root.channel.failure != "" ? root.channel.failure : root.channel.state;
+                color: root.channel.failure != "" ? Theme.danger : Theme.tertiary-text;
+                font-size: Theme.font-small;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            SubscribeButton {
+                id: root.channel.id;
+                subscribed: root.channel.subscribed;
+            }
+        }
+    }
+}

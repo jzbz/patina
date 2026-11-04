@@ -6,6 +6,7 @@ import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
 import { LibraryUi } from "library-parts.slint";
 import { LibraryView, Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn } from "library.slint";
+import { YouTubeView, YouTube, YouTubeCard, YouTubeChannel, YouTubeLine } from "youtube.slint";
 import { MusicPanel, MusicWindowButtons, DefaultArt } from "music.slint";
 import { PromptDialog, ConfirmDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog, DialogSize } from "dialogs.slint";
 import { Spinner, IconButton, TextButton, Toast, ToastView } from "widgets.slint";
@@ -15,6 +16,7 @@ import { DownloadsWindow, DownloadRow } from "downloads.slint";
 import { InspectorWindow, InspectorRow } from "inspector.slint";
 
 export { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn }
+export { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine }
 export { Theme, Platform, Playback, Media, Osd, Toast, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, LyricItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
 
 export component PlayerWindow inherits Window {
@@ -50,9 +52,9 @@ export component PlayerWindow inherits Window {
     in-out property <string> sidebar-tab: "playlist";
     in-out property <bool> controls-visible: true;
     in-out property <bool> drop-active;
-    // The library shows, and with it the window's messages as a toast at
-    // the bottom.
-    property <bool> library-notices: Library.shown && !Playback.has-media;
+    // The library or the YouTube section shows, and with it the window's
+    // messages as a toast at the bottom.
+    property <bool> library-notices: (Library.shown || YouTube.shown) && !Playback.has-media;
     // "", "open-url", "add-url", "jump-to", "about", "shortcuts",
     // "online-subtitles".
     in-out property <string> dialog;
@@ -79,8 +81,11 @@ export component PlayerWindow inherits Window {
     // A file is open: the library and the welcome view have gone, with the
     // keyboard's focus if one of them had it.
     property <bool> media-open: Playback.has-media;
+    // The YouTube section is on screen, in the place of the welcome screen and
+    // the library, which comes back as it was when the section is left.
+    property <bool> youtube-open: !Playback.has-media && !root.music-mode && YouTube.shown;
     // The library is on screen, in the welcome screen's place.
-    property <bool> library-open: !Playback.has-media && !root.music-mode && Library.shown;
+    property <bool> library-open: !Playback.has-media && !root.music-mode && Library.shown && !YouTube.shown;
     // A Jellyfin item's intro, credits or the like plays (Playback.skip-label).
     // The button shows for a few seconds as the span begins, and again with
     // the controller or a key: in a small window it would sit over the
@@ -193,6 +198,8 @@ export component PlayerWindow inherits Window {
         MenuMedia.audio-qualities = Media.audio-qualities;
         MenuMedia.video-versions = Media.video-versions;
         MenuMedia.online = Media.online;
+        MenuMedia.youtube-video = Media.youtube-video;
+        MenuMedia.on-watch-later = Media.on-watch-later;
         MenuMedia.downloaded-subtitle = Media.downloaded-subtitle;
         menu.show({ x: x, y: y });
     }
@@ -325,7 +332,14 @@ export component PlayerWindow inherits Window {
     // hides the library gives the focus back to it as the menu closes,
     // before it goes; this runs once it has gone.
     changed library-open => {
-        if !self.library-open && root.dialog == "" {
+        if !self.library-open && !root.youtube-open && root.dialog == "" {
+            keys.focus();
+        }
+    }
+    // And when the YouTube section goes, for the same reason. Going to or
+    // from the library, the view that comes takes the focus itself.
+    changed youtube-open => {
+        if !self.youtube-open && !root.library-open && root.dialog == "" {
             keys.focus();
         }
     }
@@ -362,6 +376,12 @@ export component PlayerWindow inherits Window {
                 title: "Open Folder…";
                 activated => {
                     Actions.patina("open-folder");
+                }
+            }
+            MenuItem {
+                title: "YouTube";
+                activated => {
+                    Actions.patina("youtube");
                 }
             }
             MenuItem {
@@ -427,6 +447,13 @@ export component PlayerWindow inherits Window {
                 enabled: Media.online;
                 activated => {
                     Actions.patina("download-video");
+                }
+            }
+            MenuItem {
+                title: Media.on-watch-later ? "Remove from Watch Later" : "Save to Watch Later";
+                enabled: Media.youtube-video;
+                activated => {
+                    Actions.patina("toggle-watch-later");
                 }
             }
             MenuItem {
@@ -1177,7 +1204,7 @@ export component PlayerWindow inherits Window {
             // Over the area above, which would otherwise take every click
             // meant for its buttons: what the welcome screen doesn't take
             // itself still reaches it, to move the window or open the menu.
-            if !Playback.has-media && !root.music-mode && !Library.shown: WelcomeView {
+            if !Playback.has-media && !root.music-mode && !Library.shown && !YouTube.shown: WelcomeView {
                 width: parent.width;
                 height: parent.height;
                 drop-active: root.drop-active;
@@ -1196,6 +1223,13 @@ export component PlayerWindow inherits Window {
                 clear-recent => {
                     root.dialog = "clear-recent";
                 }
+            }
+
+            if root.youtube-open: YouTubeView {
+                width: parent.width;
+                height: parent.height;
+                drop-active: root.drop-active;
+                covered: root.dialog != "";
             }
         }
 
@@ -1511,7 +1545,7 @@ export component PlayerWindow inherits Window {
         // Recent is the newest of the history, so this clears all of it.
         if root.dialog == "clear-recent": ConfirmDialog {
             title: "Clear History";
-            message: "Every file goes from Recent and from the History window. Saved playback positions are kept.";
+            message: "Every file goes from Recent and from the History window, and YouTube videos lose their watched marks and progress. Saved playback positions are kept.";
             confirm-label: "Clear";
             cancel => {
                 root.dialog = "";

@@ -140,6 +140,14 @@ export component WelcomeView inherits Rectangle {
                             Actions.patina("open-url");
                         }
                     }
+                    WelcomeAction {
+                        icon: @image-url("icons/list-video.svg");
+                        title: "YouTube";
+                        detail: "Your channels, search and Watch Later";
+                        clicked => {
+                            Actions.patina("youtube");
+                        }
+                    }
                     // The servers signed in to, and those asking to be signed
                     // in to again: each opens its library, which is never where
                     // Patina starts.

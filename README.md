@@ -85,9 +85,29 @@ and its state in Patina.
   episode lined up, intros and credits skipped where the server marks
   them, its previews in the seek bar, and its files to download
   ([docs/jellyfin.md](docs/jellyfin.md))
+- A YouTube section, with no account and no sign-in: a feed of the channels
+  you follow, search, a Watch Later list and downloads. The lists are
+  Patina's own and don't appear on YouTube; they import from and export to
+  the files of Google's data export
+  ([docs/youtube.md](docs/youtube.md))
 
 Written but not yet tested: drag and drop, playing from standard input,
 saving playlists, and pausing when minimized.
+
+### The YouTube section and your privacy
+
+Having no account doesn't make the section invisible to Google. Nothing goes
+until you open it, but opening it asks YouTube about each channel you follow
+(if the last check is over 30 minutes old) and fetches thumbnails, so Google
+can see your network address and which channels you follow, along with what
+you search for and play. The HTTP proxy preference covers all of it, and
+nothing goes direct if a proxy can't be used. Nothing goes to the developer,
+and watched marks stay on your computer.
+
+YouTube's terms bar downloading and automated access, which this section does
+through yt-dlp. That's stated here as a fact and not as legal advice: using
+it is your choice. [docs/youtube.md](docs/youtube.md) says what each request
+carries.
 
 ## Installing
 
@@ -127,7 +147,9 @@ carries:
   costs CPU; `PATINA_RENDERER=software` asks for it
 - For online video, yt-dlp (and for YouTube, a JavaScript runtime such as
   Deno, which yt-dlp finds by itself); downloads that join separate video
-  and audio need ffmpeg
+  and audio need ffmpeg. The YouTube section needs yt-dlp too, to search,
+  play and download. The Flatpak carries it; the macOS and Windows packages
+  don't yet, so there you install it yourself
 
 Patina loads libmpv when it starts rather than linking to it, so building
 needs no mpv development files. It looks for the library beside the
@@ -227,6 +249,9 @@ drag the controller to move it.
 - In the data folder, `jellyfin.json` lists the Jellyfin servers you've
   added, and `jellyfin/images` caches their posters; the sign-ins
   themselves stay in the system's password store.
+- Also there, `youtube.json` holds the YouTube section's lists and watched
+  marks, `youtube-feed.json` its saved feed, and `youtube-images` its
+  thumbnails.
 
 `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` override the locations.
 
@@ -251,8 +276,8 @@ cargo fmt
 
 ## License
 
-MIT. Patina is an independent project, not affiliated with IINA, and
-contains no IINA code or artwork. mpv, FFmpeg, Slint and the other
+MIT. Patina is an independent project, not affiliated with IINA, YouTube or
+Google, and contains no IINA code or artwork. mpv, FFmpeg, Slint and the other
 dependencies keep their own licenses; note that mpv is GPL-licensed by
 default, which applies to builds that bundle it. The icons, the logo's
 glyph included, are [Lucide](https://lucide.dev)'s, under the ISC license

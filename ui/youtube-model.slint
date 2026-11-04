@@ -1,0 +1,146 @@
+// The YouTube section's data: what Rust's controller (src/youtube/view.rs) puts
+// in the YouTube global and the callbacks it answers. It lives apart from
+// youtube.slint so that the pieces the library shares can read it too, without
+// the files importing each other.
+
+// A video in a grid.
+export struct YouTubeCard {
+    id: string,
+    title: string,
+    channel: string,
+    // Empty when nothing has said which channel it is.
+    channel-id: string,
+    // "3 days ago · 12K views"
+    facts: string,
+    // "12:34"; empty for a live stream, or when nothing has said.
+    duration: string,
+    image: image,
+    // How much has been seen, 0 to 1; negative when nothing has.
+    progress: float,
+    watched: bool,
+    // live, upcoming, or empty.
+    live: string,
+    // A Short. The feed and search leave these out unless asked, while Watch
+    // Later keeps what was put on it.
+    shorts: bool,
+    // On Watch Later.
+    saved: bool,
+    downloaded: bool,
+}
+
+// A channel in a list: a subscription, or one found by a search.
+export struct YouTubeChannel {
+    id: string,
+    title: string,
+    // "@handle · 12K subscribers"
+    detail: string,
+    // When it last answered: "Updated 3 hours ago". Empty when it isn't
+    // subscribed to, since then nothing asks it.
+    state: string,
+    // What went wrong the last time it was asked, named.
+    failure: string,
+    image: image,
+    subscribed: bool,
+}
+
+// A line of a page's list. Every page's list is made of these.
+export struct YouTubeLine {
+    id: string,
+    // heading, videos, or channel
+    kind: string,
+    // A heading's words.
+    title: string,
+    channel: YouTubeChannel,
+    // As many videos as a line holds.
+    cards: [YouTubeCard],
+}
+
+export global YouTube {
+    // Shown in place of the welcome screen and the library.
+    in property <bool> shown;
+    // feed, search, saved, channels, channel
+    in property <string> page;
+    // The bar's entry that shows as current. A channel's page keeps the one
+    // it was reached from.
+    in property <string> nav-current;
+    // Back would leave for the welcome screen: this is the first page.
+    in property <bool> at-root;
+    // Something on this page is on its way, and the list has nothing to show
+    // for it yet.
+    in property <bool> loading;
+    // Why this page's content didn't come (a search, a channel's page), in
+    // place of it, or beside what was saved of it.
+    in property <string> error;
+    // A message for all pages, under the bar.
+    in property <string> banner;
+    // It can be dismissed, and isn't a problem that stays until fixed.
+    in property <bool> banner-dismissable;
+
+    in property <[YouTubeLine]> lines;
+    // What the page says when its list is empty, and whether that is a page
+    // that offers adding channels or importing.
+    in property <string> empty-text;
+    in property <bool> empty-offers-channels;
+    in property <bool> empty-offers-import;
+
+    // How far the page on show is scrolled, as Library.scroll-offset is: the
+    // view sets it as the user scrolls, and a page goes where it says as its
+    // content arrives. The controller keeps it with each page it stacks.
+    in-out property <length> scroll-offset;
+    // Counts the times a page was shown or loaded again. Each time, its list
+    // stops recording where it is until it has gone where scroll-offset says.
+    in property <int> loads;
+
+    // The feed's line under the bar: when it was last updated, or how far an
+    // update is.
+    in property <string> status;
+    in property <bool> refreshing;
+    in property <bool> show-shorts;
+
+    in-out property <string> search-text;
+
+    // The field for adding a channel, and what became of the last try.
+    in-out property <string> channel-text;
+    in property <bool> adding;
+    in property <string> add-message;
+    // The Channels page takes its field's focus as it shows.
+    in-out property <bool> wants-field;
+    // How many, and the note that they are Patina's own.
+    in property <string> list-note;
+    // yt-dlp's version and age.
+    in property <string> tool-note;
+
+    // The channel whose page is on show.
+    in property <YouTubeChannel> channel;
+
+    // The list's width allows this many cards a line, each this wide.
+    callback layout(int, length);
+    // The lines in sight, first and last: only those near them keep images.
+    callback lines-shown(int, int);
+    callback navigate(string);
+    // Back a page, or at the first page to the welcome screen.
+    callback back();
+    // This video by itself.
+    callback play(string);
+    // The page's list in its order, from this video.
+    callback play-from(string);
+    // The page's list from its first.
+    callback play-all();
+    // Video id; on Watch Later or off it.
+    callback set-saved(string, bool);
+    callback download(string);
+    // Its file goes to the trash.
+    callback remove-download(string);
+    callback set-watched(string, bool);
+    callback open-channel(string);
+    callback set-subscribed(string, bool);
+    callback set-shorts(bool);
+    callback refresh();
+    callback search(string);
+    callback add-channel(string);
+    callback import();
+    // subscriptions or watch-later
+    callback export(string);
+    callback retry();
+    callback dismiss-banner();
+}

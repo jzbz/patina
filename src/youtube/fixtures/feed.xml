@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+ <link rel="self" href="http://www.youtube.com/feeds/videos.xml?channel_id=UCfixturefixturefixture0"/>
+ <id>yt:channel:fixturefixturefixture0</id>
+ <yt:channelId>fixturefixturefixture0</yt:channelId>
+ <title>Fixture Channel</title>
+ <link rel="alternate" href="https://www.youtube.com/channel/UCfixturefixturefixture0"/>
+ <author>
+  <name>Fixture Channel</name>
+  <uri>https://www.youtube.com/channel/UCfixturefixturefixture0</uri>
+ </author>
+ <published>2008-06-03T18:44:30+00:00</published>
+ <entry>
+  <id>yt:video:-ideoFixtur</id>
+  <yt:videoId>-ideoFixtur</yt:videoId>
+  <yt:channelId>UCfixturefixturefixture0</yt:channelId>
+  <title>A video, with a comma &amp; an entity</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=-ideoFixtur"/>
+  <author>
+   <name>Fixture Channel</name>
+   <uri>https://www.youtube.com/channel/UCfixturefixturefixture0</uri>
+  </author>
+  <published>2026-11-02T04:40:00+00:00</published>
+  <updated>2026-11-02T20:50:06+00:00</updated>
+  <media:group>
+   <media:title>A video, with a comma &amp; an entity</media:title>
+   <media:content url="https://www.youtube.com/v/-ideoFixtur?version=3" type="application/x-shockwave-flash" width="640" height="390"/>
+   <media:thumbnail url="https://i2.ytimg.com/vi/-ideoFixtur/hqdefault.jpg" width="480" height="360"/>
+   <media:description>A description, which is not kept.</media:description>
+   <media:community>
+    <media:starRating count="20" average="5.00" min="1" max="5"/>
+    <media:statistics views="1234"/>
+   </media:community>
+  </media:group>
+ </entry>
+ <entry>
+  <id>yt:video:shortFixtur</id>
+  <yt:videoId>shortFixtur</yt:videoId>
+  <yt:channelId>UCfixturefixturefixture0</yt:channelId>
+  <title>A short</title>
+  <link rel="alternate" href="https://www.youtube.com/shorts/shortFixtur"/>
+  <published>2026-11-01T10:00:00+00:00</published>
+  <media:group>
+   <media:community>
+    <media:statistics views="0"/>
+   </media:community>
+  </media:group>
+ </entry>
+ <entry>
+  <yt:videoId>bad/id</yt:videoId>
+  <yt:channelId>UCfixturefixturefixture0</yt:channelId>
+  <title>A bad id</title>
+  <published>2026-11-01T09:00:00+00:00</published>
+ </entry>
+ <entry>
+  <yt:videoId>otherChanne</yt:videoId>
+  <yt:channelId>UCsomeoneelsesomeoneelse</yt:channelId>
+  <title>Someone else's</title>
+  <published>2026-11-01T08:00:00+00:00</published>
+ </entry>
+ <entry>
+  <yt:videoId>noChannelIs</yt:videoId>
+  <title>No channel at all</title>
+ </entry>
+ <entry>
+  <yt:videoId>oldFixtureV</yt:videoId>
+  <yt:channelId>UCfixturefixturefixture0</yt:channelId>
+  <title>Bad date and count</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=oldFixtureV"/>
+  <published>sometime last year</published>
+  <media:group>
+   <media:community>
+    <media:statistics views="lots"/>
+   </media:community>
+  </media:group>
+ </entry>
+</feed>

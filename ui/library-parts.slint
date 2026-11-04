@@ -5,6 +5,7 @@ import { LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton, TextButton } from "widgets.slint";
 import { Library, LibraryCard, LibraryRow, LibraryChoice } from "library-model.slint";
+import { YouTube } from "youtube-model.slint";
 
 // What the view knows about the kinds of item (LibraryCard.kind) and the
 // metrics its pages share.
@@ -153,10 +154,16 @@ export global LibraryUi {
     }
 
     // The mouse's back button, which every pointer handler in the library
-    // passes on, since the area that takes a press keeps it.
+    // and the YouTube section passes on, since the area that takes a press
+    // keeps it. The section shows over a library that keeps its pages, which
+    // the button mustn't take from it unseen.
     public function pointer(event: PointerEvent) {
-        if event.kind == PointerEventKind.down && event.button == PointerEventButton.back && Library.can-go-back {
-            Library.back();
+        if event.kind == PointerEventKind.down && event.button == PointerEventButton.back {
+            if YouTube.shown {
+                YouTube.back();
+            } else if Library.can-go-back {
+                Library.back();
+            }
         }
     }
 }
@@ -224,8 +231,8 @@ export component KeyFocus inherits FocusScope {
     }
 }
 
-// A field on a page of the library, which goes on being typed in after a menu
-// or a dialog (LibraryUi.typing).
+// A field on a page of the library or the YouTube section, which goes on being
+// typed in after a menu or a dialog (LibraryUi.typing).
 export component PageField inherits LineEdit {
     // A dialog over the view has the keyboard, which the field leaves it.
     in property <bool> covered;
@@ -1135,7 +1142,7 @@ export component Notice inherits VerticalLayout {
     HorizontalLayout {
         alignment: center;
         Text {
-            max-width: 420px;
+            max-width: min(420px, root.width - 32px);
             text: root.text;
             color: Theme.secondary-text;
             font-size: Theme.font-normal;

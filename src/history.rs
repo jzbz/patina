@@ -396,6 +396,7 @@ mod tests {
             played_at: played_at.timestamp().as_second() as u64,
             duration,
             position,
+            section: false,
         }
     }
 

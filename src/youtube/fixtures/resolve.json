@@ -1,0 +1,17 @@
+{
+  "id": "UCfixturefixturefixture0",
+  "channel": "Fixture Channel",
+  "channel_id": "UCfixturefixturefixture0",
+  "title": "Fixture Channel - Videos",
+  "channel_follower_count": 15100000,
+  "thumbnails": [
+    {"url": "https://yt3.googleusercontent.com/picture=s900-c-k-c0x00ffffff-no-rj", "height": 900, "width": 900, "id": "7", "resolution": "900x900"},
+    {"url": "https://yt3.googleusercontent.com/picture=s0", "id": "avatar_uncropped", "preference": 1}
+  ],
+  "uploader_id": "@fixture",
+  "uploader": "Fixture Channel",
+  "_type": "playlist",
+  "entries": [],
+  "requested_entries": [],
+  "webpage_url": "https://www.youtube.com/@fixture/videos"
+}

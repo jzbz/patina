@@ -21,6 +21,12 @@ struct Info {
     #[serde(default)]
     format_id: Option<String>,
     #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    channel_id: Option<String>,
+    #[serde(default)]
+    is_live: Option<bool>,
+    #[serde(default)]
     formats: Option<Vec<Format>>,
     #[serde(default)]
     requested_formats: Option<Vec<Format>>,
@@ -130,6 +136,11 @@ pub struct Media {
     /// yt-dlp's format ids for what is playing ("401+258"), to download
     /// the same.
     pub format_id: Option<String>,
+    /// Who it is by, as the site says, for keeping it on a list.
+    pub channel: Option<String>,
+    pub channel_id: Option<String>,
+    /// A live stream, whose end moves on with it.
+    pub live: bool,
 }
 
 impl Media {
@@ -186,6 +197,9 @@ impl Media {
             playing_video,
             playing_audio,
             format_id: info.format_id,
+            channel: info.channel,
+            channel_id: info.channel_id,
+            live: info.is_live == Some(true),
         })
     }
 

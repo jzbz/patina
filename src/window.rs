@@ -7,7 +7,7 @@ use crate::jellyfin::models::StreamKind;
 use crate::jellyfin::playback::{self, Playing, Report};
 use crate::jellyfin::segments::{self, Segments, Span};
 use crate::jellyfin::{session, trickplay};
-use crate::mpv::{EndFileReason, Event, Mpv};
+use crate::mpv::{EndFileReason, Event, Mpv, Secret};
 use crate::opensubtitles;
 use crate::player::state::{
     AudioStatus, PlaybackState, PlaylistEntry, Track, TrackKind, file_name,
@@ -17,11 +17,13 @@ use crate::settings::ResizeWindow;
 use crate::subtitle_match;
 use crate::thumbnails;
 use crate::util::{self, format_delay, format_speed, format_time};
+use crate::youtube::VideoId;
+use crate::youtube::playing::{self, Sitting};
 use crate::ytdl;
 use crate::{
     Actions, ChapterItem, DeviceItem, Library, LyricItem, Media, OnlineSubs, OnlineSubtitle, Osd,
     Platform, Playback, PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem,
-    Theme, TrackItem,
+    Theme, TrackItem, YouTube,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -215,6 +217,19 @@ pub struct PlayerController {
     /// The Jellyfin library shown while the window is idle; None once the
     /// window has closed.
     library: RefCell<Option<Rc<crate::jellyfin::library::LibraryController>>>,
+    /// What plays was opened from the YouTube section, which comes back when it
+    /// ends. This, rather than the address, says so, as the same address opened
+    /// any other way stays on its last frame as a stream does.
+    from_section: Cell<bool>,
+    /// What the section sent to play, in order.
+    section_list: RefCell<Vec<String>>,
+    /// The time a YouTube video has spent playing, which its mark goes by.
+    sitting: RefCell<Option<Sitting>>,
+    /// What yt-dlp said went wrong as mpv's hook ran it for the file opening.
+    hook_failure: RefCell<Option<crate::youtube::Error>>,
+    /// The YouTube section, which shows over the welcome screen and the
+    /// library while the window is idle; None once the window has closed.
+    youtube: RefCell<Option<Rc<crate::youtube::view::YouTubeController>>>,
     /// Counts the times the playlist was replaced, so that the library can
     /// drop a Play answer that comes after the window opened something
     /// else.
@@ -316,6 +331,11 @@ impl PlayerController {
             playlist_selection: RefCell::new(Default::default()),
             series_prefixes: RefCell::new(Vec::new()),
             library: RefCell::new(None),
+            from_section: Cell::new(false),
+            section_list: RefCell::new(Vec::new()),
+            sitting: RefCell::new(None),
+            hook_failure: RefCell::new(None),
+            youtube: RefCell::new(None),
             opens: Cell::new(0),
             jellyfin: RefCell::new(None),
             jellyfin_resolved: playback::Resolved::default(),
@@ -385,6 +405,18 @@ impl PlayerController {
             &app.jellyfin(),
             &controller.window,
             Rc::downgrade(&controller),
+        ));
+        let prefs_of = controller.app.clone();
+        *controller.youtube.borrow_mut() = Some(crate::youtube::view::YouTubeController::new(
+            &app.youtube(),
+            &controller.window,
+            Rc::downgrade(&controller),
+            Box::new(move || {
+                prefs_of
+                    .upgrade()
+                    .map(|app| app.prefs())
+                    .unwrap_or_default()
+            }),
         ));
         controller.wire_window_events();
         controller.attach_video()?;
@@ -604,11 +636,15 @@ impl PlayerController {
     }
 
     /// A playlist entry's name: a Jellyfin item's title, as the library or
-    /// the history knows it, and otherwise as `PlaylistEntry::label` has it.
+    /// the history knows it, a video's from the YouTube section, and otherwise
+    /// as `PlaylistEntry::label` has it.
     fn entry_label(&self, entry: &PlaylistEntry) -> String {
         if session::parse_entry(&entry.filename).is_some()
             && let Some(title) = self.app().entry_title(&entry.filename)
         {
+            return title;
+        }
+        if let Some(title) = self.app().youtube().title_of(&entry.filename) {
             return title;
         }
         entry.label()
@@ -619,6 +655,9 @@ impl PlayerController {
         if session::parse_entry(path).is_some()
             && let Some(title) = self.app().entry_title(path)
         {
+            return title;
+        }
+        if let Some(title) = self.app().youtube().title_of(path) {
             return title;
         }
         if path.is_empty() {
@@ -791,6 +830,33 @@ impl PlayerController {
         self.open_at(sources, Placement::InOrder(start));
     }
 
+    /// Plays videos from the YouTube section, in their list's order from the
+    /// one at `start`. When they end the window goes back to the section, which
+    /// has stayed where it was, under them.
+    pub fn play_from_section(&self, sources: Vec<String>, start: usize) {
+        self.section_list.borrow_mut().clone_from(&sources);
+        self.open_at(sources, Placement::Section(start));
+    }
+
+    /// Opens something from the history, in place of the playlist. A video the
+    /// YouTube section sent goes the way it went then, with none of the user's
+    /// yt-dlp options: they can hold cookies, and the section has no account.
+    /// Reached from Recent, this is too easy to do without meaning to.
+    pub fn open_again(&self, path: String) {
+        if self.app().came_from_section(&path) {
+            self.play_from_section(vec![path], 0);
+        } else {
+            self.open(vec![path], false);
+        }
+    }
+
+    /// The preferences now name another yt-dlp, or none.
+    pub fn yt_dlp_changed(&self) {
+        if let Some(youtube) = self.youtube() {
+            youtube.tool_changed();
+        }
+    }
+
     /// Opens sources in place of the playlist in a random order, with the
     /// playlist's Shuffle on: the library's Shuffle.
     pub fn open_shuffled(&self, sources: Vec<String>) {
@@ -803,6 +869,8 @@ impl PlayerController {
         }
         if placement != Placement::Append {
             self.opens.set(self.opens.get() + 1);
+            self.from_section
+                .set(matches!(placement, Placement::Section(_)));
         }
         if self.ready.get() {
             self.load(&sources, placement);
@@ -850,6 +918,10 @@ impl PlayerController {
         self.library.borrow().clone()
     }
 
+    fn youtube(&self) -> Option<Rc<crate::youtube::view::YouTubeController>> {
+        self.youtube.borrow().clone()
+    }
+
     /// How many times the playlist was replaced so far (see `opens`).
     pub fn opened(&self) -> u64 {
         self.opens.get()
@@ -857,7 +929,11 @@ impl PlayerController {
 
     fn load(&self, sources: &[String], placement: Placement) {
         let append = placement == Placement::Append;
-        if !append && self.is_idle() && self.window.global::<Library>().get_shown() {
+        if !append
+            && self.is_idle()
+            && (self.window.global::<Library>().get_shown()
+                || self.window.global::<YouTube>().get_shown())
+        {
             self.remember_library_size();
         }
         let player = self.player();
@@ -887,14 +963,23 @@ impl PlayerController {
                 player.command(&["playlist-shuffle"]);
                 player.command(&["playlist-play-index", "0"]);
             }
-            Placement::InOrder(_) => player.set("shuffle", false),
+            Placement::InOrder(_) | Placement::Section(_) => player.set("shuffle", false),
             Placement::Replace | Placement::Append => {}
         }
         if !append {
             player.set("pause", self.app().prefs().pause_when_open);
         }
         drop(player);
-        self.app().note_opened(sources);
+        match placement {
+            // A list stays out of the history until its videos have played:
+            // Recent would otherwise be two hundred videos nobody has seen.
+            Placement::Section(start) => {
+                if let Some(source) = sources.get(start) {
+                    self.app().note_opened(std::slice::from_ref(source), true);
+                }
+            }
+            _ => self.app().note_opened(sources, false),
+        }
         self.window.invoke_show_controls();
     }
 
@@ -921,6 +1006,17 @@ impl PlayerController {
                         {
                             self.jellyfin_position.set(position.max(0.0));
                         }
+                        if let (Some(position), Some(sitting)) =
+                            (position, &mut *self.sitting.borrow_mut())
+                        {
+                            sitting.at(position);
+                        }
+                    }
+                    if userdata == Prop::Duration as u64
+                        && let (Some(duration), Some(sitting)) =
+                            (value.as_f64(), &mut *self.sitting.borrow_mut())
+                    {
+                        sitting.lasts(duration);
                     }
                     if let Some(prop) = Prop::from_userdata(userdata)
                         && self.state.borrow_mut().apply(prop, &value)
@@ -947,6 +1043,7 @@ impl PlayerController {
                     self.jellyfin_seeked.set(false);
                     self.jellyfin_start_pending.set(false);
                     self.jellyfin_stopping.set(false);
+                    self.hook_failure.borrow_mut().take();
                     self.loading.set(true);
                     changed.insert(Prop::PausedForCache);
                     self.crop_index.set(0);
@@ -963,6 +1060,7 @@ impl PlayerController {
                     changed.insert(Prop::PausedForCache);
                     self.reapply_audio_filters();
                     self.jellyfin_loaded();
+                    self.start_sitting();
                     if self.jellyfin.borrow().is_some() {
                         // Whether it is music is the server's to say, which
                         // the window knows only now.
@@ -974,10 +1072,14 @@ impl PlayerController {
                     // mpv may not have said the title it was given yet.
                     let title = match &*self.jellyfin.borrow() {
                         Some(playing) => playing.title.clone(),
-                        None => state.title.clone(),
+                        None => self
+                            .section_title(&state.path)
+                            .unwrap_or_else(|| state.title.clone()),
                     };
+                    let section =
+                        self.from_section.get() && self.section_list.borrow().contains(&state.path);
                     self.app()
-                        .record_history(&state.path, &title, state.duration);
+                        .record_history(&state.path, &title, state.duration, section);
                     // A Jellyfin item's stream is the server's, which mpv's
                     // yt-dlp hook leaves alone.
                     if util::is_url(&state.path) && self.jellyfin.borrow().is_none() {
@@ -1020,21 +1122,38 @@ impl PlayerController {
                             .update_history(&state.path, state.position, state.duration);
                     }
                     let failure = self.jellyfin_ended();
+                    self.end_sitting();
                     if reason == EndFileReason::Error {
-                        let detail = failure
-                            .or_else(|| error.map(|error| error.description()))
-                            .unwrap_or_default();
                         let path = self.state.borrow().path.clone();
                         let name = self.display_name(&path);
-                        self.show_load_error(format!("Could not open {name}\n{detail}"));
+                        let hook = self.hook_failure.borrow_mut().take();
+                        if self.from_section.get() {
+                            let mpv_said = error.map(|error| error.description());
+                            self.section_video_failed(&name, hook, mpv_said);
+                        } else {
+                            // Only its one address: what yt-dlp says of other
+                            // sites isn't in these words.
+                            let named = hook
+                                .filter(|_| VideoId::from_watch_url(&path).is_some())
+                                .map(|hook| hook.said());
+                            let detail = failure
+                                .or(named)
+                                .or_else(|| error.map(|error| error.description()))
+                                .unwrap_or_default();
+                            self.show_load_error(format!("Could not open {name}\n{detail}"));
+                        }
                     }
                 }
+                Event::Log(message) => self.hook_said(&message.text),
                 Event::Seek => {
                     if self.user_acted() {
                         self.osd_seek();
                     }
                     if self.jellyfin.borrow().is_some() {
                         self.jellyfin_seeked.set(true);
+                    }
+                    if let Some(sitting) = &mut *self.sitting.borrow_mut() {
+                        sitting.seeked();
                     }
                 }
                 Event::PlaybackRestart => {
@@ -1129,6 +1248,9 @@ impl PlayerController {
                 self.check_segments();
             }
         }
+        if self.from_section.get() && self.section_video_over(&changed) && self.on_last_entry() {
+            self.player().command(&["stop"]);
+        }
         if !changed.is_empty() {
             self.sync(&changed);
         }
@@ -1166,6 +1288,11 @@ impl PlayerController {
                 let stopping = self.jellyfin_stopping.get();
                 Timer::single_shot(Duration::ZERO, move || library.shown_again(stopping));
             }
+            if let Some(youtube) = self.youtube() {
+                Timer::single_shot(Duration::ZERO, move || youtube.shown_again());
+            }
+            self.from_section.set(false);
+            self.section_list.borrow_mut().clear();
         }
         if any(&[Prop::TrackList, Prop::Idle]) && !state.idle {
             self.auto_music_mode(&state);
@@ -1203,6 +1330,14 @@ impl PlayerController {
                 .filter(|_| self.loading.get() && !state.idle)
                 .and_then(|(server, _)| self.app().jellyfin().server(server))
                 .map(|server| format!("Waiting for {}…", server.name))
+                .or_else(|| {
+                    // yt-dlp's answer takes seconds, longer on a bad day.
+                    (self.from_section.get()
+                        && self.loading.get()
+                        && !state.idle
+                        && util::is_url(&state.path))
+                    .then(|| "Waiting for YouTube…".to_owned())
+                })
                 .unwrap_or_default();
             playback.set_loading_text(waiting.into());
         }
@@ -1236,8 +1371,9 @@ impl PlayerController {
             // Jellyfin item by its own, which mpv has only once the load
             // hook has asked the server: before, it would show the item's
             // id.
-            let jellyfin =
-                session::parse_entry(&state.path).and_then(|_| self.app().entry_title(&state.path));
+            let jellyfin = session::parse_entry(&state.path)
+                .and_then(|_| self.app().entry_title(&state.path))
+                .or_else(|| self.section_title(&state.path));
             let title = if let Some(title) = jellyfin {
                 title
             } else if state.path.is_empty() || util::is_url(&state.path) {
@@ -1247,6 +1383,9 @@ impl PlayerController {
             };
             playback.set_title(title.into());
             playback.set_path(state.path.clone().into());
+        }
+        if any(&[Prop::Path, Prop::Idle]) {
+            self.show_watch_later(&state);
         }
         if any(&[Prop::VideoParams, Prop::TrackList, Prop::Idle]) {
             playback.set_has_video(state.has_video() && !state.is_audio_only());
@@ -1893,7 +2032,7 @@ impl PlayerController {
         handler!(on_open_recent, |this, index| {
             let path = this.app().recent_path(index as usize);
             if let Some(path) = path {
-                this.open(vec![path], false);
+                this.open_again(path);
             }
         });
         handler!(on_set_eq, |this, band, gain| this.set_eq(band, gain));
@@ -2071,7 +2210,7 @@ impl PlayerController {
             return false;
         };
         self.mark_user_action();
-        if self.leaves_jellyfin_item(&combo, &binding) {
+        if self.leaves_item(&combo, &binding) {
             self.player().command(&["stop"]);
             return true;
         }
@@ -2087,14 +2226,15 @@ impl PlayerController {
     }
 
     /// Whether a key goes back to the library from a Jellyfin item playing
-    /// or opening, as the library's own Back would: Escape, outside full
-    /// screen, where as bound by default it does nothing. Playing from the
-    /// library replaces it, and Stop was the only way back.
-    fn leaves_jellyfin_item(&self, combo: &KeyCombo, binding: &Binding) -> bool {
+    /// or opening, or to the YouTube section from a video opened there, as
+    /// their own Back would: Escape, outside full screen, where as bound by
+    /// default it does nothing. Playing from them replaces them, and Stop was
+    /// the only way back.
+    fn leaves_item(&self, combo: &KeyCombo, binding: &Binding) -> bool {
         let state = self.state.borrow();
         !state.fullscreen
             && !state.idle
-            && session::parse_entry(&state.path).is_some()
+            && (session::parse_entry(&state.path).is_some() || self.from_section.get())
             && leaves_full_screen(combo, binding)
     }
 
@@ -2256,6 +2396,7 @@ impl PlayerController {
             "skip-segment" => self.skip_segment(),
             "audio-quality" => self.choose_quality(None, Some(argument)),
             "download-video" => self.download_video(),
+            "toggle-watch-later" => self.toggle_watch_later(),
             "downloads" => app.open_downloads(),
             "find-online-subtitles" => {
                 if let Some(this) = self.this.upgrade() {
@@ -2273,12 +2414,26 @@ impl PlayerController {
             // the video, where it would come up when the playlist ends.
             "jellyfin-sign-in" => {
                 let library = if self.is_idle() {
+                    if let Some(youtube) = self.youtube() {
+                        youtube.hide();
+                    }
                     self.library()
                 } else {
                     app.new_window().and_then(|window| window.library())
                 };
                 if let Some(library) = library {
                     library.begin_sign_in();
+                }
+            }
+            // The same for the YouTube section.
+            "youtube" => {
+                let youtube = if self.is_idle() {
+                    self.youtube()
+                } else {
+                    app.new_window().and_then(|window| window.youtube())
+                };
+                if let Some(youtube) = youtube {
+                    youtube.open();
                 }
             }
             "close-window" => self.close(),
@@ -3822,6 +3977,7 @@ impl PlayerController {
         let qualities = self.qualities.borrow().clone();
         let resume_at = self.resume_at.borrow_mut().take();
         let reload = self.jellyfin_reload.borrow_mut().take();
+        let section = self.section_load();
         let links = self.app().link_sources();
         let session = self.app().jellyfin();
         let jellyfin = playback::Hook {
@@ -3853,6 +4009,9 @@ impl PlayerController {
                         .map(|(_, reload)| reload);
                     playback::prepare(&mpv, &path, &jellyfin, reload);
                 } else {
+                    if let Some(section) = &section {
+                        apply_section(&mpv, &path, section);
+                    }
                     apply_quality(&mpv, &qualities, resume_at);
                     subtitle_match::load_for_current_file(&mpv, languages.as_deref(), &choices);
                 }
@@ -4127,16 +4286,18 @@ impl PlayerController {
     /// frame, which mpv keeps; the server has where it stopped. The library
     /// shows the server's progress once the server has taken the report.
     fn leave_finished_playlist(&self) {
-        let last = {
-            let state = self.state.borrow();
-            usize::try_from(state.playlist_pos).is_ok_and(|at| at + 1 >= state.playlist.len())
-                && !state.loop_file
-                && !state.loop_playlist
-        };
-        if last {
+        if self.on_last_entry() {
             self.jellyfin_stopping.set(true);
             self.player().command(&["stop"]);
         }
+    }
+
+    /// Whether what plays is the playlist's last, and nothing goes round.
+    fn on_last_entry(&self) -> bool {
+        let state = self.state.borrow();
+        usize::try_from(state.playlist_pos).is_ok_and(|at| at + 1 >= state.playlist.len())
+            && !state.loop_file
+            && !state.loop_playlist
     }
 
     /// Selects the server's audio and subtitle among the tracks mpv found,
@@ -4810,7 +4971,11 @@ impl PlayerController {
             media.format(
                 choice.video.as_deref(),
                 choice.audio.as_deref(),
-                &self.app().prefs().ytdl_video_filter(),
+                &if self.from_section.get() {
+                    self.section_filter()
+                } else {
+                    self.app().prefs().ytdl_video_filter()
+                },
             )
         });
         if choice == old {
@@ -4854,6 +5019,12 @@ impl PlayerController {
         let Some(media) = self.online.borrow().clone() else {
             return;
         };
+        // One opened from the section goes as it does from there.
+        let video = self
+            .from_section
+            .get()
+            .then(|| VideoId::from_watch_url(&self.state.borrow().path))
+            .flatten();
         let request = crate::downloads::Request {
             url: if media.url.is_empty() {
                 self.state.borrow().path.clone()
@@ -4862,10 +5033,209 @@ impl PlayerController {
             },
             title: media.title.clone(),
             format: crate::downloads::download_format(media.format_id.as_deref()),
+            video,
         };
         if self.app().download(request) {
             self.show_osd("Downloading", &media.title, None);
         }
+    }
+
+    // ---- The YouTube section's videos -----------------------------------
+
+    fn section_title(&self, path: &str) -> Option<String> {
+        if !self.from_section.get() {
+            return None;
+        }
+        self.app().youtube().title_of(path)
+    }
+
+    /// The YouTube video playing, if it is one: by its one address however it
+    /// was opened, and by its file when the section opened that.
+    fn video_playing(&self, state: &PlaybackState) -> Option<VideoId> {
+        if state.idle {
+            return None;
+        }
+        VideoId::from_watch_url(&state.path).or_else(|| {
+            self.from_section
+                .get()
+                .then(|| self.app().youtube().video_at(&state.path))
+                .flatten()
+        })
+    }
+
+    fn start_sitting(&self) {
+        let video = self.video_playing(&self.state.borrow());
+        *self.sitting.borrow_mut() = video.map(Sitting::new);
+    }
+
+    /// A video's time in the player is over: its mark and progress strip learn
+    /// how it went.
+    fn end_sitting(&self) {
+        let seen = self.sitting.borrow_mut().take().and_then(Sitting::end);
+        if let Some(seen) = seen {
+            let app = self.app();
+            app.youtube().note_watch(&app.prefs(), &seen);
+        }
+    }
+
+    fn section_video_over(&self, changed: &HashSet<Prop>) -> bool {
+        let live = self
+            .online
+            .borrow()
+            .as_ref()
+            .is_some_and(|media| media.live);
+        video_over(&self.state.borrow(), changed, live)
+    }
+
+    /// One thing mpv's yt-dlp hook said went wrong. The first that says anything
+    /// is what happened.
+    fn hook_said(&self, text: &str) {
+        let mut failure = self.hook_failure.borrow_mut();
+        if failure.is_none() {
+            *failure = crate::youtube::ytdlp::hook_failure(text);
+        }
+    }
+
+    /// A video from the section didn't open. The section says why as it comes
+    /// back. What is wrong with one video leaves the next in a list to try;
+    /// what stops this one, a block or the network, stops those too, and there
+    /// is no use in asking for each.
+    fn section_video_failed(
+        &self,
+        name: &str,
+        hook: Option<crate::youtube::Error>,
+        mpv_said: Option<String>,
+    ) {
+        let stop = hook.as_ref().is_some_and(|hook| {
+            !hook.kind.about_the_video() && hook.kind != crate::youtube::Failure::Failed
+        });
+        let detail = hook
+            .map(|hook| hook.said())
+            .or(mpv_said)
+            .unwrap_or_default();
+        // Opened from Recent, with no section here to say it.
+        match self.youtube().filter(|youtube| youtube.is_shown()) {
+            Some(youtube) => youtube.note(format!("Could not play {name}. {detail}")),
+            None => self.show_load_error(format!("Could not open {name}\n{detail}")),
+        }
+        if stop {
+            self.player().command(&["stop"]);
+        } else if !self.on_last_entry() {
+            self.show_osd("Could not play", name, None);
+        }
+    }
+
+    /// The largest the section's default goes, for the screen the window is on
+    /// now.
+    fn section_filter(&self) -> String {
+        let screen = self
+            .window
+            .window()
+            .with_winit_window(|winit| {
+                let size = winit.current_monitor()?.size();
+                Some((size.width, size.height))
+            })
+            .flatten();
+        playing::video_filter(&self.app().prefs().youtube_quality, screen)
+    }
+
+    /// The format a video from the section downloads in: the yt-dlp format
+    /// preference, or else the quality it plays in. It always says, or yt-dlp
+    /// would fetch every video at its largest.
+    pub fn section_download_format(&self) -> String {
+        let prefs = self.app().prefs();
+        let own = prefs.ytdl_format.trim();
+        if !own.is_empty() {
+            return own.to_owned();
+        }
+        playing::download_format(
+            &self.section_filter(),
+            crate::platform::find_program("ffmpeg").is_some(),
+        )
+    }
+
+    /// What the load hook needs for an entry the section sent, gathered here
+    /// on the interface thread, where the marks and the screen are.
+    fn section_load(&self) -> Option<SectionLoad> {
+        if !self.from_section.get() {
+            return None;
+        }
+        let app = self.app();
+        let prefs = app.prefs();
+        let session = app.youtube();
+        let entries = self
+            .section_list
+            .borrow()
+            .iter()
+            .map(|source| {
+                let start = session
+                    .video_at(source)
+                    .and_then(|id| session.resume_from(&prefs, &id));
+                (
+                    source.clone(),
+                    SectionEntry {
+                        title: session.title_of(source),
+                        start,
+                    },
+                )
+            })
+            .collect();
+        Some(SectionLoad {
+            format: prefs
+                .ytdl_format
+                .trim()
+                .is_empty()
+                .then(|| playing::play_format(&self.section_filter())),
+            options: Secret(prefs.ytdl_options_for_section().as_str().into()),
+            entries,
+        })
+    }
+
+    /// Whether what plays is on Watch Later, for the menu's item.
+    fn show_watch_later(&self, state: &PlaybackState) {
+        let media = self.window.global::<Media>();
+        let video = self.video_playing(state);
+        media.set_youtube_video(video.is_some());
+        media.set_on_watch_later(video.is_some_and(|video| self.app().youtube().is_saved(&video)));
+    }
+
+    /// The YouTube section's lists have changed.
+    pub fn watch_later_changed(&self) {
+        self.show_watch_later(&self.state.borrow());
+    }
+
+    /// File › Save to Watch Later, for the video playing, with what yt-dlp said
+    /// of it.
+    fn toggle_watch_later(&self) {
+        let Some(id) = self.video_playing(&self.state.borrow()) else {
+            return;
+        };
+        let session = self.app().youtube();
+        let title = self.state.borrow().title.clone();
+        if session.is_saved(&id) {
+            session.unsave_video(&id);
+            self.show_osd("Removed from Watch Later", &title, None);
+            return;
+        }
+        let mut video = crate::youtube::Video::new(id);
+        video.title = crate::youtube::clean_text(&title);
+        if let Some(media) = self.online.borrow().as_ref() {
+            video.channel = media
+                .channel
+                .as_deref()
+                .map(crate::youtube::clean_text)
+                .unwrap_or_default();
+            video.channel_id = media
+                .channel_id
+                .as_deref()
+                .and_then(crate::youtube::ChannelId::parse);
+        }
+        let duration = self.state.borrow().duration;
+        if duration > 0.0 {
+            video.duration = Some(duration as u64);
+        }
+        session.save_video(video);
+        self.show_osd("Saved to Watch Later", &title, None);
     }
 
     // ---- Online subtitles -----------------------------------------------
@@ -5335,6 +5705,7 @@ impl PlayerController {
         if self.closed.replace(true) {
             return;
         }
+        self.end_sitting();
         {
             let state = self.state.borrow();
             if !state.idle {
@@ -5348,6 +5719,9 @@ impl PlayerController {
         self.jellyfin_ended();
         self.reset_thumbnails();
         self.library.borrow_mut().take();
+        if let Some(youtube) = self.youtube.borrow_mut().take() {
+            youtube.closed();
+        }
         // Hiding the window tears down its renderer, which frees mpv's render
         // context while the GL context is still current; without OpenGL the
         // render thread frees its own.
@@ -5396,6 +5770,23 @@ fn video_area(window: &PlayerWindow) -> Option<(u32, u32)> {
     ))
 }
 
+/// A video paused this close to its end has reached it.
+const SECTION_END_MARGIN: f64 = 0.25;
+
+/// Whether what plays has ended, mpv keeping its last frame. Seeking past the
+/// end doesn't always say so: mpv can go back a step for a frame to show and
+/// only pause there. A live stream is always that close to its end, so pausing
+/// one is only pausing.
+fn video_over(state: &PlaybackState, changed: &HashSet<Prop>, live: bool) -> bool {
+    let ended = changed.contains(&Prop::EofReached) && state.eof;
+    let stuck = (changed.contains(&Prop::Pause) || changed.contains(&Prop::TimePos))
+        && !live
+        && state.paused
+        && state.duration > 0.0
+        && state.position >= state.duration - SECTION_END_MARGIN;
+    ended || stuck
+}
+
 /// Entry ids in playlist order, which the selection is kept by.
 fn playlist_order(state: &PlaybackState) -> Vec<i64> {
     state.playlist.iter().map(|entry| entry.id).collect()
@@ -5429,6 +5820,56 @@ fn apply_quality(
             mpv.set_property("file-local-options/start", format!("{at:.3}").as_str())
     {
         log::warn!("{error}");
+    }
+}
+
+/// What the load hook gives entries the YouTube section sent.
+struct SectionLoad {
+    /// None when the yt-dlp format preference takes the place of a quality.
+    format: Option<String>,
+    /// Secret, as it can hold a proxy's password.
+    options: Secret,
+    entries: HashMap<String, SectionEntry>,
+}
+
+struct SectionEntry {
+    title: Option<String>,
+    /// Where it was left, to pick up from.
+    start: Option<f64>,
+}
+
+/// From the load hook, before mpv's yt-dlp hook: how an entry of the section's
+/// opens. All of it lasts as long as the file. A choice from the quality menus
+/// goes on top of this (`apply_quality`).
+fn apply_section(mpv: &Mpv, path: &str, section: &SectionLoad) {
+    let Some(entry) = section.entries.get(path) else {
+        return;
+    };
+    let set = |name: &str, value: &str| {
+        if let Err(error) = mpv.set_property(name, value) {
+            log::warn!("{error}");
+        }
+    };
+    // mpv's hook leaves a title it finds there, which then shows from the start
+    // rather than an address until yt-dlp has answered.
+    if let Some(title) = &entry.title {
+        set("file-local-options/force-media-title", title);
+    }
+    if let Some(start) = entry.start {
+        set("file-local-options/start", &format!("{start:.3}"));
+    }
+    if util::is_url(path) {
+        if let Err(error) =
+            mpv.set_property_secret("file-local-options/ytdl-raw-options", &section.options)
+        {
+            log::warn!("{error}");
+        }
+        if let Some(format) = &section.format {
+            set("file-local-options/ytdl-format", format);
+        }
+    } else {
+        // A downloaded video is one of the list, not the first of a folder.
+        set("file-local-options/autocreate-playlist", "no");
     }
 }
 
@@ -5503,6 +5944,8 @@ enum Placement {
     /// In place of the playlist, from the one at this index, with Shuffle
     /// off.
     InOrder(usize),
+    /// The same for what the YouTube section sends, which it comes back to.
+    Section(usize),
     /// In place of the playlist, shuffled, with Shuffle on.
     Shuffled,
     /// At the end, playing if nothing does.
@@ -5524,7 +5967,7 @@ fn load_steps(count: usize, placement: Placement) -> Vec<(usize, &'static str, O
         }
         Placement::Shuffled => return (0..count).map(|index| (index, "append", None)).collect(),
         Placement::Replace => 0,
-        Placement::InOrder(start) => start,
+        Placement::InOrder(start) | Placement::Section(start) => start,
     };
     let Some(last) = count.checked_sub(1) else {
         return Vec::new();
@@ -5793,6 +6236,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_video_is_over_at_its_end_however_it_got_there() {
+        let changed = |props: &[Prop]| props.iter().copied().collect::<HashSet<Prop>>();
+        let mut state = PlaybackState {
+            duration: 20.0,
+            position: 10.0,
+            ..Default::default()
+        };
+        assert!(!video_over(&state, &changed(&[Prop::TimePos]), false));
+        // Paused anywhere else is only paused.
+        state.paused = true;
+        assert!(!video_over(&state, &changed(&[Prop::Pause]), false));
+        // Sought past the end, when mpv pauses there without saying it ended.
+        state.position = 20.0;
+        assert!(video_over(&state, &changed(&[Prop::Pause]), false));
+        assert!(video_over(&state, &changed(&[Prop::TimePos]), false));
+        assert!(!video_over(&state, &changed(&[Prop::Volume]), false));
+        // A live stream is always at its end.
+        assert!(!video_over(&state, &changed(&[Prop::Pause]), true));
+        // Played to the end.
+        state.eof = true;
+        assert!(video_over(&state, &changed(&[Prop::EofReached]), true));
+        // Nothing is known of how long it is.
+        let unknown = PlaybackState {
+            paused: true,
+            ..Default::default()
+        };
+        assert!(!video_over(&unknown, &changed(&[Prop::Pause]), false));
+    }
+
+    /// A list from the YouTube section goes in as one from the library does.
+    #[test]
+    fn a_list_from_the_section_keeps_its_order() {
+        assert_eq!(
+            load_steps(5, Placement::Section(2)),
+            load_steps(5, Placement::InOrder(2))
+        );
+    }
+
+    #[test]
     fn aspect_ratios_map_to_menu_entries() {
         assert_eq!(aspect_index(0.0), 0);
         assert_eq!(aspect_index(16.0 / 9.0), 2);
@@ -5895,6 +6377,239 @@ mod tests {
             ctrl_q();
             assert_eq!(quits.get(), before + 2, "after the library went: {how}");
         }
+    }
+
+    /// The YouTube section takes the keyboard as it shows, from the welcome
+    /// screen or from the library. However it goes, and whatever comes in its
+    /// place, the window's shortcuts still reach the window.
+    #[test]
+    fn shortcuts_reach_the_window_as_the_youtube_section_comes_and_goes() {
+        use slint::platform::{Key, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let window = PlayerWindow::new().unwrap();
+        let quits = Rc::new(Cell::new(0));
+        let counted = quits.clone();
+        window
+            .global::<Actions>()
+            .on_key(move |text, _, ctrl, _, _, _| {
+                let quit = text == "q" && ctrl;
+                if quit {
+                    counted.set(counted.get() + 1);
+                }
+                quit
+            });
+        window.show().unwrap();
+        let ctrl_q = || {
+            let keys = [SharedString::from(Key::Control), SharedString::from("q")];
+            for text in &keys {
+                let text = text.clone();
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::KeyPressed { text });
+            }
+            for text in keys.iter().rev() {
+                let text = text.clone();
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::KeyReleased { text });
+            }
+        };
+        let works = |how: &str| {
+            let before = quits.get();
+            ctrl_q();
+            assert_eq!(quits.get(), before + 1, "{how}");
+        };
+        let youtube = window.global::<YouTube>();
+        let library = window.global::<Library>();
+        youtube.set_page("feed".into());
+        works("on the welcome screen");
+
+        youtube.set_shown(true);
+        works("in the section");
+        youtube.set_shown(false);
+        works("back on the welcome screen");
+
+        youtube.set_shown(true);
+        window.global::<Playback>().set_has_media(true);
+        works("a video opened from the section");
+        window.global::<Playback>().set_has_media(false);
+        works("back in the section after the video");
+
+        // Over the library, This Computer included, which comes back as it was.
+        youtube.set_shown(false);
+        library.set_page("local".into());
+        library.set_shown(true);
+        works("in the library");
+        youtube.set_shown(true);
+        works("in the section, over the library");
+        for page in ["search", "saved", "channels", "feed", "channel"] {
+            youtube.set_page(page.into());
+            works(page);
+        }
+        youtube.set_page("feed".into());
+        youtube.set_shown(false);
+        works("back in the library");
+        library.set_shown(false);
+        works("on the welcome screen again");
+    }
+
+    /// A page of the section that loads again, or a list that loses lines as an
+    /// update ends, makes its cards again. Slint would leave the keyboard's
+    /// focus on a gone card, which keep_keyboard finds. A field being typed in
+    /// keeps it through all that, and a dialog over the section keeps it too.
+    #[test]
+    fn shortcuts_reach_the_window_after_the_section_makes_its_cards_again() {
+        use crate::{YouTubeCard, YouTubeLine};
+        use slint::platform::Key;
+        i_slint_backend_testing::init_no_event_loop();
+        let window = PlayerWindow::new().unwrap();
+        let resize = |width| {
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 800))
+        };
+        resize(1280);
+        let press = |keys: &[SharedString]| press_keys(&window, keys);
+        let ctrl_q = [SharedString::from(Key::Control), "q".into()];
+        let quits = Rc::new(Cell::new(0));
+        let counted = quits.clone();
+        window
+            .global::<Actions>()
+            .on_key(move |text, _, ctrl, _, _, _| {
+                let quit = text == "q" && ctrl;
+                if quit {
+                    counted.set(counted.get() + 1);
+                }
+                quit
+            });
+        let youtube = window.global::<YouTube>();
+        let played = Rc::new(Cell::new(0));
+        let counted = played.clone();
+        youtube.on_play(move |_| counted.set(counted.get() + 1));
+        let line = || {
+            let card = YouTubeCard {
+                id: "aaaaaaaaaaa".into(),
+                title: "A Video".into(),
+                progress: -1.0,
+                ..Default::default()
+            };
+            YouTubeLine {
+                id: "videos-0".into(),
+                kind: "videos".into(),
+                cards: ModelRc::new(VecModel::from(vec![card; 3])),
+                ..Default::default()
+            }
+        };
+        let lines = Rc::new(VecModel::from(vec![line()]));
+        youtube.set_lines(lines.clone().into());
+        // As the controller does, the lines are made again for other columns.
+        let remade = lines.clone();
+        youtube.on_layout(move |_, _| remade.set_vec(vec![line()]));
+        youtube.set_page("feed".into());
+        youtube.set_shown(true);
+        window.show().unwrap();
+
+        for how in ["loaded again", "resized", "lost lines"] {
+            resize(1280);
+            // Tab until a card has the focus, which Enter on it shows.
+            let before = played.get();
+            for _ in 0..12 {
+                press(&[Key::Tab.into()]);
+                press(&[Key::Return.into()]);
+                if played.get() > before {
+                    break;
+                }
+            }
+            assert_eq!(played.get(), before + 1, "no card took the focus: {how}");
+            match how {
+                "loaded again" => {
+                    lines.set_vec(vec![line()]);
+                    youtube.set_loads(youtube.get_loads() + 1);
+                }
+                "resized" => resize(700),
+                _ => lines.set_vec(vec![line()]),
+            }
+            let before = quits.get();
+            press(&ctrl_q);
+            assert_eq!(quits.get(), before + 1, "once made again: {how}");
+        }
+
+        // Search has its field take the keyboard, which results don't move.
+        youtube.set_page("search".into());
+        press(&["x".into()]);
+        assert_eq!(youtube.get_search_text(), "x", "the field has the focus");
+        lines.set_vec(vec![line()]);
+        youtube.set_loads(youtube.get_loads() + 1);
+        press(&["y".into()]);
+        assert_eq!(youtube.get_search_text(), "xy", "after the results");
+
+        // A list changing behind the Channels page's field leaves it the keys.
+        youtube.set_wants_field(true);
+        youtube.set_page("channels".into());
+        press(&["a".into()]);
+        press(&["b".into()]);
+        lines.set_vec(vec![line()]);
+        press(&["c".into()]);
+        assert_eq!(
+            youtube.get_channel_text(),
+            "abc",
+            "the field kept the focus"
+        );
+
+        // A dialog over the section keeps the keyboard through a load.
+        youtube.set_page("feed".into());
+        window.set_dialog("open-url".into());
+        window.set_dialog_text(SharedString::new());
+        press(&["a".into()]);
+        lines.set_vec(vec![line()]);
+        youtube.set_loads(youtube.get_loads() + 1);
+        press(&["b".into()]);
+        assert_eq!(window.get_dialog_text(), "ab", "the dialog kept the focus");
+    }
+
+    /// The mouse's back button goes back in the section, and leaves the library
+    /// under it as it was: the library keeps its pages, on This Computer two of
+    /// them, and a press that popped one would go unseen.
+    #[test]
+    fn the_back_button_goes_back_in_what_shows() {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let window = PlayerWindow::new().unwrap();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(1280, 800));
+        window.show().unwrap();
+        let library = window.global::<Library>();
+        let youtube = window.global::<YouTube>();
+        let library_backs = Rc::new(Cell::new(0));
+        let counted = library_backs.clone();
+        library.on_back(move || counted.set(counted.get() + 1));
+        let youtube_backs = Rc::new(Cell::new(0));
+        let counted = youtube_backs.clone();
+        youtube.on_back(move || counted.set(counted.get() + 1));
+        let back = || {
+            let position = slint::LogicalPosition::new(600.0, 500.0);
+            let button = PointerEventButton::Back;
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerMoved { position });
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+        library.set_page("local".into());
+        library.set_can_go_back(true);
+        library.set_shown(true);
+        youtube.set_page("feed".into());
+        youtube.set_shown(true);
+        back();
+        assert_eq!((library_backs.get(), youtube_backs.get()), (0, 1));
+        youtube.set_shown(false);
+        back();
+        assert_eq!((library_backs.get(), youtube_backs.get()), (1, 1));
     }
 
     /// A page that loads again in place (a server switched to, Home or a
@@ -6071,11 +6786,30 @@ mod tests {
         ModelRc::new(VecModel::from(vec![row; count]))
     }
 
-    /// A page of the library, or what shows without one, to look for the
-    /// keyboard on.
+    /// Lines of a page of the YouTube section.
+    fn youtube_lines(count: usize) -> ModelRc<crate::YouTubeLine> {
+        let card = crate::YouTubeCard {
+            id: "aaaaaaaaaaa".into(),
+            title: "A Video".into(),
+            progress: -1.0,
+            ..Default::default()
+        };
+        let line = crate::YouTubeLine {
+            id: "videos".into(),
+            kind: "videos".into(),
+            cards: ModelRc::new(VecModel::from(vec![card; 3])),
+            ..Default::default()
+        };
+        ModelRc::new(VecModel::from(vec![line; count]))
+    }
+
+    /// A page of the library or of the YouTube section, or what shows without
+    /// one, to look for the keyboard on.
     fn show_page(window: &PlayerWindow, view: &str, page: &str) {
         let library = window.global::<Library>();
+        let youtube = window.global::<YouTube>();
         let playback = window.global::<Playback>();
+        youtube.set_shown(false);
         library.set_shown(false);
         playback.set_has_media(false);
         window.set_music_mode(false);
@@ -6085,6 +6819,12 @@ mod tests {
                 library.set_page(page.into());
                 library.set_loads(library.get_loads() + 1);
                 library.set_shown(true);
+            }
+            "youtube" => {
+                youtube.set_lines(youtube_lines(40));
+                youtube.set_page(page.into());
+                youtube.set_loads(youtube.get_loads() + 1);
+                youtube.set_shown(true);
             }
             "player" => playback.set_has_media(true),
             "music" => {
@@ -6140,6 +6880,9 @@ mod tests {
             ("library", "home"),
             ("library", "grid"),
             ("library", "local"),
+            ("youtube", "feed"),
+            ("youtube", "saved"),
+            ("youtube", "channel"),
             ("welcome", ""),
             ("player", ""),
             ("music", ""),
@@ -6157,12 +6900,26 @@ mod tests {
         let window = window_for_keys();
         let keys = keys_reaching_the_window(&window);
         let library = window.global::<Library>();
+        let youtube = window.global::<YouTube>();
 
         show_page(&window, "library", "search");
         press_key(&window, "a");
         choose_from_a_submenu(&window);
         press_key(&window, "q");
         assert_eq!(library.get_search_text(), "aq");
+
+        show_page(&window, "youtube", "search");
+        press_key(&window, "a");
+        choose_from_a_submenu(&window);
+        press_key(&window, "q");
+        assert_eq!(youtube.get_search_text(), "aq");
+
+        youtube.set_wants_field(true);
+        show_page(&window, "youtube", "channels");
+        press_key(&window, "a");
+        choose_from_a_submenu(&window);
+        press_key(&window, "q");
+        assert_eq!(youtube.get_channel_text(), "aq");
         assert!(keys.borrow().is_empty(), "{:?}", keys.borrow());
     }
 
@@ -6178,10 +6935,15 @@ mod tests {
         let library = window.global::<Library>();
         let counted = opened.clone();
         library.on_open(move |_, _| counted.set(counted.get() + 1));
+        let youtube = window.global::<YouTube>();
+        let counted = opened.clone();
+        youtube.on_play(move |_| counted.set(counted.get() + 1));
         let backs = Rc::new(Cell::new(0));
         let counted = backs.clone();
         library.on_back(move || counted.set(counted.get() + 1));
         library.set_can_go_back(true);
+        let counted = backs.clone();
+        youtube.on_back(move || counted.set(counted.get() + 1));
         let position = slint::LogicalPosition::new(600.0, 500.0);
         let tab_to_a_card = || {
             let before = opened.get();
@@ -6198,6 +6960,10 @@ mod tests {
             ("library", "home"),
             ("library", "grid"),
             ("library", "search"),
+            ("youtube", "feed"),
+            ("youtube", "search"),
+            ("youtube", "saved"),
+            ("youtube", "channel"),
         ] {
             show_page(&window, view, page);
             tab_to_a_card();
@@ -6283,10 +7049,13 @@ mod tests {
         let window = window_for_keys();
         let keys = keys_reaching_the_window(&window);
         let library = window.global::<Library>();
+        let youtube = window.global::<YouTube>();
         let backs = Rc::new(Cell::new(0));
         let counted = backs.clone();
         library.on_back(move || counted.set(counted.get() + 1));
         library.set_can_go_back(true);
+        let counted = backs.clone();
+        youtube.on_back(move || counted.set(counted.get() + 1));
         let cover = |dialog: &str| {
             window.set_dialog(dialog.into());
             window.set_dialog_text(SharedString::new());
@@ -6313,22 +7082,43 @@ mod tests {
             assert_eq!(library.get_search_text(), "aq", "library search: {dialog}");
             press_key(&window, Key::Backspace);
             assert_eq!(library.get_search_text(), "a", "library search: {dialog}");
+
+            show_page(&window, "youtube", "search");
+            youtube.set_search_text(SharedString::new());
+            press_key(&window, "a");
+            cover(dialog);
+            close(dialog);
+            press_key(&window, "q");
+            assert_eq!(youtube.get_search_text(), "aq", "youtube search: {dialog}");
+            press_key(&window, Key::Backspace);
+            assert_eq!(youtube.get_search_text(), "a", "youtube search: {dialog}");
+
+            youtube.set_channel_text(SharedString::new());
+            youtube.set_wants_field(true);
+            show_page(&window, "youtube", "channels");
+            press_key(&window, "a");
+            cover(dialog);
+            close(dialog);
+            press_key(&window, "q");
+            assert_eq!(youtube.get_channel_text(), "aq", "channels: {dialog}");
             assert!(keys.borrow().is_empty(), "{dialog}: {:?}", keys.borrow());
 
             // Not in one: Backspace goes back and Enter stops at the view, and
             // what the view doesn't take goes on to the window.
-            show_page(&window, "library", "home");
-            cover(dialog);
-            close(dialog);
-            keys.borrow_mut().clear();
-            let before = backs.get();
-            press_key(&window, Key::Backspace);
-            assert_eq!(backs.get(), before + 1, "{dialog}");
-            press_key(&window, Key::Return);
-            assert!(keys.borrow().is_empty(), "{dialog}: {:?}", keys.borrow());
-            press_key(&window, "f");
-            assert_eq!(*keys.borrow(), ["f"], "{dialog}");
-            keys.borrow_mut().clear();
+            for (view, page) in [("library", "home"), ("youtube", "feed")] {
+                show_page(&window, view, page);
+                cover(dialog);
+                close(dialog);
+                keys.borrow_mut().clear();
+                let before = backs.get();
+                press_key(&window, Key::Backspace);
+                assert_eq!(backs.get(), before + 1, "{view}: {dialog}");
+                press_key(&window, Key::Return);
+                assert!(keys.borrow().is_empty(), "{dialog}: {:?}", keys.borrow());
+                press_key(&window, "f");
+                assert_eq!(*keys.borrow(), ["f"], "{view}: {dialog}");
+                keys.borrow_mut().clear();
+            }
 
             // Tabbed out of the field: it hasn't it back, and "q" is the
             // window's again.
@@ -6339,6 +7129,16 @@ mod tests {
             close(dialog);
             press_key(&window, "q");
             assert_eq!(library.get_search_text(), "", "tabbed out: {dialog}");
+            assert_eq!(*keys.borrow(), ["q"], "tabbed out: {dialog}");
+            keys.borrow_mut().clear();
+
+            show_page(&window, "youtube", "search");
+            youtube.set_search_text(SharedString::new());
+            press_key(&window, Key::Tab);
+            cover(dialog);
+            close(dialog);
+            press_key(&window, "q");
+            assert_eq!(youtube.get_search_text(), "", "tabbed out: {dialog}");
             assert_eq!(*keys.borrow(), ["q"], "tabbed out: {dialog}");
             keys.borrow_mut().clear();
         }
@@ -6373,7 +7173,7 @@ mod tests {
                 weak.unwrap().set_dialog("open-url".into());
             }
         });
-        show_page(&window, "library", "home");
+        show_page(&window, "youtube", "feed");
         window.invoke_show_menu_at(10.0, 10.0);
         press_key(&window, Key::DownArrow);
         press_key(&window, Key::RightArrow);
@@ -6408,10 +7208,13 @@ mod tests {
         let window = window_for_keys();
         let keys = keys_reaching_the_window(&window);
         let library = window.global::<Library>();
+        let youtube = window.global::<YouTube>();
         let backs = Rc::new(Cell::new(0));
         let counted = backs.clone();
         library.on_back(move || counted.set(counted.get() + 1));
         library.set_can_go_back(true);
+        let counted = backs.clone();
+        youtube.on_back(move || counted.set(counted.get() + 1));
         let sent = Rc::new(RefCell::new(String::new()));
         let seen = sent.clone();
         library.on_connect(move |text| *seen.borrow_mut() = text.to_string());
@@ -6438,24 +7241,44 @@ mod tests {
             assert_eq!(window.get_dialog(), "", "{what}");
             assert!(keys.borrow().is_empty(), "{what}: {:?}", keys.borrow());
         };
-        // Pages of the library, none with a field.
-        for page in ["home", "grid", "detail", "local"] {
-            show_page(&window, "library", "search");
+        // Pages of a view, none with a field.
+        for (view, page) in [
+            ("library", "home"),
+            ("library", "grid"),
+            ("library", "detail"),
+            ("library", "local"),
+            ("youtube", "feed"),
+            ("youtube", "saved"),
+            ("youtube", "channel"),
+        ] {
+            let what = format!("{view} {page}");
+            show_page(
+                &window,
+                view,
+                if view == "library" { "search" } else { "feed" },
+            );
             open_a_prompt(&window);
-            library.set_page(page.into());
-            check_and_close(page);
+            if view == "library" {
+                library.set_page(page.into());
+            } else {
+                youtube.set_page(page.into());
+            }
+            check_and_close(&what);
             let before = backs.get();
             press_key(&window, Key::Backspace);
-            assert_eq!(backs.get(), before + 1, "the view hasn't it: {page}");
+            assert_eq!(backs.get(), before + 1, "the view hasn't it: {what}");
         }
-        // The library as it comes, under the dialog.
-        show_page(&window, "welcome", "");
-        open_a_prompt(&window);
-        show_page(&window, "library", "home");
-        check_and_close("library made");
-        let before = backs.get();
-        press_key(&window, Key::Backspace);
-        assert_eq!(backs.get(), before + 1, "the view hasn't it: library made");
+        // Each view as it comes, under the dialog.
+        for (view, page) in [("library", "home"), ("youtube", "feed")] {
+            let what = format!("{view} made");
+            show_page(&window, "welcome", "");
+            open_a_prompt(&window);
+            show_page(&window, view, page);
+            check_and_close(&what);
+            let before = backs.get();
+            press_key(&window, Key::Backspace);
+            assert_eq!(backs.get(), before + 1, "the view hasn't it: {what}");
+        }
         // An error in the library's place.
         show_page(&window, "library", "home");
         open_a_prompt(&window);
@@ -6471,6 +7294,23 @@ mod tests {
         check_and_close("library search");
         press_key(&window, "q");
         assert_eq!(library.get_search_text(), "q", "library search");
+
+        show_page(&window, "youtube", "feed");
+        youtube.set_search_text(SharedString::new());
+        open_a_prompt(&window);
+        youtube.set_page("search".into());
+        check_and_close("youtube search");
+        press_key(&window, "q");
+        assert_eq!(youtube.get_search_text(), "q", "youtube search");
+
+        show_page(&window, "youtube", "feed");
+        youtube.set_channel_text(SharedString::new());
+        youtube.set_wants_field(true);
+        open_a_prompt(&window);
+        youtube.set_page("channels".into());
+        check_and_close("channels");
+        press_key(&window, "q");
+        assert_eq!(youtube.get_channel_text(), "q", "channels");
 
         // Signing in, each step with a field as it comes.
         for name in ["address", "users", "password"] {
@@ -6505,16 +7345,108 @@ mod tests {
     /// A field disabled while its page works ignores keys, which then went on
     /// to the window's shortcuts, "q" quitting Patina, and a dialog closed over
     /// it left it without the keyboard for good. What is typed stops at the view
-    /// until the field can take it.
+    /// until the field can take it, and Backspace doesn't go back.
     #[test]
     fn a_field_has_the_keyboard_back_after_waiting() {
         use slint::platform::Key;
         let window = window_for_keys();
         let keys = keys_reaching_the_window(&window);
         let library = window.global::<Library>();
+        let youtube = window.global::<YouTube>();
+        let backs = Rc::new(Cell::new(0));
+        let counted = backs.clone();
+        youtube.on_back(move || counted.set(counted.get() + 1));
+        let weak = window.as_weak();
+        youtube.on_add_channel(move |_| weak.unwrap().global::<YouTube>().set_adding(true));
         let settle = || {
             i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated()
         };
+        let start = || {
+            youtube.set_adding(false);
+            youtube.set_channel_text(SharedString::new());
+            youtube.set_wants_field(true);
+            // The page is made again, and takes the keyboard as it comes.
+            show_page(&window, "welcome", "");
+            show_page(&window, "youtube", "channels");
+            press_key(&window, "a");
+            press_key(&window, Key::Return);
+            assert!(youtube.get_adding(), "the channel wasn't added");
+        };
+        let typed_stops = |what: &str| {
+            press_key(&window, "q");
+            press_key(&window, Key::Backspace);
+            press_key(&window, " ");
+            press_key(&window, Key::Return);
+            assert!(keys.borrow().is_empty(), "{what}: {:?}", keys.borrow());
+            assert_eq!(backs.get(), 0, "{what}");
+            assert_eq!(youtube.get_channel_text(), "a", "{what}");
+        };
+
+        // The keys while adding, and the field's afterwards. A modifier's still
+        // reach the window.
+        start();
+        typed_stops("adding");
+        assert!(press_ctrl_q(&window, &keys), "Ctrl+Q while adding");
+        youtube.set_adding(false);
+        settle();
+        press_key(&window, "b");
+        assert_eq!(youtube.get_channel_text(), "ab", "added");
+
+        // A dialog closed while adding, then the add ending.
+        start();
+        for dialog in ["shortcuts", "open-url"] {
+            window.set_dialog(dialog.into());
+            settle();
+            press_key(&window, Key::Escape);
+            assert_eq!(window.get_dialog(), "", "{dialog}");
+            typed_stops("a dialog closed while adding");
+        }
+        youtube.set_adding(false);
+        settle();
+        press_key(&window, "b");
+        assert_eq!(youtube.get_channel_text(), "ab", "closed while adding");
+
+        // The add ending under a dialog, which keeps the keyboard until it closes.
+        start();
+        open_a_prompt(&window);
+        youtube.set_adding(false);
+        settle();
+        press_key(&window, "b");
+        assert_eq!(window.get_dialog_text(), "ab", "ended under a dialog");
+        press_key(&window, Key::Escape);
+        press_key(&window, "b");
+        assert_eq!(youtube.get_channel_text(), "ab", "ended under a dialog");
+        assert!(keys.borrow().is_empty(), "{:?}", keys.borrow());
+
+        // Moved on from the field: the window's keys work, and the add's end
+        // doesn't bring the keyboard back.
+        start();
+        press_key(&window, Key::Tab);
+        press_key(&window, "q");
+        assert_eq!(*keys.borrow(), ["q"], "tabbed out");
+        keys.borrow_mut().clear();
+        youtube.set_adding(false);
+        settle();
+        press_key(&window, "q");
+        assert_eq!(*keys.borrow(), ["q"], "tabbed out, added");
+        keys.borrow_mut().clear();
+        assert_eq!(youtube.get_channel_text(), "a", "tabbed out, added");
+
+        // Another page: an add going on behind it takes nothing from it.
+        start();
+        youtube.set_page("feed".into());
+        settle();
+        press_key(&window, "q");
+        assert_eq!(*keys.borrow(), ["q"], "another page");
+        keys.borrow_mut().clear();
+        // Nor from another page's field, which passes on what it doesn't take.
+        youtube.set_page("search".into());
+        settle();
+        press_key(&window, Key::F1);
+        assert_eq!(keys.borrow().len(), 1, "another page's field");
+        keys.borrow_mut().clear();
+        youtube.set_adding(false);
+
         // Signing in: a dialog closed while a step's field waits, then the
         // answer leaving the step as it was.
         let sent = Rc::new(RefCell::new(String::new()));
@@ -6567,11 +7499,22 @@ mod tests {
         let window = window_for_keys();
         let keys = keys_reaching_the_window(&window);
         let library = window.global::<Library>();
+        let youtube = window.global::<YouTube>();
 
         let toggles = Rc::new(Cell::new(0));
         let counted = toggles.clone();
         let weak = window.as_weak();
         // Fewer lines, or more made again.
+        youtube.on_set_shorts(move |show| {
+            let window = weak.unwrap();
+            let youtube = window.global::<YouTube>();
+            counted.set(counted.get() + 1);
+            youtube.set_show_shorts(show);
+            youtube.set_lines(youtube_lines(if show { 40 } else { 2 }));
+            youtube.set_loads(youtube.get_loads() + 1);
+        });
+        let counted = toggles.clone();
+        let weak = window.as_weak();
         library.on_filter(move |_, favorites| {
             let window = weak.unwrap();
             let library = window.global::<Library>();
@@ -6582,7 +7525,7 @@ mod tests {
         });
         // Over a page's cards and the bar, Space may press other things; they
         // do nothing here.
-        let tab_to_the_chip = || {
+        let tab_to_the_chip = |what: &str| {
             let before = toggles.get();
             for _ in 0..24 {
                 press_key(&window, Key::Tab);
@@ -6591,16 +7534,25 @@ mod tests {
                     return;
                 }
             }
-            panic!("no chip took the focus");
+            panic!("no chip took the focus: {what}");
         };
-        show_page(&window, "library", "grid");
-        tab_to_the_chip();
-        for press in 1..=3 {
-            let before = toggles.get();
-            press_key(&window, " ");
-            assert_eq!(toggles.get(), before + 1, "press {press}");
+        for (view, page) in [
+            ("youtube", "search"),
+            ("youtube", "feed"),
+            ("library", "grid"),
+        ] {
+            let what = format!("{view} {page}");
+            show_page(&window, view, page);
+            tab_to_the_chip(&what);
+            for press in 1..=3 {
+                let before = toggles.get();
+                press_key(&window, " ");
+                assert_eq!(toggles.get(), before + 1, "press {press}: {what}");
+            }
+            assert!(keys.borrow().is_empty(), "{what}: {:?}", keys.borrow());
+            // Search's field wasn't given the Space.
+            assert_eq!(youtube.get_search_text(), "", "{what}");
         }
-        assert!(keys.borrow().is_empty(), "{:?}", keys.borrow());
     }
 
     /// Escape closes Keyboard Shortcuts and About, as it does the prompt and
@@ -6610,7 +7562,12 @@ mod tests {
         use slint::platform::Key;
         let window = window_for_keys();
         keys_reaching_the_window(&window);
-        for (view, page) in [("welcome", ""), ("player", ""), ("library", "home")] {
+        for (view, page) in [
+            ("welcome", ""),
+            ("player", ""),
+            ("library", "home"),
+            ("youtube", "feed"),
+        ] {
             show_page(&window, view, page);
             for dialog in ["shortcuts", "about"] {
                 window.set_dialog(dialog.into());

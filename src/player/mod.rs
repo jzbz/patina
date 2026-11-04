@@ -263,9 +263,11 @@ fn pump_events(mpv: &Mpv, hook: &PendingHook, sender: &async_channel::Sender<Vec
 
         let shutdown = batch.iter().any(|event| matches!(event, Event::Shutdown));
         batch.retain(|event| match event {
+            // The window hears what yt-dlp's hook says went wrong, which it has
+            // no other way to learn: its error names only a file not opening.
             Event::Log(message) => {
                 log_mpv_message(message);
-                false
+                message.prefix == "ytdl_hook" && message.level == "error"
             }
             Event::Hook { id, .. } => hook.waiting(mpv, *id),
             _ => true,

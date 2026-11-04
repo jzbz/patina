@@ -82,6 +82,8 @@ pub struct App {
     accepted: RefCell<Option<Vec<Request>>>,
     /// The Jellyfin servers signed in, which every window's library shows.
     jellyfin: Rc<crate::jellyfin::session::Session>,
+    /// The YouTube section's lists and feed, which every window shows.
+    youtube: Rc<crate::youtube::session::Session>,
     /// Takes the toast shown last down (`explain`).
     #[cfg(all(unix, not(target_os = "macos")))]
     toast_timer: slint::Timer,
@@ -98,6 +100,7 @@ impl App {
         let jellyfin =
             crate::jellyfin::session::Session::new(&paths.data, paths.jellyfin_images_dir());
         jellyfin.set_image_limit(prefs.jellyfin_image_cache_mb.saturating_mul(1 << 20));
+        let youtube = crate::youtube::session::Session::new(&paths);
         let app = Rc::new(Self {
             paths,
             prefs: RefCell::new(Rc::new(prefs)),
@@ -131,6 +134,7 @@ impl App {
             last_open: RefCell::new(None),
             accepted: RefCell::new(Some(Vec::new())),
             jellyfin,
+            youtube,
             #[cfg(all(unix, not(target_os = "macos")))]
             toast_timer: slint::Timer::default(),
             #[cfg(all(unix, not(target_os = "macos")))]
@@ -186,6 +190,9 @@ impl App {
             if playlist_tags {
                 window.refresh_playlist();
             }
+            if prefs.ytdl != old.ytdl || prefs.ytdl_path != old.ytdl_path {
+                window.yt_dlp_changed();
+            }
             // A change of the setting starts the automatic switch afresh.
             if prefs.auto_switch_to_music_mode != old.auto_switch_to_music_mode {
                 window.reset_music_override();
@@ -222,10 +229,18 @@ impl App {
         self.jellyfin.clone()
     }
 
+    pub fn youtube(&self) -> Rc<crate::youtube::session::Session> {
+        self.youtube.clone()
+    }
+
     /// A Jellyfin entry's title: as the library or the load hook knows it,
     /// or as the history kept it from the last time it played.
     pub fn entry_title(&self, entry: &str) -> Option<String> {
-        self.jellyfin.entry_title(entry).or_else(|| {
+        let known = self
+            .jellyfin
+            .entry_title(entry)
+            .or_else(|| self.youtube.title_of(entry));
+        known.or_else(|| {
             self.history
                 .borrow()
                 .entries
@@ -700,6 +715,7 @@ impl App {
         if let Some(downloads) = self.existing_downloads() {
             downloads.stop_all();
         }
+        self.youtube.quit();
         // OpenSubtitles asks clients to sign out, and the Jellyfin servers
         // hear where playback stopped as the windows close; neither is worth
         // more than a moment of quitting, which they share.
@@ -1102,7 +1118,7 @@ impl App {
             _ => self.new_window(),
         };
         if let Some(target) = target {
-            target.open(vec![path], false);
+            target.open_again(path);
             target.raise();
         }
     }
@@ -1296,17 +1312,18 @@ impl App {
 
     // ---- History --------------------------------------------------------
 
-    pub fn note_opened(&self, sources: &[String]) {
+    /// `section` says the YouTube section sent them. It goes by the last time,
+    /// as the same address opened another way isn't the section's.
+    pub fn note_opened(&self, sources: &[String], section: bool) {
         if !self.prefs().record_history {
             return;
         }
         let mut history = self.history.borrow_mut();
         for source in sources.iter().rev() {
-            if history
-                .entries
-                .first()
-                .is_some_and(|entry| &entry.path == source)
+            if let Some(first) = history.entries.first_mut()
+                && &first.path == source
             {
+                first.section = section;
                 continue;
             }
             let previous = history
@@ -1317,20 +1334,24 @@ impl App {
             let title = self
                 .jellyfin
                 .entry_title(source)
+                .or_else(|| self.youtube.title_of(source))
                 .unwrap_or_else(|| file_name(source));
-            history.record(previous.unwrap_or_else(|| HistoryEntry {
+            let mut entry = previous.unwrap_or_else(|| HistoryEntry {
                 path: source.clone(),
                 title,
                 played_at: settings::now(),
                 duration: 0.0,
                 position: 0.0,
-            }));
+                section,
+            });
+            entry.section = section;
+            history.record(entry);
         }
         drop(history);
         self.history_changed();
     }
 
-    pub fn record_history(&self, path: &str, title: &str, duration: f64) {
+    pub fn record_history(&self, path: &str, title: &str, duration: f64, section: bool) {
         if path.is_empty() || !self.prefs().record_history {
             return;
         }
@@ -1356,6 +1377,7 @@ impl App {
             played_at: settings::now(),
             duration,
             position,
+            section,
         });
         drop(history);
         self.history_changed();
@@ -1381,11 +1403,15 @@ impl App {
             .borrow_mut()
             .entries
             .retain(|entry| entry.path != path);
+        if let Some(id) = self.youtube.video_at(path) {
+            self.youtube.forget_watch(&id);
+        }
         self.history_changed();
     }
 
     pub fn clear_history(&self) {
         self.history.borrow_mut().entries.clear();
+        self.youtube.clear_marks();
         self.history_changed();
     }
 
@@ -1429,6 +1455,21 @@ impl App {
             })
             .unwrap_or_default();
         (items, resume)
+    }
+
+    /// Whether the history has this as sent by the YouTube section, which then
+    /// hears what it was called: it may be a long time since, and yt-dlp takes a
+    /// while to say.
+    pub fn came_from_section(&self, path: &str) -> bool {
+        let history = self.history.borrow();
+        let Some(entry) = history.entries.iter().find(|entry| entry.path == path) else {
+            return false;
+        };
+        if entry.section && entry.title != file_name(path) {
+            self.youtube
+                .name_source(path.to_owned(), entry.title.clone());
+        }
+        entry.section
     }
 
     pub fn recent_path(&self, index: usize) -> Option<String> {

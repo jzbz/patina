@@ -165,6 +165,8 @@ The Slint files mirror IINA's window:
 - `ui/library.slint`, with `library-detail.slint`, `library-sign-in.slint`,
   `library-parts.slint` and `library-model.slint`: the Jellyfin library,
   shown where the welcome view is (see Jellyfin).
+- `ui/youtube.slint`, with `youtube-card.slint` and `youtube-model.slint`:
+  the YouTube section, shown there too (see YouTube section).
 - `ui/sidebar.slint`: the playlist, chapters and a Jellyfin song's
   lyrics, and the video, audio and subtitle quick settings.
 - `ui/music.slint`: music mode's strip of controls, its close and back
@@ -362,7 +364,25 @@ The HTTP proxy preference also goes to yt-dlp, from mpv's hook and from
 downloads, as a `proxy` in its options, unless Patina's yt-dlp options have
 their own (`Preferences::proxy`). mpv's hook gives yt-dlp only what is in those
 options, so otherwise yt-dlp would go direct while the stream went through the
-proxy.
+proxy. The YouTube section's own requests follow the same rule, and fail rather
+than go direct when a proxy can't be used.
+
+A video opened from the YouTube section is marked as such in its window
+(`from_section`, set by `Placement::Section`), never by its address, so that the
+same address from Open URL behaves as it did. With that mark the window goes back
+to the section at the end of its last entry and on Escape, says it is waiting for
+YouTube, and has the load hook give mpv its title, where it was left, a format up
+to the screen's height (`youtube-quality`) and the section's own yt-dlp options:
+the clients and proxy with `ignore-config` and nothing of the user's, as cookies
+there would sign a section with no account in to Google. Those last as long as the
+file. What yt-dlp says when it fails reaches the window as mpv's hook logs it, the
+only place it is said, and is named by `youtube::ytdlp`. Watched marks go by how
+far the position moved by playing (`youtube::playing::Sitting`), for any video
+opened by its one address, and follow the history's preference and Clear Recent.
+
+The section's downloads share the queue with Jellyfin's in `downloads.rs`, and
+wait by rules of their own: at most two of yt-dlp running, started at least 8
+seconds apart. Neither kind holds the other up.
 
 Downloading runs yt-dlp on threads of its own (`downloads.rs`), with
 progress, post-processing and the final file printed in templates of
@@ -414,11 +434,6 @@ rules about the account's token; this is how it sits among the rest.
   welcome view again. Page loads, from every
   window, share six threads (`session::load`), and an answer for a page
   the user has left is dropped.
-- **The keyboard.** Slint keeps the focus on items that have gone, and keys
-  then reach nothing. `keep_keyboard` in `window.rs` looks for that ahead of
-  each of the window's events, as a card scrolled out of a list and a choice
-  from a submenu leave it so with nothing to say it has happened, and has the
-  view on show take it back (`take-keyboard`, `LibraryUi.focus-back`).
 - **Playing.** What the library plays goes into mpv's playlist as
   `jellyfin://<server id>/<item id>`, so the playlist, the history, Recent
   and the system's media controls see neither the token nor a stream's
@@ -443,6 +458,38 @@ rules about the account's token; this is how it sits among the rest.
   item's trickplay tiles (the seek bar's previews), its media segments
   (the Skip button) and a song's lyrics (the playlist's Lyrics tab) are
   fetched on the load threads.
+
+## YouTube section
+
+Patina shows YouTube in the player window with no account: the lists are its
+own, in the data folder. [youtube.md](youtube.md) is the design, with what
+leaves the machine and what the terms say; this is how it sits among the rest.
+
+- **The session.** `App` owns one `youtube::session::Session`, on the UI
+  thread: `youtube.json` and the saved feed, each read the first time it is
+  wanted, the threads requests run on, and the picture cache. Nothing in it
+  asks the network as Patina starts. Windows subscribe as `Listener`s, and
+  count themselves in and out with `entered` and `left`: when the last has
+  left, what is on its way stops. Quitting stops it too.
+- **The view.** Each player window has a `YouTubeController`
+  (`youtube/view.rs`), which makes no thread or request until the section
+  opens. It fills the window's `YouTube` global and answers its callbacks. The
+  section is a third view where the welcome view is, and `ui/app.slint`'s
+  `youtube-open` and `library-open` allow one of them at a time, each giving
+  the focus back as it goes (Slint keeps it on items that have gone, and keys
+  then reach nothing). `keep_keyboard` in `window.rs` looks for that ahead of
+  each of the window's events, as a card scrolled out of a list and a choice
+  from a submenu leave it so with nothing to say it has happened.
+- **Sources.** `youtube/feed.rs` builds the feed through its `Source` trait,
+  from `rss.rs` and then `ytdlp.rs`. `client.rs` is the only plain HTTP, to a
+  short list of YouTube's hosts, checked on every redirect. Each yt-dlp call
+  is a short-lived process with a time limit, `--ignore-config` and none of
+  the user's yt-dlp options, as those could hold cookies and sign the section
+  in.
+- **Images.** The section uses `jellyfin/images.rs`'s cache with a pool of its
+  own, kept in `youtube-images`, so that a picture never waits on a poster.
+- **Playing and downloading.** These are in Online video above: `from_section`
+  in the window, and the shared queue in `downloads.rs`.
 
 ## History and inspector windows
 
@@ -616,6 +663,9 @@ user's binding for it (`PLAYPAUSE`, `NEXT`, ...) when one exists.
   and skip without one unless `PATINA_TEST_REQUIRE_JELLYFIN=1`. CI's Linux
   job runs that server and the Jellyfin tests against it
   (development.md has the commands, jellyfin.md what the tests cover).
+- The YouTube section's tests need no network or real yt-dlp, and CI doesn't
+  reach YouTube: they read made-up answers, and talk to a small server on
+  127.0.0.1 and on Unix to a stand-in script (youtube.md, Tests).
 - `tools/smoke.sh` runs Patina on a private Xvfb display, sends input with
   xdotool and saves screenshots, for checking the interface end to end. Xvfb
   only has software OpenGL, so it uses software decoding.

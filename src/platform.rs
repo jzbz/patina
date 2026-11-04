@@ -22,6 +22,46 @@ pub fn no_console(command: &mut Command) -> &mut Command {
     command
 }
 
+/// Starts a program so that `kill_group` reaches what it starts as well. On
+/// Windows the process tree already says that.
+pub fn in_own_group(command: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+}
+
+/// Stops a program started with `in_own_group`, and whatever it has started: a
+/// launcher's real worker, or a JavaScript runtime, would otherwise go on making
+/// requests, and hold the program's pipes open. Call it before waiting for the
+/// program, while its id can't be anyone else's.
+pub fn kill_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    if let Ok(id) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: kill takes no pointers. A negative id names the group, which
+        // is this child's own, as `in_own_group` made it.
+        unsafe {
+            libc::kill(-id, libc::SIGKILL);
+        }
+    }
+    // From the system's own folder, not whatever the PATH finds first.
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        let mut command = Command::new(PathBuf::from(root).join("System32").join("taskkill.exe"));
+        command
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Err(error) = no_console(&mut command).status() {
+            log::warn!("could not stop a process tree: {}", error.kind());
+        }
+    }
+    let _ = child.kill();
+}
+
 /// Finds a program as a shell would: a path as it is, a bare name on the
 /// `PATH`. On Windows `.exe` is added to a name without it.
 pub fn find_program(name: &str) -> Option<PathBuf> {

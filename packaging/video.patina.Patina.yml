@@ -51,7 +51,8 @@ finish-args:
   # desktop that runs PipeWire.
   - --socket=pulseaudio
   # Streams and online videos, opened directly, from patina:// links or
-  # through yt-dlp; downloads; and subtitle search on OpenSubtitles.
+  # through yt-dlp; downloads; subtitle search on OpenSubtitles; Jellyfin
+  # servers; and the YouTube section's feeds, searches and thumbnails.
   - --share=network
 
   # Read-only access to every file the user can see. Patina reads more than
@@ -69,9 +70,10 @@ finish-args:
   # written.
   - --filesystem=xdg-download
 
-  # The OpenSubtitles password, kept in the desktop's keyring. The keyring
-  # crates Patina uses speak the Secret Service directly, not the Secret
-  # portal.
+  # The OpenSubtitles password and Jellyfin's sign-in tokens, kept in the
+  # desktop's keyring. The keyring crates Patina uses speak the Secret Service
+  # directly, not the Secret portal. The YouTube section has no account, and
+  # keeps nothing here.
   - --talk-name=org.freedesktop.secrets
   # Show in Folder, which asks the file manager over D-Bus to open the folder
   # with the file selected.
@@ -83,8 +85,11 @@ finish-args:
   # and Flatpak lets every app own that subtree without being granted it. No
   # org.freedesktop.ScreenSaver either: in a Flatpak the screen is kept awake
   # through the Inhibit portal. Nor xdg-data/Trash: files go to the trash
-  # through the Trash portal. Picking files and opening links go through
-  # portals as well, which need no grant.
+  # through the Trash portal, a YouTube download's among them. Picking files
+  # and opening links go through portals as well, which need no grant. The
+  # YouTube section's lists and cache are in the app's own data folder, so it
+  # added nothing here. host:ro above could read a browser's cookies, which is
+  # why that section never passes yt-dlp the user's options or config.
 
 cleanup:
   - /include
@@ -250,9 +255,10 @@ modules:
             tag: v7.387.0
             commit: 275f7dea27924cdd34ab2e6c20e448b6bc4fab65
 
-  # yt-dlp, which plays web pages through mpv's yt-dlp hook and makes Patina's
-  # downloads. Both look for it on PATH, which has /app/bin. Merging separate
-  # video and audio downloads uses the runtime's own ffmpeg.
+  # yt-dlp, which plays web pages through mpv's yt-dlp hook, makes Patina's
+  # downloads and does the YouTube section's searches and listings. All of them
+  # look for it on PATH, which has /app/bin. Merging separate video and audio
+  # downloads uses the runtime's own ffmpeg.
   #
   # YouTube also needs a JavaScript runtime and yt-dlp's EJS scripts to answer
   # its challenges, so Deno and yt-dlp-ejs come with it, as they do in

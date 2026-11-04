@@ -43,6 +43,13 @@ explains the design.
   `tools/jellyfin-server.sh fixtures DIR src/jellyfin/fixtures` saves the
   running server's answers again as the tests' fixtures. docs/jellyfin.md's
   Tests section says what the tests cover.
+- The YouTube section's tests need no network and no yt-dlp, and CI must
+  never reach YouTube. To try the section by hand without it, give Patina its
+  own `PATINA_CONFIG_DIR` and `PATINA_DATA_DIR` and point the `ytdl-path`
+  preference at a stand-in script; its JSON needs `"proxy":""`, or mpv's hook
+  applies the proxy to a local stream. Keep real requests to a handful, on
+  public channels and generic searches, as an address has a budget and a log
+  of a real stream holds its address.
 - `release.yml` builds every package: the Flatpak bundles
   (`packaging/video.patina.Patina.yml`), a universal Patina.app (with IINA's
   libmpv, pinned in `packaging/macos-libmpv.txt`), and a Windows folder
@@ -118,7 +125,9 @@ The runbook is the header of `.github/workflows/release.yml` and
 The Flatpak manifest builds the release bundles only. It is not a Flathub
 submission; one for Flathub would be written for Flathub's repository by
 hand. Flathub, winget and the metainfo also want https://patina.video/ (and
-its `/privacy/` page) to answer.
+its `/privacy/` page) to answer. That page has to say what the code does:
+docs/youtube.md's What leaves the machine and the metainfo's content rating
+comment are the same statement, and a change to one goes in the others.
 
 ## Source map
 
@@ -136,11 +145,13 @@ its `/privacy/` page) to answer.
 - `src/wayland.rs`: bringing a window to the front with an activation
   token.
 - `src/app.rs`: preferences, history, key bindings, windows, file dialogs,
-  the Jellyfin session.
+  the Jellyfin and YouTube sessions.
 - `src/window.rs`: one player window: events into state, state into the
-  UI, Patina actions, OSD, window sizing, picture-in-picture, and the
-  window's side of Jellyfin playback (the load hook, reports, tracks,
-  quality and versions, skipping segments, trickplay previews, lyrics).
+  UI, Patina actions, OSD, window sizing, picture-in-picture, the window's
+  side of Jellyfin playback (the load hook, reports, tracks, quality and
+  versions, skipping segments, trickplay previews, lyrics), and of a video
+  from the YouTube section (the load hook's options, time seen, the way back
+  to the section).
 - `src/player/`: mpv core startup and options, the event thread,
   observed properties (`props.rs`), and the typed playback state
   (`state.rs`).
@@ -158,8 +169,8 @@ its `/privacy/` page) to answer.
 - `src/thumbnails.rs`: seek-bar thumbnails from a headless mpv core.
 - `src/ytdl.rs`: what yt-dlp says about an online video, as qualities for
   the menus and the yt-dlp format for a choice.
-- `src/downloads.rs`: downloads with yt-dlp and from Jellyfin servers,
-  and the Downloads window.
+- `src/downloads.rs`: downloads with yt-dlp and from Jellyfin servers, the
+  YouTube section's turn in the queue, and the Downloads window.
 - `src/opensubtitles.rs`: the OpenSubtitles.com client: hash, search,
   download, sign-in.
 - `src/credentials.rs`: passwords and Jellyfin tokens in the system's
@@ -175,6 +186,18 @@ its `/privacy/` page) to answer.
   `segments.rs` skipping intros and credits; `trickplay.rs` the seek bar's
   previews; `lyrics.rs` a song's lyrics and the line being sung; `tests.rs`
   and `fixtures/` the tests across them.
+- `src/youtube/`: the YouTube section, with no account
+  ([youtube.md](youtube.md)): `store.rs` `youtube.json`, the lists kept here;
+  `feed.rs` building and saving the feed; `rss.rs` channel feeds; `ytdlp.rs` search, listings and details from
+  yt-dlp, with its errors by name; `client.rs` requests to YouTube's hosts
+  alone; `takeout.rs` reading and writing the lists in Google's export
+  format; `session.rs` the app-wide state; `view.rs` the per-window controller
+  that fills `ui/youtube-model.slint`'s global, for `ui/youtube.slint` and
+  `ui/youtube-card.slint` to draw; `playing.rs` what goes with playing a video
+  from it, apart from the window: time seen, where it picks up, its default
+  quality; `fixtures/` the tests' answers. The tests need
+  no network or real yt-dlp: they use saved answers, a local server and a
+  stand-in script.
 - `src/probe.rs`: playlist durations and tags from a headless mpv core.
 - `src/playlist.rs`: playlist selection, multi-row moves, series-prefix
   folding and pasted sources, without mpv.
@@ -192,7 +215,8 @@ its `/privacy/` page) to answer.
   `jellyfin-server.sh`, the Jellyfin test server, with
   `jellyfin-media.sh`, which makes its library.
 - `ui/`: the Slint interface (`app.slint` is the window, `library*.slint`
-  the Jellyfin library; see architecture.md); `ui/icons/` are Lucide's
+  the Jellyfin library, `youtube*.slint` the YouTube section; see
+  architecture.md); `ui/icons/` are Lucide's
   SVG icons (lucide-static, ISC; `ui/icons/LICENSE`), white for Slint to
   tint, the transport controls filled; `ui/fonts/` is IBM Plex Sans
   (OFL 1.1; `ui/fonts/LICENSE`), the static Regular, Italic, SemiBold and
@@ -225,7 +249,7 @@ its `/privacy/` page) to answer.
 - Patina contains no IINA code, artwork or text (IINA is GPL-3.0). Describe
   and reimplement behaviour; don't copy.
 - The same holds for Jellyfin's own clients, which are GPL too: none of
-  their code is copied.
+  their code is copied. Nor is any other YouTube client's.
 - The interface thread doesn't wait on the network or the keyring either:
   the Jellyfin client asks them through `session::background`,
   `session::load` and `session::keyring`, the reporter and the image
@@ -235,5 +259,12 @@ its `/privacy/` page) to answer.
   not in a URL, a log, a file or any mpv option but the header, which goes
   through `Mpv::set_property_secret` (docs/jellyfin.md, Keeping the token
   secret).
+- The YouTube section has no account and never gets one: its yt-dlp calls
+  take `--ignore-config` and none of the user's yt-dlp options, the proxy
+  aside. No request starts at Patina's startup or by itself in the background.
+  Whatever comes from outside is checked, and every address is built from a
+  checked id. Search text stays out of logs (docs/youtube.md). A new request,
+  or a change to what one carries, goes into that page's What leaves the
+  machine, and into the metainfo's comment if it changes that.
 - Generated files (builds, logs, screenshots, test media) stay out of the
   repository.

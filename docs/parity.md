@@ -143,7 +143,7 @@ once and applied to running players, as IINA's option observers do
 | PREF-VID | done: hardware decoding (off / automatic / copy-back), deinterlacing, tone mapping, target peak. Planned: ICC profiles, HDR mode |
 | PREF-AUD | done: start volume, maximum volume, device, gapless, preferred languages, ReplayGain. Planned: S/PDIF passthrough |
 | PREF-SUB | done: loading mode (mpv's matching), languages, encoding, font, size, style, colors, position, letterbox, ASS override. Planned: IINA's intelligent matching, online subtitles |
-| PREF-NET | done: cache, buffer size, buffering, user agent, proxy (which reaches yt-dlp too), RTSP transport, yt-dlp and its options |
+| PREF-NET | done: cache, buffer size, buffering, user agent, proxy (which reaches yt-dlp and the YouTube section too), RTSP transport, yt-dlp and its options, and the YouTube section's quality |
 | PREF-CTL | done: click and scroll actions, seek mode, scroll steps, media keys. Planned: pinch and Force Touch where available |
 | PREF-KEY | done: see INP-06..08 |
 | PREF-ADV | done: load mpv.conf and scripts from the mpv folder, extra mpv options. Planned: log level and log files |
@@ -198,7 +198,7 @@ once and applied to running players, as IINA's option observers do
 | HIS-02 | History window | done: grouped by date or folder, search, watched progress, missing files dimmed; Play, Play in New Window, Show in File Manager, Remove; Return, Ctrl+Return, Delete, Ctrl+L, Ctrl+F |
 | HIS-03 | History store | adapted: JSON in the data folder, one entry per file with its position and length |
 | HIS-04..05 | Recent files and resume button | done |
-| HIS-06 | Clearing data | done: Preferences > Utilities clears history, saved positions and thumbnails |
+| HIS-06 | Clearing data | done: Preferences > Utilities clears history, saved positions and thumbnails; clearing the history clears the YouTube section's watched marks too |
 | INS-01..03 | Inspector: General, Tracks, Status | done: follows the active window, refreshed every second with asynchronous property reads |
 | INS-04 | Watch tab | done: any mpv property, kept in the preferences |
 | INS-05 | No polling while closed | done |
@@ -252,6 +252,7 @@ What Patina has that IINA itself doesn't.
 | Feature | IINA | Patina |
 | --- | --- | --- |
 | Jellyfin client | none built in; Jellyfin is among the community plugins in IINA's catalogue (PLG-07) | done: built in, as [jellyfin.md](jellyfin.md) describes: the library in the idle player window (Home, each library, shows and their seasons, collections, music, search, an item's page, played and favourite marks), servers found by address or Scan Network, signing in with a password or Quick Connect, several servers at once; direct play, or a transcode the server makes for a lower quality or what the preferences rule out; resuming where the server says and reporting progress to it; the server's tracks and subtitle files, versions, the next episodes queued; skipping intros, credits, recaps and previews where a plugin on the server marks them; the server's trickplay images in the seek bar's previews; albums, artists, playlists and genres playing in music mode, with the server's lyrics (timed ones following the song); downloading an item's original file, or those of a season, show, album or playlist, into the download folder through the Downloads window, where the account may (offline playback is not in: a downloaded file plays as any file does). Servers from 10.10.7. Tried on Linux (X11, on a virtual framebuffer) against a local Jellyfin 12.4 server with a generated library, which CI runs for the client's tests too, and segments against a stand-in, since that server makes none. Not yet tried against 10.10 or 10.11, over https, with a real server's library, with a real keyring, on Wayland, macOS or Windows |
+| YouTube section | none built in; the Online Media plugin (NET-05) plays what is opened | done, as [youtube.md](youtube.md) describes, with no account: an entry on the welcome screen; a feed of the channels followed, from channel feeds with yt-dlp as the way round their outages, saved so that it shows at once, with Shorts hidden behind a switch and live badges where known; search for videos and channels through yt-dlp; a Watch Later list; a page for each channel; import and export of both lists in Google's export format; watched marks by time seen, a progress strip and resuming; playback through mpv and yt-dlp up to the screen's resolution, returning to the section at the end; downloads through the Downloads window, at most two running and spaced out. Tried on Linux (X11, on a virtual framebuffer) with a stand-in for yt-dlp and with a handful of live requests to public channels. Not yet tried on Wayland, macOS, Windows or in the Flatpak, through a real proxy, with a real export's rarer forms, or against a real block or a real private, age-restricted, region-locked or members-only video. The macOS and Windows packages don't carry yt-dlp yet |
 
 ## Known issues
 

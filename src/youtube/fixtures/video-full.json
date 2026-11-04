@@ -1,0 +1,18 @@
+{
+  "id": "-ideoFixtur",
+  "title": "A video",
+  "duration": 654,
+  "channel": "Fixture Channel",
+  "channel_id": "UCfixturefixturefixture0",
+  "uploader": "Fixture Channel",
+  "uploader_id": "@fixture",
+  "timestamp": 1793594400,
+  "upload_date": "20261102",
+  "release_timestamp": null,
+  "view_count": 1234,
+  "live_status": "not_live",
+  "was_live": false,
+  "formats": [],
+  "_type": "video",
+  "webpage_url": "https://www.youtube.com/watch?v=-ideoFixtur"
+}

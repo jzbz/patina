@@ -187,6 +187,9 @@ export global Media {
     in property <[QualityItem]> video-qualities;
     in property <[QualityItem]> audio-qualities;
     in property <bool> online;
+    // What plays is a YouTube video, and whether it is on Watch Later.
+    in property <bool> youtube-video;
+    in property <bool> on-watch-later;
     // A Jellyfin item's versions, the one playing selected.
     in property <[QualityItem]> video-versions;
     // The subtitle showing is one downloaded from OpenSubtitles.
@@ -254,6 +257,8 @@ export global MenuMedia {
     in-out property <[QualityItem]> audio-qualities;
     in-out property <[QualityItem]> video-versions;
     in-out property <bool> online;
+    in-out property <bool> youtube-video;
+    in-out property <bool> on-watch-later;
     in-out property <bool> downloaded-subtitle;
 }
 

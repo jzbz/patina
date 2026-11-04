@@ -10,12 +10,18 @@
 //! show asked for at once doesn't open a connection for every episode. The
 //! next one waits for a stopped one's thread to end too, which a server
 //! that has stopped sending can hold up for a minute.
+//!
+//! A video from the YouTube section waits its turn too: at most two of yt-dlp
+//! run while one of those waits, started some seconds apart, since a guest of
+//! YouTube's is only allowed so many requests. Such a video is known by its id,
+//! has its failure said by name, and goes on its list as downloaded.
 
 use crate::app::App;
 use crate::jellyfin::api::{Client, Error as JellyfinError};
 use crate::jellyfin::download::{self as jellyfin, Failure, Meter, Progress, Speed, Stop};
 use crate::jellyfin::session::{Change, Listener};
 use crate::settings::{Preferences, read_ytdl_raw_options, ytdl_youtube_clients};
+use crate::youtube::{VideoId, ytdlp};
 use crate::{DownloadRow, DownloadsWindow};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
@@ -42,6 +48,11 @@ const TICK: Duration = Duration::from_millis(250);
 /// server, rather than show a speed it no longer has and the time that
 /// would leave, or "Starting…" for as long as the server takes.
 const STALLED_AFTER: Duration = Duration::from_secs(5);
+/// How many of yt-dlp may run for the next video from the section to start.
+const SECTION_LIMIT: usize = 2;
+/// How long after the last of yt-dlp started the next video from the section
+/// may. yt-dlp's own advice is 5 to 10 seconds between downloads.
+const SECTION_GAP: Duration = Duration::from_secs(8);
 
 /// A video to download: what is playing.
 #[derive(Debug, Clone)]
@@ -51,6 +62,9 @@ pub struct Request {
     pub title: String,
     /// yt-dlp's format ids for what is playing; None leaves it to yt-dlp.
     pub format: Option<String>,
+    /// The video when it comes from the YouTube section, which has its own
+    /// options and waits its turn.
+    pub video: Option<VideoId>,
 }
 
 /// yt-dlp as mpv's yt-dlp hook looks for it: the configured path (or
@@ -200,7 +214,7 @@ fn command(program: &Path, request: &Request, folder: &Path, raw: &str) -> Comma
 #[derive(Debug, Clone, PartialEq)]
 enum State {
     /// A Jellyfin download waiting for the one before it from the same
-    /// server.
+    /// server, or a video from the YouTube section for its turn.
     Queued,
     Running {
         done: u64,
@@ -327,6 +341,19 @@ impl Task {
         matches!(self.state, State::Running { .. }) || self.stopping()
     }
 
+    /// yt-dlp running.
+    fn ytdl_running(&self) -> bool {
+        matches!(self.job, Job::Ytdl { .. }) && matches!(self.state, State::Running { .. })
+    }
+
+    /// The YouTube section's video it downloads.
+    fn video(&self) -> Option<&VideoId> {
+        match &self.job {
+            Job::Ytdl { request, .. } => request.video.as_ref(),
+            Job::Jellyfin { .. } => None,
+        }
+    }
+
     /// The Jellyfin server it downloads from.
     fn server(&self) -> Option<&str> {
         match &self.job {
@@ -366,6 +393,10 @@ pub struct Downloads {
     ended: RefCell<HashMap<String, Tally>>,
     /// Reads the Jellyfin downloads' meters while any runs or waits.
     ticker: slint::Timer,
+    /// When yt-dlp last started, which spaces out the section's videos.
+    ytdl_started: Cell<Option<Instant>>,
+    /// Starts the section's next video when the wait between them is over.
+    section_timer: slint::Timer,
 }
 
 /// Downloads of one server that ended, for the message when the last does.
@@ -500,6 +531,8 @@ impl Downloads {
             next_id: Cell::new(1),
             ended: RefCell::new(HashMap::new()),
             ticker: slint::Timer::default(),
+            ytdl_started: Cell::new(None),
+            section_timer: slint::Timer::default(),
         });
         downloads.wire();
         let listener: Weak<dyn Listener> = Rc::downgrade(&downloads) as Weak<dyn Listener>;
@@ -658,11 +691,13 @@ impl Downloads {
     }
 
     /// Starts downloading; false when yt-dlp could not be run, which the
-    /// window shows.
+    /// window shows. A video from the YouTube section waits its turn instead,
+    /// unless it is on its way already, when nothing more happens.
     pub fn start(self: &Rc<Self>, request: Request) -> bool {
-        let app = self.app();
-        let prefs = app.prefs();
-        let folder = prefs.download_dir();
+        if request.video.is_some() {
+            self.add_section_video(request);
+            return true;
+        }
         let id = self.next_id.get();
         self.next_id.set(id + 1);
         let mut task = Task {
@@ -674,21 +709,7 @@ impl Downloads {
             state: State::running(),
             file: None,
         };
-        let started = (|| -> Result<Arc<Mutex<Child>>, String> {
-            let program = find_ytdl(&prefs, &app.mpv_config_dir()).ok_or(
-                "yt-dlp was not found. Install it, or set where it is in Preferences › Network.",
-            )?;
-            std::fs::create_dir_all(&folder)
-                .map_err(|error| format!("Could not make {}: {error}", folder.display()))?;
-            let raw = prefs.ytdl_raw_options_with_proxy(&prefs.ytdl_raw_options);
-            let mut command = command(&program, &request, &folder, &raw);
-            // Not the whole command: its options can hold a proxy's password.
-            log::debug!("downloading {} with {}", request.url, program.display());
-            let child = command
-                .spawn()
-                .map_err(|error| format!("Could not run {}: {error}", program.display()))?;
-            Ok(Arc::new(Mutex::new(child)))
-        })();
+        let started = self.spawn_ytdl(&request);
         let ok = match started {
             Ok(child) => {
                 watch(id, child.clone());
@@ -708,9 +729,60 @@ impl Downloads {
         ok
     }
 
+    fn add_section_video(&self, request: Request) {
+        {
+            let mut tasks = self.tasks.borrow_mut();
+            let already = tasks
+                .iter()
+                .any(|task| task.active() && task.video() == request.video.as_ref());
+            if already {
+                return;
+            }
+            let id = self.next_id.get();
+            self.next_id.set(id + 1);
+            tasks.push(Task {
+                id,
+                job: Job::Ytdl {
+                    request,
+                    child: None,
+                },
+                state: State::Queued,
+                file: None,
+            });
+        }
+        self.refresh();
+        self.start_queued();
+    }
+
+    /// Runs yt-dlp for a request, in the download folder.
+    fn spawn_ytdl(&self, request: &Request) -> Result<Arc<Mutex<Child>>, String> {
+        let app = self.app();
+        let prefs = app.prefs();
+        let folder = prefs.download_dir();
+        let program = find_ytdl(&prefs, &app.mpv_config_dir()).ok_or(
+            "yt-dlp was not found. Install it, or set where it is in Preferences › Network.",
+        )?;
+        std::fs::create_dir_all(&folder)
+            .map_err(|error| format!("Could not make {}: {error}", folder.display()))?;
+        let raw = if request.video.is_some() {
+            prefs.ytdl_options_for_section()
+        } else {
+            prefs.ytdl_raw_options_with_proxy(&prefs.ytdl_raw_options)
+        };
+        let mut command = command(&program, request, &folder, &raw);
+        // Not the whole command: its options can hold a proxy's password.
+        log::debug!("downloading {} with {}", request.url, program.display());
+        let child = command
+            .spawn()
+            .map_err(|error| format!("Could not run {}: {error}", program.display()))?;
+        self.ytdl_started.set(Some(Instant::now()));
+        Ok(Arc::new(Mutex::new(child)))
+    }
+
     /// A line or the end from a download's thread.
     fn report(&self, id: u64, report: Report) {
         let ended = matches!(report, Report::Finished(_));
+        let mut saved = None;
         let finished = {
             let mut tasks = self.tasks.borrow_mut();
             let Some(task) = tasks.iter_mut().find(|task| task.id == id) else {
@@ -778,13 +850,20 @@ impl Downloads {
                     if !matches!(task.state, State::Running { .. }) {
                         None
                     } else {
+                        let video = task.video().cloned();
                         task.state = match (result, task.file.clone()) {
                             (Ok(()), Some(path)) => State::Done(path),
                             (Ok(()), None) => {
                                 State::Failed("yt-dlp finished without saving a file".into())
                             }
+                            (Err(error), _) if video.is_some() => {
+                                State::Failed(ytdlp::failure_of(&error).said())
+                            }
                             (Err(error), _) => State::Failed(error),
                         };
+                        if let (Some(video), State::Done(path)) = (&video, &task.state) {
+                            saved = Some((video.clone(), path.clone()));
+                        }
                         Some((
                             task.title(),
                             task.state.clone(),
@@ -795,6 +874,9 @@ impl Downloads {
             }
         };
         self.refresh_task(id);
+        if let Some((video, path)) = saved {
+            self.app().youtube().set_download(&video, &path);
+        }
         // Counted before the server's next downloads start, which may fail
         // as they do, and say what they all came to.
         if let Some((title, state, Some(server))) = &finished {
@@ -906,6 +988,7 @@ impl Downloads {
     /// and its thread, like those of downloads stopped before that haven't
     /// ended yet, is given a moment to end.
     pub fn stop_all(&self) {
+        self.section_timer.stop();
         let mut threads = Vec::new();
         for task in self.tasks.borrow_mut().iter_mut() {
             if task.active() {
@@ -1012,22 +1095,13 @@ impl Downloads {
     }
 
     /// Starts the first waiting download of each server that has none
-    /// running or stopping.
+    /// running or stopping, and the section's videos as their limit allows.
     fn start_queued(&self) {
         loop {
-            let next = {
-                let tasks = self.tasks.borrow();
-                tasks
-                    .iter()
-                    .filter(|task| task.state == State::Queued)
-                    .find(|queued| {
-                        !tasks
-                            .iter()
-                            .any(|task| task.downloading() && task.server() == queued.server())
-                    })
-                    .map(|task| task.id)
-            };
+            let spaced = spaced_out(self.ytdl_started.get(), Instant::now(), SECTION_GAP);
+            let next = next_queued(&self.tasks.borrow(), spaced);
             let Some(id) = next else {
+                self.wait_for_section_gap();
                 return;
             };
             self.launch(id);
@@ -1044,10 +1118,35 @@ impl Downloads {
         }
     }
 
+    /// A video from the section that only waits for the time between them
+    /// starts when that is over. One waiting for another to end starts then.
+    fn wait_for_section_gap(&self) {
+        let tasks = self.tasks.borrow();
+        let free = tasks.iter().filter(|task| task.ytdl_running()).count() < SECTION_LIMIT;
+        let waiting = tasks
+            .iter()
+            .any(|task| task.state == State::Queued && task.server().is_none());
+        let (true, true, Some(started)) = (free, waiting, self.ytdl_started.get()) else {
+            return;
+        };
+        let left = SECTION_GAP.saturating_sub(started.elapsed());
+        self.section_timer
+            .start(slint::TimerMode::SingleShot, left, || {
+                App::with_current(|app| {
+                    if let Some(downloads) = app.existing_downloads() {
+                        downloads.start_queued();
+                    }
+                });
+            });
+    }
+
     /// Starts a waiting Jellyfin download on a thread of its own, or fails
     /// it at once when its server has no sign-in. One that fails counts
     /// towards its server's message as one that fails later does.
     fn launch(&self, id: u64) {
+        if self.launch_ytdl(id) {
+            return;
+        }
         let app = self.app();
         let session = app.jellyfin();
         let folder = app.prefs().download_dir();
@@ -1111,6 +1210,66 @@ impl Downloads {
             self.announce(&server);
         }
     }
+}
+
+impl Downloads {
+    /// Starts a waiting yt-dlp download; false for one that isn't that. One that
+    /// can't start says why in its row.
+    fn launch_ytdl(&self, id: u64) -> bool {
+        let request = {
+            let tasks = self.tasks.borrow();
+            match tasks
+                .iter()
+                .find(|task| task.id == id)
+                .map(|task| &task.job)
+            {
+                Some(Job::Ytdl { request, .. }) => request.clone(),
+                _ => return false,
+            }
+        };
+        let started = self.spawn_ytdl(&request);
+        {
+            let mut tasks = self.tasks.borrow_mut();
+            let Some(task) = tasks.iter_mut().find(|task| task.id == id) else {
+                return true;
+            };
+            match started {
+                Ok(child) => {
+                    watch(id, child.clone());
+                    task.job = Job::Ytdl {
+                        request,
+                        child: Some(child),
+                    };
+                    task.state = State::running();
+                }
+                Err(error) => task.state = State::Failed(error),
+            }
+        }
+        self.refresh_task(id);
+        true
+    }
+}
+
+/// Whether enough time has passed since yt-dlp last started.
+fn spaced_out(started: Option<Instant>, now: Instant, gap: Duration) -> bool {
+    started.is_none_or(|started| now.saturating_duration_since(started) >= gap)
+}
+
+/// The waiting download to start next: a Jellyfin one whose server has none
+/// running or stopping, or a video from the section if the limit and the time
+/// between them allow. The two don't hold each other up.
+fn next_queued(tasks: &[Task], spaced: bool) -> Option<u64> {
+    let room = tasks.iter().filter(|task| task.ytdl_running()).count() < SECTION_LIMIT;
+    tasks
+        .iter()
+        .filter(|task| task.state == State::Queued)
+        .find(|queued| match queued.server() {
+            Some(server) => !tasks
+                .iter()
+                .any(|task| task.downloading() && task.server() == Some(server)),
+            None => spaced && room,
+        })
+        .map(|task| task.id)
 }
 
 impl Listener for Downloads {
@@ -1336,6 +1495,7 @@ mod tests {
             url: "https://example.com/v".into(),
             title: String::new(),
             format: Some("18".into()),
+            video: None,
         };
         command(Path::new("yt-dlp"), &request, Path::new("/videos"), raw)
             .get_args()
@@ -1404,6 +1564,139 @@ mod tests {
         }
     }
 
+    /// The section's options are all a video from it goes with, cookies of the
+    /// user's left out, with the clients and proxy still there.
+    #[test]
+    fn a_video_from_the_section_goes_signed_out() {
+        let prefs = Preferences {
+            ytdl_raw_options: "cookies-from-browser=firefox".into(),
+            http_proxy: "http://proxy.example:8080".into(),
+            ..Default::default()
+        };
+        let args = download_args(&prefs.ytdl_options_for_section());
+        assert!(args.iter().any(|arg| arg == "--ignore-config"), "{args:?}");
+        assert!(!args.iter().any(|arg| arg.contains("cookies")), "{args:?}");
+        assert_eq!(
+            extractor_args(&args),
+            ["youtube:player_client=visionos,default"]
+        );
+        let at = args.iter().position(|arg| arg == "--proxy").unwrap();
+        assert_eq!(args[at + 1], "http://proxy.example:8080");
+        assert_eq!(args[args.len() - 2..], ["--", "https://example.com/v"]);
+    }
+
+    fn section_task(id: u64, state: State) -> Task {
+        Task {
+            id,
+            job: Job::Ytdl {
+                request: Request {
+                    url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(),
+                    title: String::new(),
+                    format: None,
+                    video: VideoId::parse("aaaaaaaaaaa"),
+                },
+                child: None,
+            },
+            state,
+            file: None,
+        }
+    }
+
+    fn server_task(id: u64, server: &str, state: State) -> Task {
+        let mut task = jellyfin_task(None);
+        task.id = id;
+        task.state = state;
+        if let Job::Jellyfin { request, .. } = &mut task.job {
+            request.server_id = server.to_owned();
+        }
+        task
+    }
+
+    #[test]
+    fn at_most_two_of_the_sections_videos_run() {
+        let running = State::running;
+        let tasks = vec![section_task(1, State::Queued)];
+        assert_eq!(next_queued(&tasks, true), Some(1));
+        // Not before its time.
+        assert_eq!(next_queued(&tasks, false), None);
+
+        let mut tasks = vec![section_task(1, running()), section_task(2, State::Queued)];
+        assert_eq!(next_queued(&tasks, true), Some(2));
+        tasks.insert(1, section_task(3, running()));
+        assert_eq!(next_queued(&tasks, true), None);
+        tasks[0].state = State::Done("/a".into());
+        assert_eq!(next_queued(&tasks, true), Some(2));
+        tasks[1].state = State::Failed("no".into());
+        assert_eq!(next_queued(&tasks, true), Some(2));
+        tasks[2].state = State::Cancelled;
+        assert_eq!(next_queued(&tasks, true), None);
+    }
+
+    /// One downloaded from the player, which starts at once, counts as well: it
+    /// is the same address asking.
+    #[test]
+    fn a_video_from_the_player_counts_towards_the_limit() {
+        let mut other = section_task(1, State::running());
+        if let Job::Ytdl { request, .. } = &mut other.job {
+            request.video = None;
+        }
+        let mut tasks = vec![other, section_task(2, State::running())];
+        tasks.push(section_task(3, State::Queued));
+        assert_eq!(next_queued(&tasks, true), None);
+    }
+
+    /// A server's downloads go as they did: one at a time from each, whatever
+    /// the section is doing, and it whatever they are.
+    #[test]
+    fn the_section_and_jellyfin_servers_do_not_hold_each_other_up() {
+        let running = State::running;
+        let tasks = vec![
+            section_task(1, running()),
+            section_task(2, running()),
+            section_task(3, State::Queued),
+            server_task(4, "a", State::Queued),
+        ];
+        assert_eq!(next_queued(&tasks, false), Some(4));
+        let tasks = vec![
+            server_task(1, "a", running()),
+            server_task(2, "a", State::Queued),
+            server_task(3, "b", State::Queued),
+            section_task(4, State::Queued),
+        ];
+        assert_eq!(next_queued(&tasks, false), Some(3));
+        let tasks = vec![
+            server_task(1, "a", running()),
+            server_task(2, "a", State::Queued),
+            section_task(4, State::Queued),
+        ];
+        assert_eq!(next_queued(&tasks, true), Some(4));
+        assert_eq!(next_queued(&tasks, false), None);
+    }
+
+    #[test]
+    fn the_sections_videos_start_apart() {
+        let start = Instant::now();
+        let gap = Duration::from_secs(8);
+        assert!(spaced_out(None, start, gap));
+        assert!(!spaced_out(Some(start), start, gap));
+        assert!(!spaced_out(
+            Some(start),
+            start + Duration::from_secs(7),
+            gap
+        ));
+        assert!(spaced_out(Some(start), start + gap, gap));
+    }
+
+    #[test]
+    fn a_waiting_video_says_so_and_can_be_stopped() {
+        let mut task = section_task(1, State::Queued);
+        assert_eq!(row(&task).state, "queued");
+        assert!(task.active());
+        assert!(!task.ytdl_running());
+        assert!(task.stop());
+        assert_eq!(task.video().unwrap().as_str(), "aaaaaaaaaaa");
+    }
+
     #[test]
     fn a_servers_downloads_say_once_what_they_came_to() {
         let tally = |saved, failed| Tally {
@@ -1446,6 +1739,7 @@ mod tests {
                     url: "https://example.com/v".into(),
                     title: String::new(),
                     format: None,
+                    video: None,
                 },
                 child: None,
             },

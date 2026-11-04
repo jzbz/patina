@@ -1,0 +1,81 @@
+{
+  "id": "UCfixturefixturefixture0",
+  "channel": "Fixture Channel",
+  "channel_id": "UCfixturefixturefixture0",
+  "title": "Fixture Channel - Videos",
+  "availability": "public",
+  "channel_follower_count": 21400000,
+  "description": "A channel made up for tests.",
+  "thumbnails": [
+    {"url": "https://yt3.googleusercontent.com/banner=w1060", "height": 175, "width": 1060, "id": "0", "resolution": "1060x175"},
+    {"url": "https://yt3.googleusercontent.com/banner=s0", "id": "banner_uncropped", "preference": -5},
+    {"url": "https://yt3.googleusercontent.com/picture=s900-c-k-c0x00ffffff-no-rj", "height": 900, "width": 900, "id": "7", "resolution": "900x900"},
+    {"url": "https://yt3.googleusercontent.com/picture=s176-c-k-c0x00ffffff-no-rj", "height": 176, "width": 176, "id": "8", "resolution": "176x176"},
+    {"url": "https://yt3.googleusercontent.com/picture=s88-c-k-c0x00ffffff-no-rj", "height": 88, "width": 88, "id": "9", "resolution": "88x88"},
+    {"url": "https://yt3.googleusercontent.com/picture=s0", "id": "avatar_uncropped", "preference": 1}
+  ],
+  "uploader_id": "@fixture",
+  "uploader_url": "https://www.youtube.com/@fixture",
+  "channel_is_verified": true,
+  "uploader": "Fixture Channel",
+  "channel_url": "https://www.youtube.com/channel/UCfixturefixturefixture0",
+  "_type": "playlist",
+  "entries": [
+    {
+      "title": "A video",
+      "thumbnails": [{"url": "https://i.ytimg.com/vi/-ideoFixtur/hq720.jpg?sqp=x&rs=y", "height": 202, "width": 360}],
+      "duration": 654,
+      "view_count": 11000000,
+      "timestamp": 1793318400,
+      "live_status": null,
+      "availability": null,
+      "channel_url": null,
+      "uploader_url": null,
+      "ie_key": "Youtube",
+      "id": "-ideoFixtur",
+      "_type": "url",
+      "url": "https://www.youtube.com/watch?v=-ideoFixtur",
+      "description": ""
+    },
+    {
+      "title": "An upcoming stream",
+      "duration": null,
+      "view_count": null,
+      "timestamp": null,
+      "live_status": "is_upcoming",
+      "ie_key": "Youtube",
+      "id": "upcomingVid",
+      "_type": "url",
+      "url": "https://www.youtube.com/watch?v=upcomingVid"
+    },
+    {
+      "title": "A stream",
+      "live_status": "is_live",
+      "ie_key": "Youtube",
+      "id": "liveVideoId",
+      "_type": "url",
+      "url": "https://www.youtube.com/watch?v=liveVideoId"
+    },
+    {
+      "title": 7,
+      "duration": "long",
+      "view_count": {"many": true},
+      "timestamp": [1],
+      "live_status": 3,
+      "ie_key": "Youtube",
+      "id": "strangeType",
+      "_type": "url",
+      "url": 12
+    },
+    {
+      "title": "A playlist row",
+      "ie_key": "YoutubeTab",
+      "id": "PLfixturefixturefixturefixture00",
+      "_type": "url"
+    }
+  ],
+  "extractor_key": "YoutubeTab",
+  "extractor": "youtube:tab",
+  "webpage_url": "https://www.youtube.com/channel/UCfixturefixturefixture0/videos",
+  "epoch": 1793661914
+}

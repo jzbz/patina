@@ -30,6 +30,12 @@ export component MainMenu inherits ContextMenuArea {
                 }
             }
             MenuItem {
+                title: "YouTube";
+                activated => {
+                    Actions.patina("youtube");
+                }
+            }
+            MenuItem {
                 title: "Jellyfin…";
                 activated => {
                     Actions.patina("jellyfin-sign-in");
@@ -92,6 +98,13 @@ export component MainMenu inherits ContextMenuArea {
                 enabled: MenuMedia.online;
                 activated => {
                     Actions.patina("download-video");
+                }
+            }
+            MenuItem {
+                title: MenuMedia.on-watch-later ? "Remove from Watch Later" : "Save to Watch Later";
+                enabled: MenuMedia.youtube-video;
+                activated => {
+                    Actions.patina("toggle-watch-later");
                 }
             }
             MenuItem {

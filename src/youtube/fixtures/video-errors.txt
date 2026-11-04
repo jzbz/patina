@@ -1,0 +1,24 @@
+# A failure's name, and what yt-dlp says for it. Made-up ids, and the wording of
+# yt-dlp 2026.10.26 and of YouTube's own messages as it passes them on.
+private|ERROR: [youtube] aaaaaaaaaaa: Private video. Sign in if you've been granted access to this video. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies.
+age|ERROR: [youtube] aaaaaaaaaaa: Sign in to confirm your age. This video may be inappropriate for some users. Use --cookies-from-browser or --cookies for the authentication.
+age|ERROR: [youtube] aaaaaaaaaaa: This video is age-restricted; some formats may be missing without authentication.
+region|ERROR: [youtube] aaaaaaaaaaa: The uploader has not made this video available in your country. You might want to use a VPN or a proxy server (with --proxy) to workaround.
+region|ERROR: [youtube] aaaaaaaaaaa: Video unavailable. This video is not available in your country
+region|ERROR: [youtube] aaaaaaaaaaa: Video unavailable. This video contains content from Example, who has blocked it in your country on copyright grounds
+region|ERROR: [youtube] aaaaaaaaaaa: This video is not available from your location due to geo restriction
+members|ERROR: [youtube] aaaaaaaaaaa: Join this channel to get access to members-only content like this video, and other exclusive perks.
+members|ERROR: [youtube] aaaaaaaaaaa: This video is available to this channel's members on level: Example (or any higher level). Join this channel to get access to this level's benefits.
+removed|ERROR: [youtube] aaaaaaaaaaa: Video unavailable. This video has been removed by the uploader
+removed|ERROR: [youtube] aaaaaaaaaaa: This video has been removed for violating YouTube's Terms of Service
+removed|ERROR: [youtube] aaaaaaaaaaa: Video unavailable. This video is no longer available because the YouTube account associated with this video has been terminated.
+removed|ERROR: [youtube] aaaaaaaaaaa: Video unavailable. This video is no longer available due to a copyright claim by Example
+removed|ERROR: [youtube] aaaaaaaaaaa: This live stream recording is not available.
+not-started|ERROR: [youtube] aaaaaaaaaaa: This live event will begin in a few moments.
+not-started|ERROR: [youtube] aaaaaaaaaaa: Premieres in 3 hours
+not-started|ERROR: [youtube] aaaaaaaaaaa: Premiere will begin shortly
+unavailable|ERROR: [youtube] aaaaaaaaaaa: Video unavailable
+unavailable|ERROR: [youtube] aaaaaaaaaaa: Video unavailable. This video is not available
+blocked|ERROR: [youtube] aaaaaaaaaaa: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication.
+blocked|ERROR: [youtube] aaaaaaaaaaa: Video unavailable. This content isn't available, try again later. The current session has been rate-limited by YouTube for up to an hour.
+generic|ERROR: [youtube] aaaaaaaaaaa: something nobody has seen before

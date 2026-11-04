@@ -36,6 +36,7 @@ mod video;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod wayland;
 mod window;
+mod youtube;
 mod ytdl;
 
 use std::process::ExitCode;

