@@ -18,6 +18,9 @@ directories = "6.0.0"
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 getrandom = "0.4.3"
 glow = "0.18.0"
+# What has the keyboard's focus, which Slint has no public way to ask (see
+# keep_keyboard in src/window.rs). At Slint's exact version (see src/backend.rs).
+i-slint-core = { version = "=1.18.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 jiff = "0.2.38"
 keyring-core = "1.0.1"
@@ -46,7 +49,6 @@ libc = "0.2.191"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 i-slint-backend-winit = "=1.18.1"
-i-slint-core = { version = "=1.18.1", default-features = false }
 smithay-clipboard = "0.7.3"
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
 wayland-client = "0.31.15"

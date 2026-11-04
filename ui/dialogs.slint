@@ -202,62 +202,80 @@ export component ConfirmDialog inherits Modal {
 export component AboutDialog inherits Modal {
     panel-width: 360px;
 
-    VerticalLayout {
-        spacing: 8px;
-        alignment: center;
-        Image {
-            source: @image-url("icons/patina.svg");
-            height: 78px;
-        }
-        Text {
-            text: "Patina";
-            color: Theme.text;
-            font-size: 22px;
-            font-weight: 700;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: "Version " + Platform.version;
-            color: Theme.secondary-text;
-            font-size: Theme.font-normal;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: "A media player for Linux, macOS and Windows,\nbuilt with Rust and Slint on top of mpv.";
-            color: Theme.secondary-text;
-            font-size: Theme.font-normal;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-            line-height-factor: Theme.paragraph-line-height;
-        }
-        Text {
-            text: "Copyright © 2026 Jonathan Zeppettini";
-            color: Theme.tertiary-text;
-            font-size: Theme.font-small;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: "Patina is MIT licensed. mpv, FFmpeg, Slint, Lucide's icons\nand IBM Plex Sans are used under their own licenses.";
-            color: Theme.tertiary-text;
-            font-size: Theme.font-small;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-            line-height-factor: Theme.paragraph-line-height;
-        }
-        HorizontalLayout {
-            alignment: center;
-            padding-top: 6px;
-            spacing: 8px;
-            TextButton {
-                text: "Website";
-                clicked => {
-                    Actions.patina("open-website");
-                }
+    init => {
+        scope.focus();
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
             }
-            TextButton {
-                text: "Close";
-                clicked => {
-                    root.cancel();
+            // Nothing else here takes focus (see ConfirmDialog).
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            spacing: 8px;
+            alignment: center;
+            Image {
+                source: @image-url("icons/patina.svg");
+                height: 78px;
+            }
+            Text {
+                text: "Patina";
+                color: Theme.text;
+                font-size: 22px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "Version " + Platform.version;
+                color: Theme.secondary-text;
+                font-size: Theme.font-normal;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "A media player for Linux, macOS and Windows,\nbuilt with Rust and Slint on top of mpv.";
+                color: Theme.secondary-text;
+                font-size: Theme.font-normal;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+                line-height-factor: Theme.paragraph-line-height;
+            }
+            Text {
+                text: "Copyright © 2026 Jonathan Zeppettini";
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "Patina is MIT licensed. mpv, FFmpeg, Slint, Lucide's icons\nand IBM Plex Sans are used under their own licenses.";
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+                line-height-factor: Theme.paragraph-line-height;
+            }
+            HorizontalLayout {
+                alignment: center;
+                padding-top: 6px;
+                spacing: 8px;
+                TextButton {
+                    text: "Website";
+                    clicked => {
+                        Actions.patina("open-website");
+                    }
+                }
+                TextButton {
+                    text: "Close";
+                    clicked => {
+                        root.cancel();
+                    }
                 }
             }
         }
@@ -399,42 +417,60 @@ export component ShortcutsDialog inherits Modal {
     in property <[ShortcutItem]> shortcuts;
     panel-width: 520px;
 
-    VerticalLayout {
-        spacing: 10px;
-        Text {
-            text: "Keyboard Shortcuts";
-            color: Theme.text;
-            font-size: Theme.font-heading;
-            font-weight: 600;
+    init => {
+        scope.focus();
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            // Nothing else here takes focus (see ConfirmDialog).
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                return accept;
+            }
+            return reject;
         }
-        ListView {
-            height: 380px;
-            for item in root.shortcuts: HorizontalLayout {
-                height: 24px;
-                spacing: 12px;
-                Text {
-                    width: 150px;
-                    text: item.keys;
-                    color: Theme.playing;
-                    font-size: Theme.font-normal;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-                Text {
-                    text: item.action;
-                    color: Theme.text;
-                    font-size: Theme.font-normal;
-                    vertical-alignment: center;
-                    overflow: elide;
+
+        VerticalLayout {
+            spacing: 10px;
+            Text {
+                text: "Keyboard Shortcuts";
+                color: Theme.text;
+                font-size: Theme.font-heading;
+                font-weight: 600;
+            }
+            ListView {
+                height: 380px;
+                for item in root.shortcuts: HorizontalLayout {
+                    height: 24px;
+                    spacing: 12px;
+                    Text {
+                        width: 150px;
+                        text: item.keys;
+                        color: Theme.playing;
+                        font-size: Theme.font-normal;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: item.action;
+                        color: Theme.text;
+                        font-size: Theme.font-normal;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
             }
-        }
-        HorizontalLayout {
-            alignment: end;
-            TextButton {
-                text: "Close";
-                clicked => {
-                    root.cancel();
+            HorizontalLayout {
+                alignment: end;
+                TextButton {
+                    text: "Close";
+                    clicked => {
+                        root.cancel();
+                    }
                 }
             }
         }

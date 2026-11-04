@@ -414,6 +414,11 @@ rules about the account's token; this is how it sits among the rest.
   welcome view again. Page loads, from every
   window, share six threads (`session::load`), and an answer for a page
   the user has left is dropped.
+- **The keyboard.** Slint keeps the focus on items that have gone, and keys
+  then reach nothing. `keep_keyboard` in `window.rs` looks for that ahead of
+  each of the window's events, as a card scrolled out of a list and a choice
+  from a submenu leave it so with nothing to say it has happened, and has the
+  view on show take it back (`take-keyboard`, `LibraryUi.focus-back`).
 - **Playing.** What the library plays goes into mpv's playlist as
   `jellyfin://<server id>/<item id>`, so the playlist, the history, Recent
   and the system's media controls see neither the token nor a stream's

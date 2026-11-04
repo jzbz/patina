@@ -4,6 +4,7 @@ import { ControlBar, TitleBar, OsdView, SeekPreview, SkipButton } from "controls
 import { Sidebar } from "sidebar.slint";
 import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
+import { LibraryUi } from "library-parts.slint";
 import { LibraryView, Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn } from "library.slint";
 import { MusicPanel, MusicWindowButtons, DefaultArt } from "music.slint";
 import { PromptDialog, ConfirmDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog, DialogSize } from "dialogs.slint";
@@ -241,19 +242,18 @@ export component PlayerWindow inherits Window {
         }
     }
 
-    // See the player's keys' focus-gained.
-    refocus-timer := Timer {
-        interval: 1ms;
-        running: false;
-        triggered => {
-            self.running = false;
-            if root.dialog == "" {
-                keys.focus();
-            }
+    forward-focus: keys;
+
+    // Nothing that can take a key has the keyboard (see keep_keyboard in
+    // src/window.rs): the view on show takes it, or else the player's keys. A
+    // dialog takes the keyboard as it opens, and nothing in one goes while it
+    // shows.
+    public function take-keyboard() {
+        if root.dialog == "" {
+            keys.focus();
+            LibraryUi.focus-back += 1;
         }
     }
-
-    forward-focus: keys;
 
     // The menus read the window's state through globals, being copied into
     // the menu bar below as well as used in MainMenu.
@@ -1086,16 +1086,6 @@ export component PlayerWindow inherits Window {
     }
 
     keys := FocusScope {
-        // Slint 1.18 closes a menu before its submenus, and each gives the
-        // focus back to what had it when it opened: the menu to these keys,
-        // then each submenu to an item of the menu above it, closed by
-        // then, where the keyboard reaches nothing. Once the menu has given
-        // the keys the focus back, they take it again after the submenus.
-        focus-gained(reason) => {
-            if reason == FocusReason.popup-activation {
-                refocus-timer.running = true;
-            }
-        }
         key-pressed(event) => {
             Actions.activity();
             root.skip-again();

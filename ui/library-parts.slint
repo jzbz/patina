@@ -1,6 +1,7 @@
 // Pieces the library's pages share: cards and rows of cards, tabs, menu
 // buttons and toggles, and what an item shows while it has no image.
 
+import { LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton, TextButton } from "widgets.slint";
 import { Library, LibraryCard, LibraryRow, LibraryChoice } from "library-model.slint";
@@ -120,6 +121,16 @@ export global LibraryUi {
     // The item whose card's menu is open (see Card).
     in-out property <string> menu-card;
 
+    // Text is going into the page's field: nothing takes the keyboard from it,
+    // whatever arrives. A menu or a dialog over the field leaves this as it is,
+    // for the field to have the keyboard back after them; Tab, or the view
+    // taking the keyboard, ends it.
+    in-out property <bool> typing;
+    // Counts the times the view on show was asked to take the keyboard back:
+    // the field being typed in takes it, or else the view does (see
+    // PlayerWindow's take-keyboard and the views' covered).
+    in-out property <int> focus-back;
+
     public function reveal(top: length, bottom: length) {
         self.focus-top = top;
         self.focus-bottom = bottom;
@@ -210,6 +221,37 @@ export component KeyFocus inherits FocusScope {
         border-radius: root.radius;
         border-width: 2px;
         border-color: root.ring;
+    }
+}
+
+// A field on a page of the library, which goes on being typed in after a menu
+// or a dialog (LibraryUi.typing).
+export component PageField inherits LineEdit {
+    // A dialog over the view has the keyboard, which the field leaves it.
+    in property <bool> covered;
+    // A handler of its own: a LineEdit has one on has-focus already, and a
+    // property takes only one. A page whose field takes the focus as it shows
+    // says so itself, as this property starts there and sees no change.
+    property <bool> focused: self.has-focus;
+    changed focused => {
+        if self.focused {
+            LibraryUi.typing = true;
+        }
+    }
+    // Takes the keyboard to be typed in. A dialog over the field keeps it until
+    // it closes, and a disabled field would pass it on to the control after it:
+    // both leave `typing` for the field to take it when it can.
+    public function take-keyboard() {
+        LibraryUi.typing = true;
+        if !root.covered && root.enabled {
+            self.focus();
+        }
+    }
+    property <int> focus-back: LibraryUi.focus-back;
+    changed focus-back => {
+        if LibraryUi.typing {
+            root.take-keyboard();
+        }
     }
 }
 

@@ -31,6 +31,34 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Gives the keyboard back to the window when what has it can take no key.
+/// Slint keeps its focus on an item that has gone and hands that every key,
+/// Ctrl+Q's too, until Tab. Nothing says this has happened, and there are many
+/// ways to it: a card scrolled out of a list, whose row the ListView destroys;
+/// a choice from a submenu, as Slint 1.18 closes a menu before its submenus and
+/// each gives the focus back to what had it when it opened, the last of them to
+/// an item of a menu closed by then; a row made again. So it is looked for here,
+/// ahead of each of the window's events.
+///
+/// Slint also drops the focus of an item clipped out of sight, a control
+/// scrolled off a page, along with the key that finds it there. That is only
+/// looked for ahead of a key (`key_coming`): a list scrolling to what Tab just
+/// reached has it out of sight for a moment.
+fn keep_keyboard(window: &PlayerWindow, key_coming: bool) {
+    let inner = i_slint_core::window::WindowInner::from_pub(window.window());
+    // A menu has the keyboard while it is open.
+    if !inner.active_popups().is_empty() {
+        return;
+    }
+    let lost = match inner.focus_item.borrow().upgrade() {
+        Some(item) => key_coming && !item.is_visible(),
+        None => true,
+    };
+    if lost {
+        window.invoke_take_keyboard();
+    }
+}
+
 /// Reply userdata for `show-text`, whose expanded text becomes an OSD message.
 const REPLY_SHOW_TEXT: u64 = 10;
 const REPLY_SCREENSHOT: u64 = 11;
@@ -1920,6 +1948,10 @@ impl PlayerController {
             let Some(this) = weak.upgrade() else {
                 return EventResult::Propagate;
             };
+            keep_keyboard(
+                &this.window,
+                matches!(event, winit::event::WindowEvent::KeyboardInput { .. }),
+            );
             this.style_titlebar();
             this.check_window_system();
             this.app().start_media_controls(&this);
@@ -5869,12 +5901,12 @@ mod tests {
     /// tab picked again) makes its cards again, and so does a grid split
     /// into lines anew for another width. Slint left the keyboard's focus
     /// on the card that had it, gone, and every key went nowhere, Ctrl+Q's
-    /// too, until Tab gave the focus back. The library takes it back, and
-    /// Search gives it to its field.
+    /// too, until Tab gave the focus back. keep_keyboard has the library take
+    /// it back, and Search gives it to its field.
     #[test]
     fn shortcuts_reach_the_window_after_a_page_makes_its_cards_again() {
         use crate::{LibraryCard, LibraryRow};
-        use slint::platform::{Key, WindowEvent};
+        use slint::platform::Key;
         i_slint_backend_testing::init_no_event_loop();
         let window = PlayerWindow::new().unwrap();
         let resize = |width| {
@@ -5883,20 +5915,7 @@ mod tests {
                 .set_size(slint::PhysicalSize::new(width, 800))
         };
         resize(1280);
-        let press = |keys: &[SharedString]| {
-            for text in keys {
-                let text = text.clone();
-                window
-                    .window()
-                    .dispatch_event(WindowEvent::KeyPressed { text });
-            }
-            for text in keys.iter().rev() {
-                let text = text.clone();
-                window
-                    .window()
-                    .dispatch_event(WindowEvent::KeyReleased { text });
-            }
-        };
+        let press = |keys: &[SharedString]| press_keys(&window, keys);
         let ctrl_q = [SharedString::from(Key::Control), "q".into()];
         let quits = Rc::new(Cell::new(0));
         let counted = quits.clone();
@@ -5977,6 +5996,629 @@ mod tests {
         library.set_loads(library.get_loads() + 1);
         press(&["b".into()]);
         assert_eq!(window.get_dialog_text(), "ab", "the dialog kept the focus");
+    }
+
+    /// Presses keys as a window's event hook has them reach Slint: each after
+    /// keep_keyboard, as winit's are.
+    fn press_keys(window: &PlayerWindow, keys: &[SharedString]) {
+        use slint::platform::WindowEvent;
+        for text in keys {
+            keep_keyboard(window, true);
+            let text = text.clone();
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text });
+        }
+        for text in keys.iter().rev() {
+            keep_keyboard(window, true);
+            let text = text.clone();
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        }
+    }
+
+    fn press_key(window: &PlayerWindow, key: impl Into<SharedString>) {
+        press_keys(window, &[key.into()]);
+    }
+
+    /// What reaches the window's own keys, each with " ctrl" if it was held.
+    fn keys_reaching_the_window(window: &PlayerWindow) -> Rc<RefCell<Vec<String>>> {
+        let keys: Rc<RefCell<Vec<String>>> = Rc::default();
+        let seen = keys.clone();
+        window
+            .global::<Actions>()
+            .on_key(move |text, _, ctrl, _, _, _| {
+                // Tab goes on to move the focus, which is no shortcut.
+                if text == "\t" {
+                    return false;
+                }
+                seen.borrow_mut()
+                    .push(format!("{text}{}", if ctrl { " ctrl" } else { "" }));
+                true
+            });
+        keys
+    }
+
+    /// Ctrl+Q, which has to reach the window's keys wherever the focus is.
+    fn press_ctrl_q(window: &PlayerWindow, keys: &Rc<RefCell<Vec<String>>>) -> bool {
+        keys.borrow_mut().clear();
+        press_keys(
+            window,
+            &[
+                SharedString::from(slint::platform::Key::Control),
+                "q".into(),
+            ],
+        );
+        keys.borrow_mut().drain(..).any(|key| key == "q ctrl")
+    }
+
+    /// Lines of a library's page, a row or a grid's line of cards.
+    fn library_rows(count: usize) -> ModelRc<crate::LibraryRow> {
+        let card = crate::LibraryCard {
+            id: "show".into(),
+            kind: "series".into(),
+            title: "A Show".into(),
+            aspect: 2.0 / 3.0,
+            progress: -1.0,
+            ..Default::default()
+        };
+        let row = crate::LibraryRow {
+            id: "row".into(),
+            title: "Shows".into(),
+            cards: ModelRc::new(VecModel::from(vec![card; 3])),
+        };
+        ModelRc::new(VecModel::from(vec![row; count]))
+    }
+
+    /// A page of the library, or what shows without one, to look for the
+    /// keyboard on.
+    fn show_page(window: &PlayerWindow, view: &str, page: &str) {
+        let library = window.global::<Library>();
+        let playback = window.global::<Playback>();
+        library.set_shown(false);
+        playback.set_has_media(false);
+        window.set_music_mode(false);
+        match view {
+            "library" => {
+                library.set_rows(library_rows(40));
+                library.set_page(page.into());
+                library.set_loads(library.get_loads() + 1);
+                library.set_shown(true);
+            }
+            "player" => playback.set_has_media(true),
+            "music" => {
+                playback.set_has_media(true);
+                window.set_music_mode(true);
+            }
+            _ => {}
+        }
+        // Each page's keys take the focus as they are made.
+        i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+    }
+
+    fn window_for_keys() -> PlayerWindow {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = PlayerWindow::new().unwrap();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(1280, 800));
+        window.show().unwrap();
+        window
+    }
+
+    /// Chooses Subtitles, then Bigger, from the application menu, as the mouse
+    /// does: a submenu's item, which leaves the focus on an item of a closed
+    /// menu.
+    fn choose_from_a_submenu(window: &PlayerWindow) {
+        use slint::platform::Key;
+        let chosen = Rc::new(Cell::new(false));
+        let seen = chosen.clone();
+        window.global::<Actions>().on_mpv(move |args| {
+            seen.set(args.iter().any(|arg| arg == "sub-scale"));
+        });
+        window.invoke_show_menu_at(10.0, 10.0);
+        for _ in 0..5 {
+            press_key(window, Key::DownArrow);
+        }
+        press_key(window, Key::RightArrow);
+        // Past the separator, which the arrows skip.
+        for _ in 0..10 {
+            press_key(window, Key::DownArrow);
+        }
+        press_key(window, Key::Return);
+        assert!(chosen.get(), "the menu's item wasn't chosen");
+    }
+
+    /// Every key but Tab reached nothing after a choice from a submenu, in the
+    /// views' keys: Slint leaves the focus on an item of a closed menu.
+    #[test]
+    fn keys_work_after_a_choice_from_a_submenu() {
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        for (view, page) in [
+            ("library", "home"),
+            ("library", "grid"),
+            ("library", "local"),
+            ("welcome", ""),
+            ("player", ""),
+            ("music", ""),
+        ] {
+            show_page(&window, view, page);
+            assert!(press_ctrl_q(&window, &keys), "before: {view} {page}");
+            choose_from_a_submenu(&window);
+            assert!(press_ctrl_q(&window, &keys), "after: {view} {page}");
+        }
+    }
+
+    /// A field goes on being typed in after a choice from a submenu.
+    #[test]
+    fn a_field_keeps_the_typing_after_a_choice_from_a_submenu() {
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let library = window.global::<Library>();
+
+        show_page(&window, "library", "search");
+        press_key(&window, "a");
+        choose_from_a_submenu(&window);
+        press_key(&window, "q");
+        assert_eq!(library.get_search_text(), "aq");
+        assert!(keys.borrow().is_empty(), "{:?}", keys.borrow());
+    }
+
+    /// A focused card scrolled out of a list: its row is destroyed, and every
+    /// key went nowhere until Tab. The view takes the keyboard, and Tab goes
+    /// on from there.
+    #[test]
+    fn keys_work_after_a_focused_card_is_scrolled_out_of_its_list() {
+        use slint::platform::{Key, WindowEvent};
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let opened = Rc::new(Cell::new(0));
+        let library = window.global::<Library>();
+        let counted = opened.clone();
+        library.on_open(move |_, _| counted.set(counted.get() + 1));
+        let backs = Rc::new(Cell::new(0));
+        let counted = backs.clone();
+        library.on_back(move || counted.set(counted.get() + 1));
+        library.set_can_go_back(true);
+        let position = slint::LogicalPosition::new(600.0, 500.0);
+        let tab_to_a_card = || {
+            let before = opened.get();
+            for _ in 0..24 {
+                press_key(&window, Key::Tab);
+                press_key(&window, Key::Return);
+                if opened.get() > before {
+                    return;
+                }
+            }
+            panic!("no card took the focus");
+        };
+        for (view, page) in [
+            ("library", "home"),
+            ("library", "grid"),
+            ("library", "search"),
+        ] {
+            show_page(&window, view, page);
+            tab_to_a_card();
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerMoved { position });
+            for _ in 0..40 {
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::PointerScrolled {
+                        position,
+                        delta_x: 0.0,
+                        delta_y: -120.0,
+                    });
+            }
+            assert!(press_ctrl_q(&window, &keys), "Ctrl+Q: {view} {page}");
+            // The view has it, where Enter stops and Backspace goes back; on
+            // Search, the field would take the Backspace.
+            let before = (opened.get(), backs.get());
+            press_key(&window, Key::Return);
+            press_key(&window, Key::Backspace);
+            assert_eq!(opened.get(), before.0, "the card kept it: {view} {page}");
+            assert_eq!(
+                backs.get(),
+                before.1 + 1,
+                "the view hasn't it: {view} {page}"
+            );
+            assert!(keys.borrow().is_empty(), "{:?}", keys.borrow());
+            tab_to_a_card();
+        }
+    }
+
+    /// A control scrolled off a page that keeps it, out of sight: Slint drops
+    /// the focus, and the key that finds it there.
+    #[test]
+    fn keys_work_after_a_focused_control_is_clipped_out_of_its_page() {
+        use slint::platform::{Key, WindowEvent};
+        let window = window_for_keys();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(1280, 300));
+        let keys = keys_reaching_the_window(&window);
+        let library = window.global::<Library>();
+        let plays = Rc::new(Cell::new(0));
+        let counted = plays.clone();
+        library.on_play(move |_, _| counted.set(counted.get() + 1));
+        library.set_detail(crate::LibraryDetail {
+            id: "film".into(),
+            kind: "movie".into(),
+            title: "A Film".into(),
+            loaded: true,
+            can_play: true,
+            ..Default::default()
+        });
+        show_page(&window, "library", "detail");
+        let before = plays.get();
+        press_key(&window, Key::Tab);
+        press_key(&window, Key::Return);
+        assert_eq!(plays.get(), before + 1, "Play took no focus");
+        let position = slint::LogicalPosition::new(600.0, 250.0);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerScrolled {
+                position,
+                delta_x: 0.0,
+                delta_y: -2000.0,
+            });
+        // One key on its own: of Ctrl+Q, Slint would only drop the Ctrl.
+        press_key(&window, "f");
+        assert_eq!(*keys.borrow(), ["f"], "after scrolling");
+    }
+
+    /// Closing a dialog gave the keyboard to the window's keys, wherever it
+    /// had been: on Search, "q" then quit Patina, and Backspace reset the
+    /// player's speed. A field being typed in has it back, and otherwise the
+    /// view.
+    #[test]
+    fn a_view_has_the_keyboard_back_when_a_dialog_closes() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let library = window.global::<Library>();
+        let backs = Rc::new(Cell::new(0));
+        let counted = backs.clone();
+        library.on_back(move || counted.set(counted.get() + 1));
+        library.set_can_go_back(true);
+        let cover = |dialog: &str| {
+            window.set_dialog(dialog.into());
+            window.set_dialog_text(SharedString::new());
+            i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        };
+        // Each way out of a dialog, each ending in the same place.
+        let close = |dialog: &str| match dialog {
+            "jump-to" => {
+                press_key(&window, "1");
+                press_key(&window, Key::Return);
+            }
+            "clear-recent" => press_key(&window, Key::Return),
+            _ => press_key(&window, Key::Escape),
+        };
+        for dialog in ["shortcuts", "about", "open-url", "jump-to", "clear-recent"] {
+            // In a field: typing goes on in it.
+            show_page(&window, "library", "search");
+            library.set_search_text(SharedString::new());
+            press_key(&window, "a");
+            cover(dialog);
+            close(dialog);
+            assert_eq!(window.get_dialog(), "", "{dialog}");
+            press_key(&window, "q");
+            assert_eq!(library.get_search_text(), "aq", "library search: {dialog}");
+            press_key(&window, Key::Backspace);
+            assert_eq!(library.get_search_text(), "a", "library search: {dialog}");
+            assert!(keys.borrow().is_empty(), "{dialog}: {:?}", keys.borrow());
+
+            // Not in one: Backspace goes back and Enter stops at the view, and
+            // what the view doesn't take goes on to the window.
+            show_page(&window, "library", "home");
+            cover(dialog);
+            close(dialog);
+            keys.borrow_mut().clear();
+            let before = backs.get();
+            press_key(&window, Key::Backspace);
+            assert_eq!(backs.get(), before + 1, "{dialog}");
+            press_key(&window, Key::Return);
+            assert!(keys.borrow().is_empty(), "{dialog}: {:?}", keys.borrow());
+            press_key(&window, "f");
+            assert_eq!(*keys.borrow(), ["f"], "{dialog}");
+            keys.borrow_mut().clear();
+
+            // Tabbed out of the field: it hasn't it back, and "q" is the
+            // window's again.
+            show_page(&window, "library", "search");
+            library.set_search_text(SharedString::new());
+            press_key(&window, Key::Tab);
+            cover(dialog);
+            close(dialog);
+            press_key(&window, "q");
+            assert_eq!(library.get_search_text(), "", "tabbed out: {dialog}");
+            assert_eq!(*keys.borrow(), ["q"], "tabbed out: {dialog}");
+            keys.borrow_mut().clear();
+        }
+
+        // Signing in, a step's field has it back.
+        let signed = Rc::new(RefCell::new(String::new()));
+        let seen = signed.clone();
+        library.on_connect(move |text| *seen.borrow_mut() = text.to_string());
+        library.set_sign_in(crate::LibrarySignIn {
+            step: "address".into(),
+            ..Default::default()
+        });
+        show_page(&window, "library", "sign-in");
+        press_key(&window, "a");
+        cover("shortcuts");
+        press_key(&window, Key::Escape);
+        press_key(&window, "b");
+        press_key(&window, Key::Return);
+        assert_eq!(*signed.borrow(), "ab");
+    }
+
+    /// A dialog keeps the keyboard while it is open: a choice from a submenu
+    /// that opens one doesn't leave it dead, and nothing takes the keyboard
+    /// from one through keep_keyboard.
+    #[test]
+    fn a_dialog_opened_from_a_submenu_has_the_keyboard() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let weak = window.as_weak();
+        window.global::<Actions>().on_patina(move |name| {
+            if name == "open-url" {
+                weak.unwrap().set_dialog("open-url".into());
+            }
+        });
+        show_page(&window, "library", "home");
+        window.invoke_show_menu_at(10.0, 10.0);
+        press_key(&window, Key::DownArrow);
+        press_key(&window, Key::RightArrow);
+        // File: Open, then Open URL.
+        press_key(&window, Key::DownArrow);
+        press_key(&window, Key::DownArrow);
+        press_key(&window, Key::Return);
+        assert_eq!(window.get_dialog(), "open-url");
+        press_key(&window, "a");
+        keep_keyboard(&window, true);
+        press_key(&window, "b");
+        assert_eq!(window.get_dialog_text(), "ab");
+        press_key(&window, Key::Escape);
+        assert_eq!(window.get_dialog(), "");
+    }
+
+    /// Opens a dialog with a field, and types into it.
+    fn open_a_prompt(window: &PlayerWindow) {
+        window.set_dialog("open-url".into());
+        window.set_dialog_text(SharedString::new());
+        i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        press_key(window, "a");
+    }
+
+    /// What arrives under a dialog leaves it the keyboard: the dialog goes on
+    /// being typed in and Escape still closes it, with nothing reaching the
+    /// window's shortcuts behind it. Once it has closed, what arrived has the
+    /// keyboard: a field, or else the view, where Backspace goes back.
+    #[test]
+    fn a_dialog_keeps_the_keyboard_from_what_arrives_under_it() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let library = window.global::<Library>();
+        let backs = Rc::new(Cell::new(0));
+        let counted = backs.clone();
+        library.on_back(move || counted.set(counted.get() + 1));
+        library.set_can_go_back(true);
+        let sent = Rc::new(RefCell::new(String::new()));
+        let seen = sent.clone();
+        library.on_connect(move |text| *seen.borrow_mut() = text.to_string());
+        let seen = sent.clone();
+        library.on_pick_user(move |text| *seen.borrow_mut() = text.to_string());
+        let seen = sent.clone();
+        library.on_sign_in_with_password(move |_, text| *seen.borrow_mut() = text.to_string());
+        let step = |step: &str, working: bool, message: &str| {
+            library.set_sign_in(crate::LibrarySignIn {
+                step: step.into(),
+                working,
+                message: message.into(),
+                ..Default::default()
+            });
+        };
+        // Types on in the dialog with `arrived` come, and closes it.
+        let check_and_close = |what: &str| {
+            i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+            press_key(&window, "b");
+            assert_eq!(window.get_dialog_text(), "ab", "{what}");
+            press_key(&window, "q");
+            assert_eq!(window.get_dialog_text(), "abq", "{what}");
+            press_key(&window, Key::Escape);
+            assert_eq!(window.get_dialog(), "", "{what}");
+            assert!(keys.borrow().is_empty(), "{what}: {:?}", keys.borrow());
+        };
+        // Pages of the library, none with a field.
+        for page in ["home", "grid", "detail", "local"] {
+            show_page(&window, "library", "search");
+            open_a_prompt(&window);
+            library.set_page(page.into());
+            check_and_close(page);
+            let before = backs.get();
+            press_key(&window, Key::Backspace);
+            assert_eq!(backs.get(), before + 1, "the view hasn't it: {page}");
+        }
+        // The library as it comes, under the dialog.
+        show_page(&window, "welcome", "");
+        open_a_prompt(&window);
+        show_page(&window, "library", "home");
+        check_and_close("library made");
+        let before = backs.get();
+        press_key(&window, Key::Backspace);
+        assert_eq!(backs.get(), before + 1, "the view hasn't it: library made");
+        // An error in the library's place.
+        show_page(&window, "library", "home");
+        open_a_prompt(&window);
+        library.set_error("It went wrong".into());
+        check_and_close("library failed");
+        library.set_error(SharedString::new());
+
+        // A field, which has the keyboard once the dialog closes.
+        show_page(&window, "library", "home");
+        library.set_search_text(SharedString::new());
+        open_a_prompt(&window);
+        library.set_page("search".into());
+        check_and_close("library search");
+        press_key(&window, "q");
+        assert_eq!(library.get_search_text(), "q", "library search");
+
+        // Signing in, each step with a field as it comes.
+        for name in ["address", "users", "password"] {
+            step("address", true, "");
+            show_page(&window, "library", "sign-in");
+            open_a_prompt(&window);
+            step(name, false, "");
+            check_and_close(name);
+            press_key(&window, "q");
+            press_key(&window, Key::Return);
+            assert_eq!(*sent.borrow(), "q", "{name}");
+            sent.borrow_mut().clear();
+        }
+        // And what a step does as an answer comes: signing in ends, or a
+        // password is refused.
+        for (name, message) in [("address", ""), ("password", ""), ("password", "No")] {
+            let what = format!("{name} answered: {message}");
+            step(name, false, "");
+            show_page(&window, "library", "sign-in");
+            press_key(&window, Key::Tab);
+            step(name, true, "");
+            open_a_prompt(&window);
+            step(name, false, message);
+            check_and_close(&what);
+            press_key(&window, "q");
+            press_key(&window, Key::Return);
+            assert_eq!(*sent.borrow(), "q", "{what}");
+            sent.borrow_mut().clear();
+        }
+    }
+
+    /// A field disabled while its page works ignores keys, which then went on
+    /// to the window's shortcuts, "q" quitting Patina, and a dialog closed over
+    /// it left it without the keyboard for good. What is typed stops at the view
+    /// until the field can take it.
+    #[test]
+    fn a_field_has_the_keyboard_back_after_waiting() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let library = window.global::<Library>();
+        let settle = || {
+            i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated()
+        };
+        // Signing in: a dialog closed while a step's field waits, then the
+        // answer leaving the step as it was.
+        let sent = Rc::new(RefCell::new(String::new()));
+        let seen = sent.clone();
+        library.on_connect(move |text| *seen.borrow_mut() = text.to_string());
+        let seen = sent.clone();
+        library.on_pick_user(move |text| *seen.borrow_mut() = text.to_string());
+        let seen = sent.clone();
+        library.on_sign_in_with_password(move |_, text| *seen.borrow_mut() = text.to_string());
+        let cancelled = Rc::new(Cell::new(false));
+        let seen = cancelled.clone();
+        library.on_cancel_sign_in(move || seen.set(true));
+        for name in ["address", "users", "password"] {
+            let step = |working: bool| {
+                library.set_sign_in(crate::LibrarySignIn {
+                    step: name.into(),
+                    working,
+                    ..Default::default()
+                });
+            };
+            step(false);
+            show_page(&window, "library", "sign-in");
+            press_key(&window, "a");
+            step(true);
+            settle();
+            window.set_dialog("shortcuts".into());
+            settle();
+            press_key(&window, Key::Escape);
+            assert_eq!(window.get_dialog(), "", "{name}");
+            // The keyboard stays off the buttons, or Enter would cancel.
+            press_key(&window, "q");
+            press_key(&window, Key::Return);
+            assert!(!cancelled.get(), "{name}");
+            assert!(keys.borrow().is_empty(), "{name}: {:?}", keys.borrow());
+            step(false);
+            settle();
+            press_key(&window, "b");
+            press_key(&window, Key::Return);
+            assert_eq!(*sent.borrow(), "ab", "{name}");
+            sent.borrow_mut().clear();
+        }
+    }
+
+    /// A chip that loads the page again keeps the keyboard. The view used to
+    /// take it from what had it on each load, so Space only pressed the chip
+    /// once and the next one went elsewhere.
+    #[test]
+    fn a_chip_keeps_the_keyboard_as_it_loads_the_page_again() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let library = window.global::<Library>();
+
+        let toggles = Rc::new(Cell::new(0));
+        let counted = toggles.clone();
+        let weak = window.as_weak();
+        // Fewer lines, or more made again.
+        library.on_filter(move |_, favorites| {
+            let window = weak.unwrap();
+            let library = window.global::<Library>();
+            counted.set(counted.get() + 1);
+            library.set_favorites_only(favorites);
+            library.set_rows(library_rows(if favorites { 2 } else { 40 }));
+            library.set_loads(library.get_loads() + 1);
+        });
+        // Over a page's cards and the bar, Space may press other things; they
+        // do nothing here.
+        let tab_to_the_chip = || {
+            let before = toggles.get();
+            for _ in 0..24 {
+                press_key(&window, Key::Tab);
+                press_key(&window, " ");
+                if toggles.get() > before {
+                    return;
+                }
+            }
+            panic!("no chip took the focus");
+        };
+        show_page(&window, "library", "grid");
+        tab_to_the_chip();
+        for press in 1..=3 {
+            let before = toggles.get();
+            press_key(&window, " ");
+            assert_eq!(toggles.get(), before + 1, "press {press}");
+        }
+        assert!(keys.borrow().is_empty(), "{:?}", keys.borrow());
+    }
+
+    /// Escape closes Keyboard Shortcuts and About, as it does the prompt and
+    /// confirm dialogs, in each of the window's views.
+    #[test]
+    fn escape_closes_the_shortcuts_and_about_dialogs() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        keys_reaching_the_window(&window);
+        for (view, page) in [("welcome", ""), ("player", ""), ("library", "home")] {
+            show_page(&window, view, page);
+            for dialog in ["shortcuts", "about"] {
+                window.set_dialog(dialog.into());
+                press_key(&window, Key::Tab);
+                press_key(&window, Key::Escape);
+                assert_eq!(window.get_dialog(), "", "{dialog} over {view}");
+            }
+        }
     }
 
     /// The playlist and the entry playing after `steps`, as mpv makes

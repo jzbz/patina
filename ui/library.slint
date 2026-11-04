@@ -8,12 +8,12 @@
 // a library's grid, an item, Search, This Computer (the welcome screen) or
 // signing in.
 
-import { LineEdit, ListView } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton, TextButton, Spinner } from "widgets.slint";
 import { WelcomeView } from "welcome.slint";
 import { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn } from "library-model.slint";
-import { LibraryUi, Avatar, Card, CardRow, ChoiceTabs, MenuButton, Chip, Notice, KeyFocus } from "library-parts.slint";
+import { LibraryUi, Avatar, Card, CardRow, ChoiceTabs, MenuButton, Chip, Notice, KeyFocus, PageField } from "library-parts.slint";
 import { DetailPage } from "library-detail.slint";
 import { SignInPage } from "library-sign-in.slint";
 
@@ -442,10 +442,6 @@ component SortMenu inherits Rectangle {
 // the controller splits the items into lines of as many cards as fit
 // (columns) and is asked for more as the end comes into sight.
 component GridPage inherits VerticalLayout {
-    // The controller has split the items into lines anew, for another
-    // number of columns: the cards are made again, the one with the
-    // keyboard's focus among them.
-    callback lines-made;
     property <float> aspect: Library.rows.length > 0 ? LibraryUi.row-aspect(Library.rows[0].cards) : 2 / 3;
     property <length> available: root.width - 2 * LibraryUi.inset;
     // Rounded, so that cards stay within about an eighth of their size.
@@ -483,7 +479,6 @@ component GridPage inherits VerticalLayout {
     changed columns => {
         if root.width > 0 {
             Library.columns(root.columns);
-            root.lines-made();
         }
     }
     // Asks again now and then while the end is in sight: the controller
@@ -711,12 +706,13 @@ component SearchPage inherits VerticalLayout {
 
     // Back from an item restores the query: typing goes on at its end.
     init => {
-        field.focus();
+        field.take-keyboard();
         field.set-selection-offsets(1000000, 1000000);
     }
     // Loaded again in place, the results are made again: one of them
     // may have had the keyboard's focus, which Slint would keep on it,
-    // gone (see LibraryView's loads).
+    // gone (see keep_keyboard in src/window.rs), and the field is what a
+    // search has it back in.
     property <int> loads: Library.loads;
     changed loads => {
         if !root.covered {
@@ -727,7 +723,8 @@ component SearchPage inherits VerticalLayout {
     HorizontalLayout {
         padding-left: LibraryUi.inset;
         padding-right: LibraryUi.inset;
-        field := LineEdit {
+        field := PageField {
+            covered: root.covered;
             max-width: 560px;
             text <=> Library.search-text;
             placeholder-text: "Search movies, shows, episodes and music";
@@ -882,23 +879,33 @@ export component LibraryView inherits Rectangle {
     // or plays what has the focus and should never reach the window's
     // binding for full screen; every other key goes on to the window's
     // shortcuts, except while signing in. A page with a field to type in
-    // focuses it.
+    // focuses it. A page can arrive under a dialog, which keeps the keyboard:
+    // the view has it when the dialog closes (see covered).
     function take-focus() {
-        if !keys.has-focus {
+        LibraryUi.typing = false;
+        if !root.covered && !keys.has-focus {
             keys.focus();
         }
     }
 
-    // A page loaded again in place (a server switched to, Home or a tab
-    // picked again, a grid sorted) makes its cards and tabs again without
-    // being made again itself, and its init doesn't run. Slint keeps the
-    // focus on the gone card and hands every key to nothing, Ctrl+Q's too,
-    // until Tab gives the focus back. A page with a field gives it the
-    // focus instead (Search), or keeps its own (signing in).
-    property <int> loads: Library.loads;
-    changed loads => {
-        if !root.covered && Library.page != "search" && Library.page != "sign-in" {
+    // Asked to take the keyboard back (LibraryUi.focus-back): the page's field
+    // takes it if it was being typed in. One disabled while signing in can't
+    // yet, and the view keeps what is typed from the window's shortcuts.
+    property <int> focus-back: LibraryUi.focus-back;
+    changed focus-back => {
+        if !LibraryUi.typing {
             root.take-focus();
+        } else if Library.page == "sign-in" && Library.sign-in.working && !root.covered {
+            keys.focus();
+        }
+    }
+    // A dialog's closing gives the keyboard to the window's keys, for the
+    // player's sake: here typing would go to the window's shortcuts, where "q"
+    // quits, and Backspace and Enter wouldn't stop at the view. This comes
+    // after it, as a change's handler runs once the closing has done.
+    changed covered => {
+        if !self.covered {
+            LibraryUi.focus-back += 1;
         }
     }
 
@@ -918,9 +925,14 @@ export component LibraryView inherits Rectangle {
     keys := FocusScope {
         focus-on-click: false;
         init => {
-            self.focus();
+            root.take-focus();
         }
         key-pressed(event) => {
+            // The keyboard moves on from a field being typed in.
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                LibraryUi.typing = false;
+                return reject;
+            }
             if event.text == Key.Backspace && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && Library.can-go-back {
                 Library.back();
                 return accept;
@@ -931,7 +943,7 @@ export component LibraryView inherits Rectangle {
             // Signing in, what is typed is no shortcut: a name or password
             // typed where no field has the keyboard would quit Patina at its
             // first "q". Shortcuts with a modifier still work.
-            if Library.page == "sign-in" && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && event.text != Key.Tab && event.text != Key.Escape {
+            if Library.page == "sign-in" && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && event.text != Key.Escape {
                 return accept;
             }
             reject
@@ -1002,11 +1014,6 @@ export component LibraryView inherits Rectangle {
             init => {
                 root.take-focus();
             }
-            lines-made => {
-                if !root.covered {
-                    root.take-focus();
-                }
-            }
         }
         if !root.failed && Library.page == "detail": DetailPage {
             y: root.content-top;
@@ -1023,6 +1030,7 @@ export component LibraryView inherits Rectangle {
         if Library.page == "sign-in": SignInPage {
             y: root.content-top;
             height: root.content-height;
+            covered: root.covered;
             focus-view => {
                 root.take-focus();
             }

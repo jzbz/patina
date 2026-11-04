@@ -42,8 +42,8 @@ pub fn select(
 /// defaults too, since a method left out here would quietly take the
 /// trait's default whatever the backend does (without the event loop proxy,
 /// slint::invoke_from_event_loop fails, for one). Some of them name types of
-/// i_slint_core, which is why Patina depends on it, at Slint's exact version
-/// as on the winit backend. Those two exact requirements in Cargo.toml, and
+/// i_slint_core, which Patina depends on at Slint's exact version as on the
+/// winit backend. Those two exact requirements in Cargo.toml, and
 /// the testing backend's among the dev-dependencies, hold Slint where it is:
 /// `cargo update` leaves it there without a word when a newer Slint comes
 /// out, so moving to one means raising all three by hand along with slint's

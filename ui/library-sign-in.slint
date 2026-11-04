@@ -2,11 +2,11 @@
 // its address, then an account, then a password or a Quick Connect code.
 // Each step takes the keyboard's focus for its field as it appears.
 
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { TextButton, Spinner, SectionTitle } from "widgets.slint";
 import { Library, LibraryChoice } from "library-model.slint";
-import { LibraryUi, Avatar, KeyFocus } from "library-parts.slint";
+import { LibraryUi, Avatar, KeyFocus, PageField } from "library-parts.slint";
 
 component Heading inherits Text {
     color: Theme.text;
@@ -143,6 +143,7 @@ component WorkingSpinner inherits VerticalLayout {
 }
 
 component AddressStep inherits VerticalLayout {
+    in property <bool> covered;
     // The controller fills the address in (from Scan Network, or a server
     // that needs signing in again) after the field was typed in.
     property <string> address: Library.sign-in.address;
@@ -154,11 +155,11 @@ component AddressStep inherits VerticalLayout {
     }
     init => {
         field.text = root.address;
-        field.focus();
+        field.take-keyboard();
     }
     changed busy => {
         if !self.busy {
-            field.focus();
+            field.take-keyboard();
         }
     }
 
@@ -168,7 +169,8 @@ component AddressStep inherits VerticalLayout {
     Explanation {
         text: "Type the server's address, or look for servers on this network.";
     }
-    field := LineEdit {
+    field := PageField {
+        covered: root.covered;
         placeholder-text: "Address, such as 192.168.1.20:8096";
         enabled: !root.busy;
         accepted(text) => {
@@ -269,6 +271,7 @@ component AddressStep inherits VerticalLayout {
 }
 
 component UsersStep inherits VerticalLayout {
+    in property <bool> covered;
     property <bool> busy: Library.sign-in.working;
     spacing: 14px;
 
@@ -276,7 +279,14 @@ component UsersStep inherits VerticalLayout {
     // click away): someone who signed in before types their name, or their
     // password, expecting a field.
     init => {
-        name.focus();
+        name.take-keyboard();
+    }
+    // The field couldn't take the keyboard back from a dialog closed while it
+    // was disabled.
+    changed busy => {
+        if !self.busy && LibraryUi.typing {
+            name.take-keyboard();
+        }
     }
 
     VerticalLayout {
@@ -316,7 +326,8 @@ component UsersStep inherits VerticalLayout {
         }
         HorizontalLayout {
             spacing: 8px;
-            name := LineEdit {
+            name := PageField {
+                covered: root.covered;
                 horizontal-stretch: 1;
                 placeholder-text: "User name";
                 enabled: !root.busy;
@@ -373,24 +384,25 @@ component UsersStep inherits VerticalLayout {
 }
 
 component PasswordStep inherits VerticalLayout {
+    in property <bool> covered;
     property <bool> busy: Library.sign-in.working;
     spacing: 14px;
 
     property <string> message: Library.sign-in.message;
 
     init => {
-        field.focus();
+        field.take-keyboard();
     }
     // The field is disabled while signing in, which loses its focus.
     changed busy => {
         if !self.busy {
-            field.focus();
+            field.take-keyboard();
         }
     }
     // A password refused is selected, so that typing replaces it.
     changed message => {
         if self.message != "" {
-            field.focus();
+            field.take-keyboard();
             field.select-all();
         }
     }
@@ -420,7 +432,8 @@ component PasswordStep inherits VerticalLayout {
         }
     }
 
-    field := LineEdit {
+    field := PageField {
+        covered: root.covered;
         input-type: password;
         placeholder-text: "Password";
         enabled: !root.busy;
@@ -536,6 +549,8 @@ component QuickConnectStep inherits VerticalLayout {
 }
 
 export component SignInPage inherits ScrollView {
+    // A dialog over the view has the keyboard, which a step arriving leaves it.
+    in property <bool> covered;
     // A step without a field to type in hands the keyboard back to the view.
     callback focus-view;
     property <string> step: Library.sign-in.step;
@@ -560,9 +575,15 @@ export component SignInPage inherits ScrollView {
 
                 VerticalLayout {
                     padding: 24px;
-                    if root.step == "address": AddressStep { }
-                    if root.step == "users": UsersStep { }
-                    if root.step == "password": PasswordStep { }
+                    if root.step == "address": AddressStep {
+                        covered: root.covered;
+                    }
+                    if root.step == "users": UsersStep {
+                        covered: root.covered;
+                    }
+                    if root.step == "password": PasswordStep {
+                        covered: root.covered;
+                    }
                     if root.step == "quick-connect": QuickConnectStep {
                         focus-view => {
                             root.focus-view();
