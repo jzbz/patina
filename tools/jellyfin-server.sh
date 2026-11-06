@@ -427,19 +427,35 @@ add_library() { # NAME COLLECTION_TYPE FOLDER IS_VIDEO ITEM_TYPE...
   }' | api POST "/Library/VirtualFolders?name=$name&collectionType=$kind&refreshLibrary=false" -
 }
 
-# Scans every library and waits for the scan task to finish, for ten minutes
-# by the clock. Trickplay is set to block the scan, so its images are done
-# too.
+# Scans every library and waits for the scan to finish. Trickplay is set to
+# block the scan, so its images are done too.
 scan() {
-  local since result
-  since=$(date -u +%s)
+  local last
+  last=$(last_scan)
   api POST /Library/Refresh
-  while [ "$(date -u +%s)" -lt $((since + 600)) ]; do
+  wait_for_scan "$last"
+}
+
+# Prints when the library scan task's last run ended, as the server gives it,
+# or nothing before its first run.
+last_scan() {
+  api GET '/ScheduledTasks?isHidden=false' |
+    jq -r '.[] | select(.Key == "RefreshLibrary") | .LastExecutionResult.EndTimeUtc // empty'
+}
+
+# wait_for_scan LAST: waits, for ten minutes by the clock, until a run of the
+# library scan task other than the one that ended at LAST (from last_scan)
+# has finished, and fails unless it completed. The time is the server's own,
+# to the fraction of a second, so runs ending within the same second are
+# told apart, and this computer's clock plays no part.
+wait_for_scan() {
+  local last=$1 deadline result
+  deadline=$(($(date +%s) + 600))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
     sleep 0.5
-    result=$(api GET '/ScheduledTasks?isHidden=false' | jq -r --argjson since "$since" '
+    result=$(api GET '/ScheduledTasks?isHidden=false' | jq -r --arg last "$last" '
       .[] | select(.Key == "RefreshLibrary") | .LastExecutionResult as $r
-      | if .State == "Idle" and $r != null
-          and ($r.EndTimeUtc | sub("\\.[0-9]+"; "") | sub("Z$"; "") + "Z" | fromdateiso8601) >= $since
+      | if .State == "Idle" and $r != null and $r.EndTimeUtc != $last
         then $r.Status else empty end')
     case $result in
       "") ;;
@@ -519,16 +535,35 @@ first_start() {
       api POST "/Users/$viewer/Policy" -
   fi
 
-  local admin_id collection movie1 movie2 tracks
+  local admin_id collection libraries last movie1 movie2 members tracks
   admin_id=$(api GET /Users/Me | jq -er .Id)
-  if ! api GET '/Items?recursive=true&includeItemTypes=BoxSet' | jq -e '.TotalRecordCount > 0' >/dev/null; then
-    movie1=$(item_id 'includeItemTypes=Movie&searchTerm=Night%20Signal')
-    movie2=$(item_id 'includeItemTypes=Movie&searchTerm=Paper%20Harbor')
-    # Locked, or the server would look the collection up online. The movies
-    # are added afterwards: 12.4 drops the ones given when it is created.
+  collection=$(api GET '/Items?recursive=true&includeItemTypes=BoxSet' | jq -r '.Items[0].Id // empty')
+  if [ -z "$collection" ]; then
+    libraries=$(api GET /Library/VirtualFolders)
+    last=$(last_scan)
+    # Locked, or the server would look the collection up online.
     collection=$(api POST '/Collections?name=Harbour%20Lights%20Collection&isLocked=true' | jq -er .Id)
-    api POST "/Collections/$collection/Items?ids=$movie1,$movie2"
+    # The first collection makes the Collections library, which starts a
+    # scan of every library. The scan reads the new collection before the
+    # films are added and saves what it read once it has refreshed it,
+    # which empties the collection when the films came in between (a slow
+    # CI runner did that on some runs). So the films wait for that scan to
+    # end.
+    if ! jq -e 'any(.[]; .CollectionType == "boxsets")' <<<"$libraries" >/dev/null; then
+      wait_for_scan "$last"
+    fi
   fi
+  # The films go in after the collection is made, since 12.4 drops the ones
+  # given when it is. A start that finds the collection made, by a first
+  # start that failed after making it, adds them too; the server skips any
+  # the collection already holds.
+  movie1=$(item_id 'includeItemTypes=Movie&searchTerm=Night%20Signal')
+  movie2=$(item_id 'includeItemTypes=Movie&searchTerm=Paper%20Harbor')
+  api POST "/Collections/$collection/Items?ids=$movie1,$movie2"
+  # Checked here, so that a collection left empty fails the start rather
+  # than three tests that count on its films.
+  members=$(api GET "/Items?parentId=$collection" | jq -er .TotalRecordCount)
+  [ "$members" = 2 ] || die "the collection holds $members films, not 2"
   if ! api GET '/Items?recursive=true&includeItemTypes=Playlist' | jq -e '.TotalRecordCount > 0' >/dev/null; then
     tracks=$(api GET '/Items?recursive=true&includeItemTypes=Audio&sortBy=IndexNumber' |
       jq -c '[.Items[] | .Id] | [.[2], .[0], .[3]]')

@@ -53,7 +53,7 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # Well above a cold build on the slowest runner plus, on Linux, the
-    # bounds of the Jellyfin steps (47 minutes together): one of those that
+    # bounds of the Jellyfin steps (52 minutes together): one of those that
     # hangs then fails as a step, and the build cache is still saved, which a
     # job cancelled at its own timeout skips. A run still going at an hour and
     # a half is wedged, not busy; GitHub's own ceiling is six.
@@ -344,13 +344,13 @@ jobs:
       # loopback that ends with the job. The server runs on after this step:
       # the runner ends what a job left running only when the job ends.
       # Backstop above the script's own bounds (three minutes for the server
-      # to answer, ten for the scan, a minute for any request), so that its
-      # message is what fails rather than a bare step timeout.
+      # to answer, ten for each of its two scans, a minute for any request),
+      # so that its message is what fails rather than a bare step timeout.
       - name: Start the Jellyfin test server (Linux)
         id: jellyfin-server
         if: >-
           !cancelled() && steps.jellyfin-setup.outcome == 'success'
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: |
           set -euo pipefail
           exports=$(tools/jellyfin-server.sh start "$RUNNER_TEMP/jellyfin")
