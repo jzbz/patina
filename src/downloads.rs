@@ -30,6 +30,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -67,42 +68,203 @@ pub struct Request {
     pub video: Option<VideoId>,
 }
 
-/// yt-dlp as mpv's yt-dlp hook looks for it: the configured path (or
-/// paths), or else `yt-dlp`, `yt-dlp_x86` and `youtube-dl`, each first in
-/// mpv's configuration directory and then on the `PATH`.
+/// The yt-dlp that playback, downloads and the YouTube section run: the
+/// user's choice, else the newer of the package's and one the user installed,
+/// else one on the `PATH`.
+///
+/// That is mpv's yt-dlp hook's search, with the package's copy put in: the
+/// configured path (or paths), or else `yt-dlp`, `yt-dlp_x86` and
+/// `youtube-dl`, each first in mpv's configuration directory and then on the
+/// `PATH`. Where nothing is bundled (Linux, the Flatpak, a build run from the
+/// source tree) the search is the hook's exactly. Where something is,
+/// `Preferences::mpv_options` names the result to the hook, so that the two
+/// can't disagree, and the user's choice comes first: the path preference,
+/// then a `ytdl_path` in the hook's own `script-opts/ytdl_hook.conf` (which
+/// `mpv_options` then leaves the hook to read), then a `yt-dlp` put in mpv's
+/// configuration directory. A `youtube-dl` there doesn't count: it can't play
+/// YouTube, and the section refuses it. With none of those, a `yt-dlp` the
+/// user installed (`installed_ytdl`) is used instead of the package's copy
+/// when it is the newer of the two (`ytdl_versions`), so that one kept up to
+/// date wins over a bundled copy grown stale between Patina's releases,
+/// without the user having to name it. This never waits for that answer: until
+/// both have given their versions, the package's copy is used.
 pub fn find_ytdl(prefs: &Preferences, mpv_config: &Path) -> Option<PathBuf> {
-    let separator = if cfg!(windows) { ';' } else { ':' };
-    let configured: Vec<&str> = prefs
-        .ytdl_path
-        .split(separator)
-        .filter(|path| !path.trim().is_empty())
-        .collect();
-    let names = if configured.is_empty() {
-        vec!["yt-dlp", "yt-dlp_x86", "youtube-dl"]
-    } else {
-        configured
-    };
-    names.into_iter().find_map(|name| {
+    find_ytdl_in(
+        prefs,
+        mpv_config,
+        crate::platform::bundled("yt-dlp"),
+        crate::platform::find_program,
+        installed_ytdl,
+        |bundled, own| crate::ytdl_versions::global().newer(bundled, own),
+    )
+}
+
+/// A `yt-dlp` the user installed: on the `PATH`, as from winget, pip or a
+/// shell's Homebrew, and on macOS also in Homebrew's own folders, since an app
+/// opened from the Finder or the Dock has only the system's folders on its
+/// `PATH`.
+fn installed_ytdl(name: &str) -> Option<PathBuf> {
+    crate::platform::find_program(name).or_else(|| {
+        let folders: &[&str] = if cfg!(target_os = "macos") {
+            &["/opt/homebrew/bin", "/usr/local/bin"]
+        } else {
+            &[]
+        };
+        folders
+            .iter()
+            .map(|folder| Path::new(folder).join(name))
+            .find(|path| path.is_file())
+    })
+}
+
+fn find_ytdl_in(
+    prefs: &Preferences,
+    mpv_config: &Path,
+    bundled: Option<PathBuf>,
+    on_path: impl Fn(&str) -> Option<PathBuf>,
+    installed: impl Fn(&str) -> Option<PathBuf>,
+    newer: impl FnOnce(PathBuf, Option<PathBuf>) -> PathBuf,
+) -> Option<PathBuf> {
+    let in_config = |name: &str| {
         let exe = if cfg!(windows) && !name.to_ascii_lowercase().ends_with(".exe") {
             format!("{name}.exe")
         } else {
             name.to_owned()
         };
-        let in_config = mpv_config.join(exe);
-        if in_config.is_file() {
-            Some(in_config)
+        Some(mpv_config.join(exe)).filter(|path| path.is_file())
+    };
+    let search = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|name| in_config(name).or_else(|| on_path(name)))
+    };
+    let configured = ytdl_paths(&prefs.ytdl_path);
+    if !configured.is_empty() {
+        return search(&configured);
+    }
+    let Some(bundled) = bundled else {
+        return search(&["yt-dlp", "yt-dlp_x86", "youtube-dl"]);
+    };
+    if let Some(hook) = hook_ytdl_path(prefs, mpv_config) {
+        return search(&ytdl_paths(&hook));
+    }
+    const YT_DLP: [&str; 2] = ["yt-dlp", "yt-dlp_x86"];
+    if let Some(own) = YT_DLP.into_iter().find_map(in_config) {
+        return Some(own);
+    }
+    // Never youtube-dl, which can't play YouTube, and never the package's
+    // copy again, should its folder be on the PATH. Asked with none
+    // installed too, so that the choice moving back to the package's copy
+    // when the user's is removed reaches mpv's hook.
+    let own = YT_DLP
+        .into_iter()
+        .find_map(installed)
+        .filter(|own| *own != bundled);
+    Some(newer(bundled, own))
+}
+
+/// A `ytdl_path` as the hook reads it: paths split at the `PATH` separator.
+fn ytdl_paths(paths: &str) -> Vec<&str> {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    paths
+        .split(separator)
+        .filter(|path| !path.trim().is_empty())
+        .collect()
+}
+
+/// The `ytdl_path` in mpv's `script-opts/ytdl_hook.conf`, which mpv reads
+/// when Patina hands it its configuration directory
+/// (`Preferences::use_mpv_config`). Read as mpv's options.lua reads it: a
+/// `key=value` a line, `#` lines and blank lines skipped, nothing trimmed,
+/// the last one winning. An empty one names nothing, to the hook too.
+pub(crate) fn hook_ytdl_path(prefs: &Preferences, mpv_config: &Path) -> Option<String> {
+    if !prefs.use_mpv_config {
+        return None;
+    }
+    let text =
+        std::fs::read_to_string(mpv_config.join("script-opts").join("ytdl_hook.conf")).ok()?;
+    text.lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            !line.is_empty() && !line.starts_with('#')
+        })
+        .filter_map(|line| line.split_once('='))
+        .filter(|(key, _)| *key == "ytdl_path")
+        .map(|(_, value)| value.to_owned())
+        .next_back()
+        .filter(|value| !ytdl_paths(value).is_empty())
+}
+
+/// The ffmpeg a download's yt-dlp joins video and audio with.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ffmpeg {
+    /// The yt-dlp options name one (`ffmpeg-location`), and yt-dlp is left
+    /// to it.
+    Theirs,
+    /// The package's own, which yt-dlp is pointed at with `--ffmpeg-location`,
+    /// as it would never find it by itself: it isn't on the `PATH`, and on
+    /// macOS an app opened from the Finder doesn't even have Homebrew's
+    /// folders there. As an option on the command line it also wins over an
+    /// `ffmpeg-location` in the user's own yt-dlp configuration file, which
+    /// yt-dlp reads first; Patina's yt-dlp options are the place to name
+    /// another, as the README and docs/youtube.md say.
+    Bundled(PathBuf),
+    /// One on the `PATH`, which yt-dlp finds the same way.
+    OnPath,
+    Missing,
+}
+
+impl Ffmpeg {
+    /// For a download with these yt-dlp options (`ytdl-raw-options` form).
+    pub fn for_options(raw: &str) -> Self {
+        Self::choose(
+            raw,
+            crate::platform::bundled("ffmpeg"),
+            crate::platform::find_program,
+        )
+    }
+
+    fn choose(
+        raw: &str,
+        bundled: Option<PathBuf>,
+        on_path: impl Fn(&str) -> Option<PathBuf>,
+    ) -> Self {
+        if read_ytdl_raw_options(raw)
+            .iter()
+            .any(|(key, value)| *key == "ffmpeg-location" && !value.trim().is_empty())
+        {
+            Ffmpeg::Theirs
+        } else if let Some(bundled) = bundled {
+            Ffmpeg::Bundled(bundled)
+        } else if on_path("ffmpeg").is_some() {
+            Ffmpeg::OnPath
         } else {
-            crate::platform::find_program(name)
+            Ffmpeg::Missing
         }
-    })
+    }
+
+    /// Whether yt-dlp can join separate video and audio. One the user named
+    /// is taken at their word.
+    pub fn found(&self) -> bool {
+        !matches!(self, Ffmpeg::Missing)
+    }
+
+    /// Whether a live stream can be downloaded with it. yt-dlp hands one to
+    /// ffmpeg to record, and the package's ffmpeg is built without network
+    /// protocols (packaging/ffmpeg.sh), so it fails at once with "ffmpeg
+    /// exited with code 8". One of the user's own may well record it, and
+    /// with none it is left to yt-dlp, as it always was.
+    pub fn records_live(&self) -> bool {
+        !matches!(self, Ffmpeg::Bundled(_))
+    }
 }
 
 /// The format to download: what is playing, unless that takes merging
 /// video and audio and there is no ffmpeg to do it, when yt-dlp picks the
 /// best it can download as one file.
-pub fn download_format(playing: Option<&str>) -> Option<String> {
+pub fn download_format(playing: Option<&str>, ffmpeg: &Ffmpeg) -> Option<String> {
     let playing = playing?;
-    if playing.contains('+') && crate::platform::find_program("ffmpeg").is_none() {
+    if playing.contains('+') && !ffmpeg.found() {
         return None;
     }
     Some(playing.to_owned())
@@ -166,7 +328,13 @@ fn parse_line(line: &str) -> Option<Line> {
     })
 }
 
-fn command(program: &Path, request: &Request, folder: &Path, raw: &str) -> Command {
+fn command(
+    program: &Path,
+    request: &Request,
+    folder: &Path,
+    raw: &str,
+    ffmpeg: &Ffmpeg,
+) -> Command {
     let mut command = Command::new(program);
     command
         .args([
@@ -189,6 +357,9 @@ fn command(program: &Path, request: &Request, folder: &Path, raw: &str) -> Comma
         .arg(format!("after_move:{FILE} %(filepath)s"))
         .arg("--paths")
         .arg(folder);
+    if let Ffmpeg::Bundled(path) = ffmpeg {
+        command.arg("--ffmpeg-location").arg(path);
+    }
     if let Some(format) = &request.format {
         command.args(["--format", format]);
     }
@@ -208,6 +379,8 @@ fn command(program: &Path, request: &Request, folder: &Path, raw: &str) -> Comma
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::platform::no_console(&mut command);
+    // So that stopping it reaches what it starts (`stop_ytdl`).
+    crate::platform::in_own_group(&mut command);
     command
 }
 
@@ -371,11 +544,61 @@ impl Task {
         match &mut self.job {
             Job::Ytdl { child, .. } => {
                 if let Some(child) = child {
-                    let _ = child.lock().map(|mut child| child.kill());
+                    stop_ytdl(child);
                 }
                 true
             }
             Job::Jellyfin { stop, .. } => stop.as_ref().is_none_or(|stop| stop.stop()),
+        }
+    }
+}
+
+/// Stops a download's yt-dlp with everything it started. yt-dlp's standalone
+/// builds, which the macOS and Windows packages carry, are a launcher whose
+/// real yt-dlp is a process of its own: stopping the launcher alone would
+/// leave that one downloading, holding the output open, so the download would
+/// go on to its end. And ffmpeg may be joining the files. The group is asked
+/// to end first, so that the launcher removes the folder it unpacked
+/// (`platform::end_group`), and killed on a thread of its own if it is still
+/// running after `platform::END_GRACE`, so that the window doesn't wait. One
+/// that has ended already is left alone, as its id may since be someone
+/// else's; the thread that follows the download waits for it.
+fn stop_ytdl(child: &Arc<Mutex<Child>>) {
+    let asked = match child.lock() {
+        Ok(mut child) => {
+            matches!(child.try_wait(), Ok(None)) && crate::platform::end_group(&mut child)
+        }
+        Err(_) => false,
+    };
+    if !asked {
+        return;
+    }
+    let stopping = Arc::clone(child);
+    let spawned = std::thread::Builder::new()
+        .name("stop yt-dlp".into())
+        .spawn(move || {
+            let until = Instant::now() + crate::platform::END_GRACE;
+            loop {
+                let Ok(mut child) = stopping.lock() else {
+                    return;
+                };
+                if !matches!(child.try_wait(), Ok(None)) {
+                    return;
+                }
+                if Instant::now() >= until {
+                    crate::platform::kill_group(&mut child);
+                    return;
+                }
+                drop(child);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+    if let Err(error) = spawned {
+        log::warn!("could not wait for a download to stop: {error}");
+        if let Ok(mut child) = child.lock()
+            && matches!(child.try_wait(), Ok(None))
+        {
+            crate::platform::kill_group(&mut child);
         }
     }
 }
@@ -397,6 +620,10 @@ pub struct Downloads {
     ytdl_started: Cell<Option<Instant>>,
     /// Starts the section's next video when the wait between them is over.
     section_timer: slint::Timer,
+    /// Counts the times the window named its yt-dlp (`describe_program`),
+    /// so that a version read for a copy no longer chosen, as the package's
+    /// slower one can answer after the user's that replaced it, is dropped.
+    described: Arc<AtomicU64>,
 }
 
 /// Downloads of one server that ended, for the message when the last does.
@@ -533,6 +760,7 @@ impl Downloads {
             ticker: slint::Timer::default(),
             ytdl_started: Cell::new(None),
             section_timer: slint::Timer::default(),
+            described: Arc::new(AtomicU64::new(0)),
         });
         downloads.wire();
         let listener: Weak<dyn Listener> = Rc::downgrade(&downloads) as Weak<dyn Listener>;
@@ -618,9 +846,16 @@ impl Downloads {
         }
     }
 
+    /// Another yt-dlp is to be used (`App::ytdl_choice_changed`): the window
+    /// names it.
+    pub fn ytdl_changed(&self) {
+        self.describe_program();
+    }
+
     /// Which yt-dlp downloads, and its version, read on a thread of its own.
     fn describe_program(&self) {
         let app = self.app();
+        let serial = self.described.fetch_add(1, Ordering::Relaxed) + 1;
         let Some(program) = find_ytdl(&app.prefs(), &app.mpv_config_dir()) else {
             self.window.set_program(
                 "yt-dlp was not found. Install it, or set where it is in Preferences › Network."
@@ -631,6 +866,7 @@ impl Downloads {
         self.window
             .set_program(format!("yt-dlp at {}", program.display()).into());
         let weak = self.window.as_weak();
+        let described = Arc::clone(&self.described);
         let spawned = std::thread::Builder::new()
             .name("yt-dlp version".into())
             .spawn(move || {
@@ -645,7 +881,9 @@ impl Downloads {
                 if let Some(version) = version {
                     let text = format!("yt-dlp {version} at {}", program.display());
                     let _ = weak.upgrade_in_event_loop(move |window| {
-                        window.set_program(text.into());
+                        if described.load(Ordering::Relaxed) == serial {
+                            window.set_program(text.into());
+                        }
                     });
                 }
             });
@@ -769,7 +1007,8 @@ impl Downloads {
         } else {
             prefs.ytdl_raw_options_with_proxy(&prefs.ytdl_raw_options)
         };
-        let mut command = command(&program, request, &folder, &raw);
+        let ffmpeg = Ffmpeg::for_options(&raw);
+        let mut command = command(&program, request, &folder, &raw, &ffmpeg);
         // Not the whole command: its options can hold a proxy's password.
         log::debug!("downloading {} with {}", request.url, program.display());
         let child = command
@@ -1497,10 +1736,16 @@ mod tests {
             format: Some("18".into()),
             video: None,
         };
-        command(Path::new("yt-dlp"), &request, Path::new("/videos"), raw)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect()
+        command(
+            Path::new("yt-dlp"),
+            &request,
+            Path::new("/videos"),
+            raw,
+            &Ffmpeg::OnPath,
+        )
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
     }
 
     /// A download goes through the proxy as everything else does.
@@ -1548,6 +1793,454 @@ mod tests {
         );
         assert!(args.iter().any(|arg| arg == "--no-mtime"));
         assert_eq!(args[args.len() - 2..], ["--", "https://example.com/v"]);
+    }
+
+    /// A folder of its own for a test, removed afterwards.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("patina-downloads-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        /// An empty file standing in for a program, as `find_ytdl` only asks
+        /// whether there is one.
+        fn program(&self, name: &str) -> PathBuf {
+            let name = if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                name.to_owned()
+            };
+            let path = self.0.join(name);
+            std::fs::write(&path, b"").unwrap();
+            path
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `find_ytdl_in` with the `PATH` standing in for the user's installed
+    /// copies too, and none of them ever compared with the package's: the
+    /// user's choice, and a search with nothing bundled, come before that.
+    fn find_mine(
+        prefs: &Preferences,
+        config: &Path,
+        bundled: Option<PathBuf>,
+        on_path: impl Fn(&str) -> Option<PathBuf> + Copy,
+    ) -> Option<PathBuf> {
+        find_ytdl_in(prefs, config, bundled, on_path, on_path, |bundled, own| {
+            assert_eq!(own, None, "compared with the package's");
+            bundled
+        })
+    }
+
+    /// The user's own yt-dlp first (the preference, the hook's configuration,
+    /// then mpv's folder), then the newer of the package's and one installed,
+    /// then the `PATH`; with nothing bundled, mpv's hook's search exactly, as
+    /// before.
+    #[test]
+    fn yt_dlp_is_looked_for_in_the_users_places_then_the_package_then_the_path() {
+        let config = Folder::new("ytdl-config");
+        let bundled = PathBuf::from("/Patina.app/Contents/Helpers/yt-dlp");
+        let on_path = |name: &str| Some(PathBuf::from(format!("/usr/bin/{name}")));
+        let nowhere = |_: &str| None;
+        let none = Preferences::default();
+        // The package's and one installed, compared by `newer`, which says
+        // which it was given.
+        let compared = |installed: fn(&str) -> Option<PathBuf>, own_newer: bool| {
+            let asked = std::cell::RefCell::new(None);
+            let found = find_ytdl_in(
+                &none,
+                &config.0,
+                Some(bundled.clone()),
+                nowhere,
+                installed,
+                |bundled, own| match own {
+                    Some(own) => {
+                        *asked.borrow_mut() = Some((bundled.clone(), own.clone()));
+                        if own_newer { own } else { bundled }
+                    }
+                    None => bundled,
+                },
+            );
+            (found, asked.into_inner())
+        };
+
+        // Only the PATH has one.
+        assert_eq!(
+            find_mine(&none, &config.0, None, on_path),
+            Some(PathBuf::from("/usr/bin/yt-dlp"))
+        );
+        assert_eq!(find_mine(&none, &config.0, None, nowhere), None);
+        // The package's alone, without asking anything.
+        assert_eq!(
+            find_mine(&none, &config.0, Some(bundled.clone()), nowhere),
+            Some(bundled.clone())
+        );
+        // One installed as well: the newer of the two.
+        let installed = |name: &str| Some(PathBuf::from(format!("/opt/homebrew/bin/{name}")));
+        let homebrew = PathBuf::from("/opt/homebrew/bin/yt-dlp");
+        let pair = Some((bundled.clone(), homebrew.clone()));
+        assert_eq!(
+            compared(installed, true),
+            (Some(homebrew.clone()), pair.clone())
+        );
+        assert_eq!(compared(installed, false), (Some(bundled.clone()), pair));
+        // yt-dlp_x86 counts, youtube-dl never does, and the package's own
+        // copy found on the PATH is no second copy.
+        let x86_only =
+            |name: &str| (name == "yt-dlp_x86").then(|| PathBuf::from("/usr/bin/yt-dlp_x86"));
+        assert_eq!(
+            compared(x86_only, true).1,
+            Some((bundled.clone(), PathBuf::from("/usr/bin/yt-dlp_x86")))
+        );
+        let youtube_dl_only =
+            |name: &str| (name == "youtube-dl").then(|| PathBuf::from("/usr/bin/youtube-dl"));
+        assert_eq!(
+            compared(youtube_dl_only, true),
+            (Some(bundled.clone()), None)
+        );
+        let itself = |_: &str| Some(PathBuf::from("/Patina.app/Contents/Helpers/yt-dlp"));
+        assert_eq!(compared(itself, true), (Some(bundled.clone()), None));
+
+        // youtube-dl in mpv's folder can't stand in for the package's yt-dlp,
+        // as it can't play YouTube. With nothing bundled, the hook's own order
+        // holds: yt-dlp on the PATH comes before youtube-dl anywhere, and
+        // youtube-dl in mpv's folder before nothing.
+        let youtube_dl = config.program("youtube-dl");
+        assert_eq!(
+            find_mine(&none, &config.0, Some(bundled.clone()), nowhere),
+            Some(bundled.clone())
+        );
+        assert_eq!(
+            find_mine(&none, &config.0, None, on_path),
+            Some(PathBuf::from("/usr/bin/yt-dlp"))
+        );
+        assert_eq!(find_mine(&none, &config.0, None, nowhere), Some(youtube_dl));
+        // yt-dlp_x86 there is yt-dlp, and the user's.
+        let x86 = config.program("yt-dlp_x86");
+        assert_eq!(
+            find_mine(&none, &config.0, Some(bundled.clone()), on_path),
+            Some(x86)
+        );
+        let in_config = config.program("yt-dlp");
+        assert_eq!(
+            find_mine(&none, &config.0, Some(bundled.clone()), on_path),
+            Some(in_config.clone())
+        );
+
+        // The preference beats everything, and is never swapped for the
+        // package's copy, even when it names nothing that exists.
+        let own = Preferences {
+            ytdl_path: "/opt/yt-dlp/yt-dlp".into(),
+            ..Default::default()
+        };
+        let exists = |name: &str| (name == "/opt/yt-dlp/yt-dlp").then(|| PathBuf::from(name));
+        assert_eq!(
+            find_mine(&own, &config.0, Some(bundled.clone()), exists),
+            Some(PathBuf::from("/opt/yt-dlp/yt-dlp"))
+        );
+        assert_eq!(
+            find_mine(&own, &config.0, Some(bundled.clone()), nowhere),
+            None
+        );
+        // A bare name in it is looked for in mpv's folder, then on the PATH.
+        let named = Preferences {
+            ytdl_path: "yt-dlp".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            find_mine(&named, &config.0, Some(bundled.clone()), on_path),
+            Some(in_config.clone())
+        );
+
+        // A ytdl_path in the hook's own script-opts/ytdl_hook.conf, which mpv
+        // reads when it is given mpv's folder, is the user's as well: it comes
+        // before mpv's folder and the package's, after the preference.
+        let mpv_config = Preferences {
+            use_mpv_config: true,
+            ..Default::default()
+        };
+        let no_mpv_config = Preferences {
+            use_mpv_config: false,
+            ..Default::default()
+        };
+        let opts = config.0.join("script-opts");
+        std::fs::create_dir_all(&opts).unwrap();
+        std::fs::write(
+            opts.join("ytdl_hook.conf"),
+            "# mine\r\nytdl_path=/old/yt-dlp\r\n  \r\nytdl_path=/opt/yt-dlp/yt-dlp\r\n",
+        )
+        .unwrap();
+        assert_eq!(
+            find_mine(&mpv_config, &config.0, Some(bundled.clone()), exists),
+            Some(PathBuf::from("/opt/yt-dlp/yt-dlp"))
+        );
+        assert_eq!(
+            hook_ytdl_path(&mpv_config, &config.0).as_deref(),
+            Some("/opt/yt-dlp/yt-dlp")
+        );
+        // Unread when mpv isn't given the folder, as mpv doesn't read it then.
+        assert_eq!(hook_ytdl_path(&no_mpv_config, &config.0), None);
+        assert_eq!(
+            find_mine(&no_mpv_config, &config.0, Some(bundled.clone()), exists),
+            Some(in_config.clone())
+        );
+        // The preference still wins over it.
+        let both = Preferences {
+            use_mpv_config: true,
+            ytdl_path: "yt-dlp".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            find_mine(&both, &config.0, Some(bundled.clone()), exists),
+            Some(in_config.clone())
+        );
+        // An empty one, last, names nothing, and the search goes on.
+        std::fs::write(
+            opts.join("ytdl_hook.conf"),
+            "ytdl_path=/opt/yt-dlp/yt-dlp\nytdl_path=\n",
+        )
+        .unwrap();
+        assert_eq!(hook_ytdl_path(&mpv_config, &config.0), None);
+        assert_eq!(
+            find_mine(&mpv_config, &config.0, Some(bundled), exists),
+            Some(in_config)
+        );
+    }
+
+    /// With stand-ins that say their versions: the package's copy until the
+    /// one installed has answered, then that one, being newer; the user's
+    /// choice all along when there is one.
+    #[cfg(unix)]
+    #[test]
+    fn a_newer_installed_yt_dlp_is_used_once_it_has_answered() {
+        use crate::youtube::ytdlp::testing::Fake;
+        let folder = Folder::new("newer-installed");
+        let config = Folder::new("newer-installed-config");
+        let bundled = Fake::new(&folder.0.join("bundled"), "echo 2026.10.26");
+        let own = Fake::new(&folder.0.join("bin"), "echo 2026.11.03.101010");
+        let versions = crate::ytdl_versions::Versions::for_tests(Duration::from_secs(10));
+        let installed = |name: &str| (name == "yt-dlp").then(|| own.program.clone());
+        let find = |prefs: &Preferences| {
+            find_ytdl_in(
+                prefs,
+                &config.0,
+                Some(bundled.program.clone()),
+                |_: &str| None,
+                installed,
+                |bundled, own| versions.newer(bundled, own),
+            )
+        };
+        let none = Preferences::default();
+        assert_eq!(find(&none), Some(bundled.program.clone()));
+        assert!(versions.wait_idle(Duration::from_secs(20)));
+        assert_eq!(find(&none), Some(own.program.clone()));
+        let chosen = Preferences {
+            ytdl_path: bundled.program.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let exists = |name: &str| Some(PathBuf::from(name)).filter(|path| path.is_file());
+        assert_eq!(
+            find_ytdl_in(
+                &chosen,
+                &config.0,
+                Some(bundled.program.clone()),
+                exists,
+                installed,
+                |_, _| panic!("asked"),
+            ),
+            Some(bundled.program.clone())
+        );
+    }
+
+    /// The user's `ffmpeg-location` first, then the package's ffmpeg, then the
+    /// `PATH`; only the package's is passed to yt-dlp, which finds the others
+    /// by itself.
+    #[test]
+    fn ffmpeg_is_the_users_then_the_packages_then_on_the_path() {
+        let bundled = PathBuf::from(r"C:\Patina\ffmpeg.exe");
+        let on_path = |_: &str| Some(PathBuf::from("/usr/bin/ffmpeg"));
+        let nowhere = |_: &str| None;
+        assert_eq!(
+            Ffmpeg::choose("", Some(bundled.clone()), on_path),
+            Ffmpeg::Bundled(bundled.clone())
+        );
+        assert_eq!(Ffmpeg::choose("", None, on_path), Ffmpeg::OnPath);
+        assert_eq!(Ffmpeg::choose("no-mtime=", None, nowhere), Ffmpeg::Missing);
+        assert_eq!(
+            Ffmpeg::choose(
+                "ffmpeg-location=/opt/ffmpeg",
+                Some(bundled.clone()),
+                nowhere
+            ),
+            Ffmpeg::Theirs
+        );
+        // An empty one names nothing.
+        assert_eq!(
+            Ffmpeg::choose("ffmpeg-location=", Some(bundled.clone()), nowhere),
+            Ffmpeg::Bundled(bundled.clone())
+        );
+
+        let request = Request {
+            url: "https://example.com/v".into(),
+            title: String::new(),
+            format: Some("137+140".into()),
+            video: None,
+        };
+        let args_with = |ffmpeg: &Ffmpeg| -> Vec<String> {
+            command(
+                Path::new("yt-dlp"),
+                &request,
+                Path::new("/videos"),
+                "",
+                ffmpeg,
+            )
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+        };
+        let args = args_with(&Ffmpeg::Bundled(bundled.clone()));
+        let at = args
+            .iter()
+            .position(|arg| arg == "--ffmpeg-location")
+            .unwrap();
+        assert_eq!(args[at + 1], bundled.to_string_lossy());
+        assert!(at < args.iter().position(|arg| arg == "--").unwrap());
+        for other in [Ffmpeg::OnPath, Ffmpeg::Theirs, Ffmpeg::Missing] {
+            assert!(
+                !args_with(&other)
+                    .iter()
+                    .any(|arg| arg == "--ffmpeg-location"),
+                "{other:?}"
+            );
+        }
+
+        // Only the package's can't record a live stream.
+        assert!(!Ffmpeg::Bundled(bundled.clone()).records_live());
+        for other in [Ffmpeg::OnPath, Ffmpeg::Theirs, Ffmpeg::Missing] {
+            assert!(other.records_live(), "{other:?}");
+        }
+
+        // Joining video and audio waits on there being an ffmpeg.
+        let joined = Some("137+140");
+        assert_eq!(download_format(joined, &Ffmpeg::Missing), None);
+        for found in [Ffmpeg::Bundled(bundled), Ffmpeg::OnPath, Ffmpeg::Theirs] {
+            assert_eq!(download_format(joined, &found).as_deref(), joined);
+        }
+        assert_eq!(
+            download_format(Some("18"), &Ffmpeg::Missing).as_deref(),
+            Some("18")
+        );
+    }
+
+    /// Starts `script` under sh in a group of its own, as a download's yt-dlp
+    /// is started, with the path of a file in `folder` as `$0`; gives it and
+    /// the id it writes there, that of what it started.
+    #[cfg(unix)]
+    fn start_group(folder: &Folder, script: &str) -> (Arc<Mutex<Child>>, u32) {
+        let pid_file = folder.0.join("pid");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .arg(&pid_file)
+            .stdout(Stdio::null());
+        crate::platform::in_own_group(&mut command);
+        let child = Arc::new(Mutex::new(command.spawn().unwrap()));
+        let started = Instant::now();
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+            {
+                return (child, pid);
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "no worker");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Whether `pid` is gone, or a zombie waiting for whoever inherited it,
+    /// within `limit`.
+    #[cfg(unix)]
+    fn gone_within(pid: u32, limit: Duration) -> bool {
+        let until = Instant::now() + limit;
+        loop {
+            let stat = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap()
+                .stdout;
+            if stat.is_empty() || stat.starts_with(b"Z") {
+                return true;
+            }
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Stopping a download stops what its yt-dlp started too, as a standalone
+    /// yt-dlp's real worker, or ffmpeg, would go on otherwise; and it asks
+    /// first, so that a launcher that catches the request (as a standalone
+    /// yt-dlp's does, to remove what it unpacked) gets to tidy up.
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_download_stops_what_yt_dlp_started() {
+        let folder = Folder::new("stop");
+        let unpacked = folder.0.join("unpacked");
+        std::fs::write(&unpacked, b"").unwrap();
+        let (child, worker) = start_group(
+            &folder,
+            "trap 'rm -f \"${0%/pid}/unpacked\"; exit 0' TERM; \
+             sleep 30 & echo $! > \"$0\"; wait",
+        );
+        let started = Instant::now();
+        stop_ytdl(&child);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the stop waited"
+        );
+        let status = child.lock().unwrap().wait().unwrap();
+        assert!(status.success(), "{status:?}: it was killed, not asked");
+        assert!(!unpacked.exists(), "the launcher did not get to tidy up");
+        assert!(
+            gone_within(worker, Duration::from_secs(2)),
+            "the worker {worker} is still running"
+        );
+    }
+
+    /// One that won't end when asked is killed after the grace, worker and
+    /// all, without the window waiting for it.
+    #[cfg(unix)]
+    #[test]
+    fn a_download_that_will_not_stop_is_killed() {
+        let folder = Folder::new("stop-ignored");
+        // Ignored by the shell and so by what it starts.
+        let (child, worker) =
+            start_group(&folder, "trap '' TERM; sleep 30 & echo $! > \"$0\"; wait");
+        let started = Instant::now();
+        stop_ytdl(&child);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the stop waited"
+        );
+        assert!(gone_within(
+            worker,
+            crate::platform::END_GRACE + Duration::from_secs(3)
+        ));
+        let status = child.lock().unwrap().wait().unwrap();
+        assert!(!status.success(), "{status:?}");
     }
 
     #[test]

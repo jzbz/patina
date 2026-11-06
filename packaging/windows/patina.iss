@@ -1,6 +1,7 @@
 ; Patina's Windows installer: a per-user Inno Setup script around the Patina
 ; folder every release already ships as its portable zip: patina.exe, the
-; libmpv-2.dll and vulkan-1.dll it needs beside it, and the license files.
+; libmpv-2.dll and vulkan-1.dll it needs beside it, the yt-dlp.exe and
+; ffmpeg.exe it runs for online video and downloads, and the license files.
 ;
 ; The windows job of .github/workflows/release.yml compiles it with the Inno
 ; Setup it pins, 7.1.0, and the script uses directives that compiler has and
@@ -112,9 +113,12 @@ OutputBaseFilename=patina-v{#AppVersion}-x86_64-setup
 ; vulkan-1.dll it loads, that may be in use, so Setup asks Restart Manager to
 ; close the Patina holding them first. Restart Manager finds it by those open
 ; files, which the default CloseApplicationsFilter (*.exe,*.dll,*.chm)
-; covers; Patina creates no named mutex, so AppMutex would have nothing to
-; wait on and is not set. A Patina run from a portable folder elsewhere holds
-; none of these files and is left alone.
+; covers. It covers a yt-dlp.exe or ffmpeg.exe still running for Patina
+; too, as each holds its own exe open while it runs; those are console
+; programs started with no window, and whether Restart Manager can close
+; one is untried. Patina creates no named mutex, so AppMutex would have
+; nothing to wait on and is not set. A Patina run from a portable folder
+; elsewhere holds none of these files and is left alone.
 ;
 ; The request is made with the messages Windows sends every program at
 ; sign-out. Patina has no handling of its own for them and leaves the answer
@@ -149,6 +153,10 @@ CloseApplications=yes
 ; entry then, or an upgrade leaves the old copy in {app} until Patina is
 ; uninstalled. The two DLLs stay beside patina.exe: that is where Patina
 ; looks for libmpv, and where Windows finds the vulkan-1.dll libmpv imports.
+; So do yt-dlp.exe and ffmpeg.exe, which is where Patina looks for them
+; (src/platform.rs, `bundled`); THIRD-PARTY-yt-dlp.txt, LICENSE-GPLv3.txt
+; (yt-dlp.exe's licence) and LICENSE-ffmpeg.txt (ffmpeg.exe's LGPL 2.1) are
+; their notices.
 ;
 ; ignoreversion: an upgrade, a reinstall and a winget downgrade all replace
 ; each file whatever version it carries; the DLLs' own versions, where they
@@ -158,10 +166,15 @@ CloseApplications=yes
 Source: "{#SourceDir}\patina.exe"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\vulkan-1.dll"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\yt-dlp.exe"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-lucide.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-ibm-plex.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\THIRD-PARTY.md"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\THIRD-PARTY-yt-dlp.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\LICENSE-GPLv3.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\LICENSE-ffmpeg.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 
 [Icons]
 ; The Start Menu entry, and the reason this installer exists. No desktop

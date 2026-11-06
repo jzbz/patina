@@ -14,7 +14,8 @@
 #
 # Takes the unsigned zip CI produced (the macos-universal workflow artifact;
 # `gh run download` unwraps the artifact and leaves this zip) or an unpacked
-# Patina.app. Signs every library in the bundle and then the bundle, notarises
+# Patina.app. Signs the helpers and every library in the bundle and then the
+# bundle, notarises
 # and staples it, zips it again, and checks that new zip the way a stranger's
 # Mac will check it. The new zip goes beside the input under the input's name
 # without -unsigned, patina-v0.1.2-macos-universal.zip: the name the draft
@@ -24,14 +25,16 @@
 # replaced in place under the same rule; a Patina.app gives Patina.zip beside
 # it.
 #
-# The entitlements are packaging/macos-entitlements.plist from the checkout this
-# script runs from, so run it from the release's tag.
+# The entitlements are packaging/macos-entitlements.plist for Patina and
+# packaging/macos-yt-dlp-entitlements.plist for the yt-dlp it carries, both
+# from the checkout this script runs from, so run it from the release's tag.
 #
 # One-time setup on this machine — see the block printed by --setup.
 set -eu
 
 PROFILE="${PATINA_NOTARY_PROFILE:-patina-notary}"
 ENTITLEMENTS="$(cd "$(dirname "$0")" && pwd)/macos-entitlements.plist"
+YTDLP_ENTITLEMENTS="$(cd "$(dirname "$0")" && pwd)/macos-yt-dlp-entitlements.plist"
 
 die() { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -248,6 +251,10 @@ echo "             SHA-1 $IDENTITY"
 LINT=$(plutil -lint "$ENTITLEMENTS" 2>&1) \
     || die "$ENTITLEMENTS is not a valid property list: $LINT"
 echo "  entitlements: $ENTITLEMENTS"
+[ -f "$YTDLP_ENTITLEMENTS" ] || die "no $YTDLP_ENTITLEMENTS; run this from a checkout of the repository"
+LINT=$(plutil -lint "$YTDLP_ENTITLEMENTS" 2>&1) \
+    || die "$YTDLP_ENTITLEMENTS is not a valid property list: $LINT"
+echo "                $YTDLP_ENTITLEMENTS"
 
 # The login keychain unlocks with the password at console login and stays locked
 # in an SSH session, so this is the normal state when signing remotely. Checked
@@ -312,9 +319,11 @@ echo "  arches:    $(lipo -archs "$EXE" 2>/dev/null || echo '?')"
 xattr -cr "$APP"
 
 # ----------------------------------------------------------------- contents
-# The code in a Patina.app is its executable and the libraries in
+# The code in a Patina.app is its executable, the libraries in
 # Contents/Frameworks (libmpv and everything it links, from macos-libmpv.txt),
-# which is all macos-bundle.sh puts there and all this signs. Anything else
+# and yt-dlp and ffmpeg in Contents/Helpers (yt-dlp pinned in
+# bundled-tools.env, ffmpeg built by ffmpeg.sh), which is all
+# macos-bundle.sh puts there and all this signs. Anything else
 # that is code would go out unsigned and come back from the notary as a
 # rejection, ten minutes later, so it stops the run here; so does anything in a
 # directory under Frameworks, since a nested framework or bundle is signed as a
@@ -326,6 +335,9 @@ STRAY=
 while IFS= read -r f; do
     case "$f" in
         "$EXE") ;;
+        "$APP/Contents/Helpers/yt-dlp" | "$APP/Contents/Helpers/ffmpeg") ;;
+        "$APP/Contents/Helpers/"*) STRAY="$STRAY
+    ${f#"$APP"/}" ;;
         "$APP/Contents/Frameworks/"*/*) STRAY="$STRAY
     ${f#"$APP"/}" ;;
         "$APP/Contents/Frameworks/"*.dylib) LIBS=$((LIBS + 1)) ;;
@@ -338,13 +350,19 @@ while IFS= read -r f; do
     esac
 done <"$WORK/files"
 [ -z "$STRAY" ] || die "the bundle holds code this does not know how to sign:$STRAY
-  It signs Contents/MacOS/patina and the libraries directly in
-  Contents/Frameworks, which is everything macos-bundle.sh puts in a bundle.
+  It signs Contents/MacOS/patina, the libraries directly in
+  Contents/Frameworks and yt-dlp and ffmpeg in Contents/Helpers, which is
+  everything macos-bundle.sh puts in a bundle.
   Anything else has to be taught to it first; left unsigned, it fails
   notarisation."
 [ -f "$APP/Contents/Frameworks/libmpv.2.dylib" ] \
     || die "no Contents/Frameworks/libmpv.2.dylib, the libmpv Patina loads from the bundle"
 echo "  libraries: $LIBS in Contents/Frameworks"
+for tool in yt-dlp ffmpeg; do
+    [ -f "$APP/Contents/Helpers/$tool" ] \
+        || die "no Contents/Helpers/$tool, which Patina runs for online video and downloads"
+done
+echo "  helpers:   yt-dlp and ffmpeg in Contents/Helpers"
 
 # The one entitlement depends on how the bundled LuaJIT was built; the comment
 # in packaging/macos-entitlements.plist has the whole story. A LuaJIT that calls
@@ -382,7 +400,39 @@ done
 # loads the rest, which is why the entitlements can leave
 # disable-library-validation out. They get no entitlements: those belong to a
 # process, are read from its main executable, and mean nothing on a library.
+#
+# The helpers are programs of their own, so each is a main executable with
+# its own hardened runtime and its own entitlements, and is signed with an
+# identifier under the app's, since a lone executable has no bundle ID for
+# codesign to take one from (Apple's "Creating distribution-signed code for
+# the Mac" asks for both).
+#
+# yt-dlp gets one entitlement, packaging/macos-yt-dlp-entitlements.plist,
+# which Patina's own process does without. It is a PyInstaller program: on
+# every start it unpacks Python, its framework and its extension modules
+# into a new folder in $TMPDIR (_MEIxxxxxx, made 0700), forks and execs
+# itself, and the child loads them from there. Those libraries were signed
+# ad hoc by yt-dlp's build and sit compressed inside the executable, where
+# this cannot reach them without rebuilding yt-dlp; the hardened runtime's
+# library validation refuses any library signed by neither Apple nor the
+# process's own team, so without com.apple.security.cs.disable-library-
+# validation yt-dlp could not start. Nothing else: PyInstaller sets no DYLD_
+# variables on macOS (it rewrites the libraries' paths when it builds), its
+# Python runs isolated so PYTHON_JIT cannot turn on the JIT, and the ctypes
+# and cffi closures go through the system's /usr/lib/libffi.dylib, which
+# needs no writable executable memory. The files it unpacks get no
+# quarantine attribute: macOS quarantines the files an app creates when the
+# app asks for that (LSFileQuarantineEnabled in its Info.plist), and neither
+# Patina nor yt-dlp, which has no Info.plist, does. The plist carries no
+# comments because Apple asks for none in an entitlements file.
+#
+# ffmpeg needs none: packaging/ffmpeg.sh builds it statically against
+# FFmpeg's own libraries, linking only the system's, and it copies
+# streams, which generates no code.
 step "Signing"
+sign "Helpers/yt-dlp" --identifier video.patina.Patina.yt-dlp \
+    --entitlements "$YTDLP_ENTITLEMENTS" "$APP/Contents/Helpers/yt-dlp"
+sign "Helpers/ffmpeg" --identifier video.patina.Patina.ffmpeg "$APP/Contents/Helpers/ffmpeg"
 for lib in "$APP"/Contents/Frameworks/*.dylib; do
     if [ ! -f "$lib" ] || [ -L "$lib" ]; then continue; fi
     sign "Frameworks/$(basename "$lib")" "$lib"
@@ -488,6 +538,23 @@ EXPECTED=$(grep -o '<key>[^<]*</key>' "$ENTITLEMENTS" | sort)
   $ENTITLEMENTS
   and no others. What codesign read is above.
   $KEPT"
+echo "  --- helper entitlements (yt-dlp's file's alone, ffmpeg none?) ---"
+run codesign -d --entitlements - --xml "$SHIP/Contents/Helpers/yt-dlp" \
+    || die "could not read the entitlements of the yt-dlp that would ship.
+  $KEPT"
+GOT=$(printf '%s\n' "$_out" | grep -o '<key>[^<]*</key>' | sort)
+EXPECTED=$(grep -o '<key>[^<]*</key>' "$YTDLP_ENTITLEMENTS" | sort)
+[ "$GOT" = "$EXPECTED" ] \
+    || die "the yt-dlp that would ship does not carry the entitlements in
+  $YTDLP_ENTITLEMENTS
+  and no others. What codesign read is above.
+  $KEPT"
+run codesign -d --entitlements - --xml "$SHIP/Contents/Helpers/ffmpeg" \
+    || die "could not read the entitlements of the ffmpeg that would ship.
+  $KEPT"
+! printf '%s\n' "$_out" | grep -q '<key>' \
+    || die "the ffmpeg that would ship carries entitlements, and should carry none.
+  $KEPT"
 echo "  --- spctl (what Gatekeeper decides) ---"
 run spctl -a -vvv -t exec "$SHIP" \
     || die "Gatekeeper rejects the bundle — do not ship this.
@@ -506,14 +573,21 @@ printf '\n'
 printf 'done: %s\n' "$FINAL"
 printf '  shasum: %s\n' "$(shasum -a 256 "$FINAL" | awk '{print $1}')"
 printf '\nVerify it elsewhere before shipping — on a Mac that has never held the\n'
-printf 'signing key, quarantine it the way a download would and open it:\n\n'
+printf 'signing key, quarantine it the way a download would and open it. Every\n'
+printf 'file, as Archive Utility and Homebrew quarantine every file they unpack,\n'
+printf 'and Patina starts the helpers in Contents/Helpers by themselves:\n\n'
 # shellcheck disable=SC2016  # deliberately literal: this is text to paste, not to run here
-printf '  xattr -w com.apple.quarantine "0083;00000000;Safari;$(uuidgen)" Patina.app\n'
+printf '  xattr -r -w com.apple.quarantine "0083;00000000;Safari;$(uuidgen)" Patina.app\n'
 printf '  spctl -a -vvv -t exec Patina.app && open Patina.app\n'
-printf '\n%s\n%s\n%s\n' \
+printf '\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
     "Then use it for a while, an online video included: mpv's Lua scripts run" \
     "under LuaJIT, and an entitlement LuaJIT lacks shows only as macOS killing" \
-    "Patina once a script runs hot enough to be compiled."
+    "Patina once a script runs hot enough to be compiled. Search in the YouTube" \
+    "section, play a result and download it too: the bundled yt-dlp and ffmpeg" \
+    "run under their own signatures, and a library yt-dlp may not load shows" \
+    "only when it starts. On an Intel Mac and on Apple silicon: yt-dlp's" \
+    "Python sits in the arm64 half of its file, and each half runs on its own" \
+    "kind of Mac only."
 
 # The tag is in the name, for a release build; a build named by its commit is
 # not for a release.

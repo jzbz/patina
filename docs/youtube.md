@@ -470,10 +470,33 @@ doesn't update it: that would put code outside the signed release into a
 process with the network and the user's files.
 
 With no yt-dlp, the section says so plainly and still shows the saved lists.
-The Flatpak carries yt-dlp, Deno and yt-dlp-ejs, and uses the runtime's
-ffmpeg. The macOS and Windows packages carry none of these yet, so there the
-user installs yt-dlp and the section says where to set it (Preferences ›
-Network).
+Every package carries one. The Flatpak carries yt-dlp, Deno and yt-dlp-ejs,
+and uses the runtime's ffmpeg. Patina.app and the Windows folder carry
+yt-dlp's own standalone build and an ffmpeg built from FFmpeg's source for
+joining video and audio alone (`packaging/ffmpeg.sh`), pinned in
+`packaging/bundled-tools.env` and found by `platform::bundled`, but no
+JavaScript runtime: yt-dlp then asks YouTube only for its `visionos` client,
+which needs none and which the section asks for first anyway. Tried on Linux
+with `--no-js-runtimes`, on two videos, that gave the same best format with
+no warning, which is all that has been checked. The order is the yt-dlp
+the user chose (the path preference, a `ytdl_path` in mpv's
+`script-opts/ytdl_hook.conf`, or a `yt-dlp` in mpv's configuration folder),
+then the newer of the bundled one and a `yt-dlp` the user installed (on the
+`PATH`, and on macOS in Homebrew's folders too), then the `PATH`; a
+`youtube-dl` doesn't count anywhere there, as the section can't use it.
+Each copy is asked its version once, off the interface thread, and the
+answer is kept until the file changes (`ytdl_versions.rs`); until both have
+answered, the bundled one is used. The section's age notice is of the one in
+use. A Linux build looks exactly as before. Downloads get
+the bundled ffmpeg with `--ffmpeg-location`, which wins over an
+`ffmpeg-location` in the user's own yt-dlp configuration file (the section's
+own downloads read none); naming one in Patina's yt-dlp options wins over
+the bundled one. The bundled yt-dlp is GPL-3.0-or-later as a whole, for the
+libraries its build carries; `packaging/THIRD-PARTY.md` says what and where
+their source is. The bundled copies
+are only as new as the release, which is why the pins are moved to yt-dlp's
+newest release for every release (the comment in that file says how), and
+why the age above matters most there.
 
 ## Failures by name
 
@@ -559,7 +582,23 @@ local stream.
 Checked with real yt-dlp and feeds on Linux only, on a virtual framebuffer,
 with a handful of requests against public channels. Not yet tried:
 
-- macOS and Windows at all, beyond building and lints, or the Flatpak.
+- macOS and Windows at all, beyond building and lints, or the Flatpak; and
+  the bundled yt-dlp and ffmpeg there: signed, notarised and run from
+  Patina.app, run from the installed Windows folder, how long the
+  standalone yt-dlp takes to start (it unpacks itself each time), the
+  bundled ffmpeg joining a real download's video and audio (its
+  configuration was tried on Linux, through yt-dlp, on media made locally),
+  and
+  whether a stopped one leaves its unpacked folder behind: on macOS a
+  cancelled or timed-out search is asked to end first, so it shouldn't; on
+  Windows it is killed, so it may.
+- Choosing the newer of the bundled yt-dlp and one the user installed
+  (Homebrew, winget, pip) on a real Mac or Windows machine: the comparison,
+  the kept answers and a slow or broken copy were tried on Linux with
+  stand-ins that print a version, and the hook, section and Downloads
+  window moving to the installed copy once it has answered not at all.
+- The player refusing to download a live stream with the bundled ffmpeg,
+  which needs a live stream playing on macOS or Windows.
 - The import and export dialogs themselves: the test display has no portal.
   What they call is tested below them, and importing through the view.
 - A real export's rarer forms, and a translated one, whose header fallback

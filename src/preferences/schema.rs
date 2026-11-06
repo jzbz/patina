@@ -929,7 +929,13 @@ pub const ITEMS: &[Item] = &[
         "Online video",
         "ytdl",
         "Play videos from websites with yt-dlp",
-        "yt-dlp must be installed.",
+        // The macOS and Windows packages carry one (platform::bundled), and
+        // use one the user installed when that is newer (ytdl_versions).
+        if cfg!(any(target_os = "macos", windows)) {
+            "Patina carries yt-dlp, and uses one you installed instead when that is newer."
+        } else {
+            "yt-dlp must be installed."
+        },
         Switch,
     ),
     needs(
@@ -938,7 +944,11 @@ pub const ITEMS: &[Item] = &[
             "Online video",
             "ytdl-path",
             "yt-dlp program",
-            "Empty to find it on the PATH.",
+            if cfg!(any(target_os = "macos", windows)) {
+                "Empty for the newer of the one Patina carries and one you installed."
+            } else {
+                "Empty to find it on the PATH."
+            },
             Path(false),
         ),
         "ytdl",

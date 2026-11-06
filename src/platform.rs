@@ -33,6 +33,65 @@ pub fn in_own_group(command: &mut Command) -> &mut Command {
     command
 }
 
+/// How long a program `end_group` asked to end is given before `kill_group`.
+/// yt-dlp itself ends at once; this is for the launcher of a standalone yt-dlp
+/// to remove what it unpacked, and for an ffmpeg to close its file.
+pub const END_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Asks a program started with `in_own_group`, and whatever it has started, to
+/// end, and gives whether it asked, in which case the caller gives it
+/// `END_GRACE` and then calls `kill_group` if it is still running. On Unix
+/// that is SIGTERM to the group. It matters for the standalone yt-dlp the
+/// macOS package carries: a PyInstaller launcher that unpacks the real
+/// yt-dlp into a folder of its own in $TMPDIR (about 85 MB) on every start.
+/// Its launcher passes a signal it can catch on to that yt-dlp, waits for it
+/// to end and removes the folder; SIGKILL can't be caught, and leaves the
+/// folder behind. On Windows there is nothing known to ask with: taskkill
+/// without /F refuses a console program with no window, which is how Patina
+/// starts yt-dlp, and the launcher's one window, a hidden one, handles only
+/// the session ending; so this kills the group at once and gives false (see
+/// packaging/windows/README.md). Call it, like
+/// `kill_group`, before the program has been waited for.
+pub fn end_group(child: &mut std::process::Child) -> bool {
+    #[cfg(unix)]
+    {
+        if let Ok(id) = libc::pid_t::try_from(child.id()) {
+            // SAFETY: kill takes no pointers. A negative id names the group,
+            // which is this child's own, as `in_own_group` made it.
+            if unsafe { libc::kill(-id, libc::SIGTERM) } == 0 {
+                return true;
+            }
+        }
+        kill_group(child);
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        kill_group(child);
+        false
+    }
+}
+
+/// `end_group`, then `kill_group` if the program is still running after
+/// `END_GRACE`; for a caller that may wait that long, as a worker thread may.
+/// One that ended within it has been waited for, so its group is left alone:
+/// its id may already be someone else's.
+pub fn stop_group(child: &mut std::process::Child) {
+    if !end_group(child) {
+        return;
+    }
+    let until = std::time::Instant::now() + END_GRACE;
+    while std::time::Instant::now() < until {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    if matches!(child.try_wait(), Ok(None)) {
+        kill_group(child);
+    }
+}
+
 /// Stops a program started with `in_own_group`, and whatever it has started: a
 /// launcher's real worker, or a JavaScript runtime, would otherwise go on making
 /// requests, and hold the program's pipes open. Call it before waiting for the
@@ -78,6 +137,43 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&paths)
         .map(|dir| dir.join(path))
         .find(|candidate| candidate.is_file())
+}
+
+/// A program the macOS or Windows package carries for Patina: `yt-dlp` or
+/// `ffmpeg`, in Patina.app/Contents/Helpers or beside patina.exe. None where
+/// it isn't there, or on Linux, where a build plays with the system's
+/// programs and the Flatpak's are on its PATH.
+///
+/// On macOS it is found from the executable itself rather than a link to it,
+/// as libmpv is, since the Homebrew cask's `patina` command is a link. On
+/// Windows the path is left as Windows gives it: resolving it would turn it
+/// into a `\\?\` path, which then reaches mpv's hook and yt-dlp, and shows.
+pub fn bundled(name: &str) -> Option<PathBuf> {
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        let exe = std::env::current_exe().ok()?;
+        #[cfg(target_os = "macos")]
+        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+        bundled_beside(&exe, name).filter(|path| path.is_file())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = name;
+        None
+    }
+}
+
+/// Where the package puts `name`, given Patina's executable: Contents/Helpers
+/// of the bundle (Apple's place for helper tools) on macOS, the executable's
+/// own folder on Windows.
+#[cfg(any(target_os = "macos", windows, test))]
+fn bundled_beside(exe: &Path, name: &str) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    if cfg!(windows) {
+        Some(dir.join(format!("{name}.exe")))
+    } else {
+        Some(dir.parent()?.join("Helpers").join(name))
+    }
 }
 
 /// Whether Patina runs in a Flatpak sandbox, where it reaches the desktop
@@ -383,6 +479,85 @@ pub fn file_uri(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
+    /// Contents/Helpers on macOS, beside the exe on Windows; Linux has no
+    /// bundled programs at all.
+    #[test]
+    fn bundled_programs_are_looked_for_where_the_packages_put_them() {
+        if cfg!(windows) {
+            assert_eq!(
+                super::bundled_beside(Path::new(r"C:\Apps\Patina\patina.exe"), "yt-dlp"),
+                Some(PathBuf::from(r"C:\Apps\Patina\yt-dlp.exe"))
+            );
+        } else {
+            assert_eq!(
+                super::bundled_beside(
+                    Path::new("/Applications/Patina.app/Contents/MacOS/patina"),
+                    "ffmpeg"
+                ),
+                Some(PathBuf::from(
+                    "/Applications/Patina.app/Contents/Helpers/ffmpeg"
+                ))
+            );
+        }
+        if cfg!(not(any(target_os = "macos", windows))) {
+            assert_eq!(super::bundled("yt-dlp"), None);
+            assert_eq!(super::bundled("ffmpeg"), None);
+        }
+    }
+
+    /// A program asked to end gets to run what it does on SIGTERM, as a
+    /// standalone yt-dlp's launcher removes what it unpacked; one that won't
+    /// end is killed once the grace is up.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_is_asked_to_end_and_then_killed() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let dir = std::env::temp_dir().join(format!("patina-stop-group-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = |script: &str| {
+            let ready = dir.join("ready");
+            let _ = std::fs::remove_file(&ready);
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(script)
+                .arg(&dir)
+                .stdout(Stdio::null());
+            super::in_own_group(&mut command);
+            let child = command.spawn().unwrap();
+            let started = Instant::now();
+            while !ready.exists() {
+                assert!(started.elapsed() < Duration::from_secs(10), "never ready");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            child
+        };
+
+        let unpacked = dir.join("unpacked");
+        std::fs::write(&unpacked, b"").unwrap();
+        let mut child =
+            start("trap 'rm -f \"$0/unpacked\"; exit 0' TERM; sleep 30 & touch \"$0/ready\"; wait");
+        super::stop_group(&mut child);
+        let status = child.wait().unwrap();
+        assert!(status.success(), "{status:?}: killed rather than asked");
+        assert!(!unpacked.exists(), "it did not get to tidy up");
+
+        let mut child = start("trap '' TERM; sleep 30 & touch \"$0/ready\"; wait");
+        let started = Instant::now();
+        super::stop_group(&mut child);
+        let status = child.wait().unwrap();
+        assert!(!status.success(), "{status:?}");
+        assert!(
+            started.elapsed() >= super::END_GRACE,
+            "killed before the grace"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn the_pipewire_socket_is_found_as_libpipewire_finds_it() {

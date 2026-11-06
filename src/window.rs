@@ -936,6 +936,9 @@ impl PlayerController {
         {
             self.remember_library_size();
         }
+        if sources.iter().any(|source| util::is_web(source)) {
+            self.app().ytdl_current();
+        }
         let player = self.player();
         self.load_asked.set(true);
         if !append {
@@ -5025,6 +5028,26 @@ impl PlayerController {
             .get()
             .then(|| VideoId::from_watch_url(&self.state.borrow().path))
             .flatten();
+        // Only an `ffmpeg-location` of the user's matters here, and a video
+        // from the section takes none of their options.
+        let prefs = self.app().prefs();
+        let raw = if video.is_some() {
+            prefs.ytdl_options_for_section()
+        } else {
+            prefs.ytdl_raw_options.clone()
+        };
+        let ffmpeg = crate::downloads::Ffmpeg::for_options(&raw);
+        // Refused as the section refuses it, though only for the package's
+        // ffmpeg, which can't record one; the user's own may.
+        if media.live && !ffmpeg.records_live() {
+            log::info!("not downloading {}: a live stream", media.title);
+            self.show_message(
+                "Can't Download a Live Stream",
+                "It can be downloaded once it has ended.",
+                4.0,
+            );
+            return;
+        }
         let request = crate::downloads::Request {
             url: if media.url.is_empty() {
                 self.state.borrow().path.clone()
@@ -5032,7 +5055,7 @@ impl PlayerController {
                 media.url.clone()
             },
             title: media.title.clone(),
-            format: crate::downloads::download_format(media.format_id.as_deref()),
+            format: crate::downloads::download_format(media.format_id.as_deref(), &ffmpeg),
             video,
         };
         if self.app().download(request) {
@@ -5150,7 +5173,7 @@ impl PlayerController {
         }
         playing::download_format(
             &self.section_filter(),
-            crate::platform::find_program("ffmpeg").is_some(),
+            crate::downloads::Ffmpeg::for_options(&prefs.ytdl_options_for_section()).found(),
         )
     }
 

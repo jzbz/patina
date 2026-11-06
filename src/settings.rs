@@ -76,6 +76,13 @@ impl Paths {
         self.data.join("youtube-feed.json")
     }
 
+    /// The versions the package's yt-dlp and the user's said, by file, so that
+    /// each is asked once (`ytdl_versions`). Only a macOS or Windows package
+    /// writes it.
+    pub fn ytdl_versions_file(&self) -> PathBuf {
+        self.data.join("yt-dlp-versions.json")
+    }
+
     /// Thumbnails and channel pictures. Apart from Jellyfin's, which signing out
     /// of a server empties.
     pub fn youtube_images_dir(&self) -> PathBuf {
@@ -670,13 +677,42 @@ impl Preferences {
         if !self.user_agent.is_empty() {
             options.push(("user-agent", self.user_agent.clone()));
         }
-        if !self.ytdl_path.is_empty() {
-            options.push((
-                "script-opts",
-                format!("ytdl_hook-ytdl_path={}", self.ytdl_path),
-            ));
+        let mpv_config = || Paths::discover().mpv_config_dir();
+        if let Some(script_opts) = self.ytdl_script_opts(
+            crate::platform::bundled("yt-dlp"),
+            || crate::downloads::hook_ytdl_path(self, &mpv_config()).is_some(),
+            || crate::downloads::find_ytdl(self, &mpv_config()),
+        ) {
+            options.push(("script-opts", script_opts));
         }
         options
+    }
+
+    /// The yt-dlp mpv's hook is told to run, as its `script-opts`: the path
+    /// preference as it was written, or, when a package carries yt-dlp, the
+    /// one `find_ytdl` settles on. Nothing otherwise, which leaves the hook to
+    /// search as it always has; nor when the hook's own configuration
+    /// (`script-opts/ytdl_hook.conf`) names one, which `script-opts` would
+    /// override, and which `find_ytdl` then settles on too. Without this the
+    /// hook would never run the bundled copy: it isn't on the `PATH`, and on
+    /// macOS an app opened from the Finder has only the system's folders
+    /// there. Quoted with its length, as a path can hold a comma.
+    fn ytdl_script_opts(
+        &self,
+        bundled: Option<PathBuf>,
+        hook_names_one: impl FnOnce() -> bool,
+        find: impl FnOnce() -> Option<PathBuf>,
+    ) -> Option<String> {
+        if !self.ytdl_path.is_empty() {
+            return Some(format!("ytdl_hook-ytdl_path={}", self.ytdl_path));
+        }
+        bundled?;
+        if hook_names_one() {
+            return None;
+        }
+        let found = find()?;
+        let path = found.to_str()?;
+        Some(format!("ytdl_hook-ytdl_path=%{}%{path}", path.len()))
     }
 }
 
@@ -1279,6 +1315,75 @@ mod tests {
                     .map(str::to_owned);
                 assert_eq!(seen.as_deref(), Some(proxy), "{raw}");
             }
+        }
+    }
+
+    /// The hook is told which yt-dlp to run only when the user said so or a
+    /// package carries one; otherwise, as on Linux, it searches by itself.
+    #[test]
+    fn mpv_is_told_of_a_bundled_yt_dlp_only() {
+        let bundled = || Some(PathBuf::from("/A,b/Patina.app/Contents/Helpers/yt-dlp"));
+        let found = || Some(PathBuf::from("/A,b/Patina.app/Contents/Helpers/yt-dlp"));
+        let none = Preferences::default();
+        let no_hook = || false;
+        assert_eq!(none.ytdl_script_opts(None, || panic!("read"), found), None);
+        assert_eq!(
+            none.ytdl_script_opts(bundled(), no_hook, found).as_deref(),
+            Some("ytdl_hook-ytdl_path=%39%/A,b/Patina.app/Contents/Helpers/yt-dlp")
+        );
+        // A yt-dlp of the user's in mpv's folder is what find_ytdl gives, and
+        // the hook is then pointed at that.
+        assert_eq!(
+            none.ytdl_script_opts(bundled(), no_hook, || Some(PathBuf::from(
+                "/conf/mpv/yt-dlp"
+            )))
+            .as_deref(),
+            Some("ytdl_hook-ytdl_path=%16%/conf/mpv/yt-dlp")
+        );
+        // A ytdl_path in the hook's own configuration is the user's too, and
+        // script-opts would override it, so the hook is told nothing.
+        assert_eq!(
+            none.ytdl_script_opts(bundled(), || true, || panic!("searched")),
+            None
+        );
+        // The preference wins, as written, and is never searched for here.
+        let own = Preferences {
+            ytdl_path: "/opt/yt-dlp".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            own.ytdl_script_opts(bundled(), || panic!("read"), || panic!("searched"))
+                .as_deref(),
+            Some("ytdl_hook-ytdl_path=/opt/yt-dlp")
+        );
+    }
+
+    /// A bundled yt-dlp's path reaches the hook whole, comma and all.
+    #[test]
+    fn a_bundled_yt_dlp_reaches_mpv_whole() {
+        let Some(mpv) = crate::mpv::testing::headless() else {
+            return;
+        };
+        for path in [
+            r"C:\Users\Ann, Bo\AppData\Local\Programs\Patina\yt-dlp.exe",
+            "/Volumes/A=b [c]/Patina.app/Contents/Helpers/yt-dlp",
+            "/Applications/名前/Patina.app/Contents/Helpers/yt-dlp",
+        ] {
+            let opts = Preferences::default()
+                .ytdl_script_opts(
+                    Some(PathBuf::from(path)),
+                    || false,
+                    || Some(PathBuf::from(path)),
+                )
+                .unwrap();
+            mpv.set_property("script-opts", opts.as_str())
+                .unwrap_or_else(|error| panic!("{opts}: {error}"));
+            let Node::Map(seen) = mpv.get_property("script-opts").unwrap() else {
+                panic!("{opts}: not a map");
+            };
+            assert_eq!(seen.len(), 1, "{opts}");
+            assert_eq!(seen[0].0, "ytdl_hook-ytdl_path", "{opts}");
+            assert_eq!(seen[0].1.as_str(), Some(path), "{opts}");
         }
     }
 

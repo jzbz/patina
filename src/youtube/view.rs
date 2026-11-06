@@ -183,6 +183,10 @@ pub struct YouTubeController {
     channel: RefCell<Option<ChannelPage>>,
     adding: RefCell<Option<Cancel>>,
     tool: RefCell<Option<ToolState>>,
+    /// Counts the times the section asked about its yt-dlp (`ask_tool`), so
+    /// that an answer about a copy no longer chosen, as the package's slower
+    /// one can give after the user's that replaced it, is dropped.
+    tool_asked: Cell<u64>,
     /// Things to tell the user: how an import went, a list that can't be read.
     notes: RefCell<Vec<String>>,
     update_timer: Timer,
@@ -327,6 +331,7 @@ impl YouTubeController {
             channel: RefCell::new(None),
             adding: RefCell::new(None),
             tool: RefCell::new(None),
+            tool_asked: Cell::new(0),
             notes: RefCell::new(Vec::new()),
             update_timer: Timer::default(),
         });
@@ -477,8 +482,12 @@ impl YouTubeController {
 
     fn ask_tool(&self) {
         let weak = self.this.clone();
+        let asked = self.tool_asked.get() + 1;
+        self.tool_asked.set(asked);
         self.session.tool_state(&(self.prefs)(), move |state| {
-            if let Some(this) = weak.upgrade() {
+            if let Some(this) = weak.upgrade()
+                && this.tool_asked.get() == asked
+            {
                 *this.tool.borrow_mut() = Some(state);
                 this.update_notes();
             }

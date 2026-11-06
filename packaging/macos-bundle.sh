@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Lay out Patina.app around a universal binary and the libmpv it carries.
+# Lay out Patina.app around a universal binary, the libmpv it carries, and
+# the yt-dlp and ffmpeg it runs.
 #
-#   packaging/macos-bundle.sh <dir of libraries from macos-libmpv.sh>
+#   packaging/macos-bundle.sh <dir of libraries from macos-libmpv.sh> \
+#                             <dir of tools from macos-tools.sh>
 #
 # Expects release builds for both aarch64-apple-darwin and
 # x86_64-apple-darwin. A .app is a directory of a particular shape with a
@@ -11,11 +13,13 @@
 # who built it, so Gatekeeper still refuses it as a download.
 set -euo pipefail
 
-libs=${1:?usage: macos-bundle.sh <dir of libraries>}
+libs=${1:?usage: macos-bundle.sh <dir of libraries> <dir of tools>}
+tools=${2:?usage: macos-bundle.sh <dir of libraries> <dir of tools>}
 root="$(cd "$(dirname "$0")/.." && pwd)"
 app="$root/dist/Patina.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks" "$app/Contents/Resources"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks" "$app/Contents/Helpers" \
+    "$app/Contents/Resources"
 
 lipo -create \
     "$root/target/aarch64-apple-darwin/release/patina" \
@@ -26,6 +30,12 @@ chmod +x "$app/Contents/MacOS/patina"
 # libmpv and what it links, where Patina looks first
 # (<executable>/../Frameworks) and where the executable's rpath points.
 cp "$libs"/*.dylib "$app/Contents/Frameworks/"
+
+# yt-dlp and ffmpeg, by name rather than with a wildcard, in Contents/Helpers:
+# Apple's place for helper tools, a code location that codesign seals as
+# code. Patina finds them there by itself (src/platform.rs, `bundled`).
+cp "$tools/yt-dlp" "$tools/ffmpeg" "$app/Contents/Helpers/"
+chmod +x "$app/Contents/Helpers/yt-dlp" "$app/Contents/Helpers/ffmpeg"
 
 # The .icns, from the sizes packaging/icons.sh renders out of the SVG. The
 # names are Apple's: iconutil refuses any it doesn't know, and a size serves
@@ -51,6 +61,8 @@ cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
 cp "$root/ui/icons/LICENSE" "$app/Contents/Resources/LICENSE-lucide"
 cp "$root/ui/fonts/LICENSE" "$app/Contents/Resources/LICENSE-ibm-plex"
 cp "$root/packaging/THIRD-PARTY.md" "$app/Contents/Resources/THIRD-PARTY.md"
+cp "$tools/THIRD-PARTY-yt-dlp.txt" "$tools/LICENSE-GPLv3.txt" "$tools/LICENSE-ffmpeg.txt" \
+    "$app/Contents/Resources/"
 
 version="$(grep -m1 '^version' "$root/Cargo.toml" | cut -d'"' -f2)"
 
@@ -120,10 +132,15 @@ $(document_types)
 </plist>
 PLIST
 
-# The libraries first: signing the bundle checks what is nested in it.
-# Signing them ad hoc replaces IINA's own signatures, which a bundle signed
-# by someone else could not keep anyway.
+# The libraries and helpers first: signing the bundle checks what is nested
+# in it. Signing them ad hoc replaces IINA's and yt-dlp's own signatures,
+# which a bundle signed by someone else could not keep anyway, and the
+# linker's ad hoc one on ffmpeg's arm64 half. The helpers have no bundle ID to be known by, so each gets one
+# under the app's, as macos-sign.sh gives them.
 codesign --force --sign - "$app/Contents/Frameworks/"*.dylib
+for tool in yt-dlp ffmpeg; do
+    codesign --force --sign - --identifier "video.patina.Patina.$tool" "$app/Contents/Helpers/$tool"
+done
 codesign --force --sign - "$app"
 codesign --verify --strict "$app"
 

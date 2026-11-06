@@ -122,12 +122,41 @@ carries:
   to whatever file is chosen in a Save dialog), so it can move to the trash
   only what is there.
 - `patina-vX.Y.Z-macos-universal.zip`: Patina.app for macOS 11 and later,
-  signed and notarised. With Homebrew, `brew install --cask jzbz/tap/patina`
-  installs it and a `patina` command.
+  signed and notarised, with libmpv, yt-dlp and ffmpeg inside. With
+  Homebrew, `brew install --cask jzbz/tap/patina` installs it and a `patina`
+  command.
 - `patina-vX.Y.Z-x86_64-setup.exe`: an installer for Windows 10 and 11 that
   installs for the current user, without administrator rights; and
   `patina-vX.Y.Z-windows-x86_64.zip`, the same files to run from any folder.
+  Both carry libmpv, yt-dlp and an LGPL ffmpeg.
   `winget install Patina.Patina` will install it once winget has the package.
+
+Nothing else needs installing for online video or downloads. Each release
+carries the newest yt-dlp there was when its commit was made (the release
+workflow refuses a tag whose pin was older), and Patina doesn't update it
+by itself; the YouTube section says when it is more than 90 days old. A
+yt-dlp you installed yourself (with Homebrew, winget or pip) is used
+instead when it is the newer of the two, which Patina asks each once, so
+keeping your own up to date is enough; the Downloads window says which
+one is in use. To use a particular one whatever its age, set where it is
+in Preferences › Network, or put it in mpv's configuration folder. The bundled
+ffmpeg, a few MB built from FFmpeg's source for this alone, joins video
+and audio and makes yt-dlp's usual fixes, and converts nothing: yt-dlp
+options of your own such as `--extract-audio` or `--embed-subs` fail with
+ffmpeg's own error and need a full ffmpeg. It wins over one named in your
+own yt-dlp configuration file; to use another, name it with
+`ffmpeg-location=` in Patina's yt-dlp options (Preferences › Network), as
+Patina opened from the Finder doesn't see Homebrew's. Downloading a live
+stream as it plays needs one too (with the bundled one, Patina says it can
+be downloaded once it has ended), and so does joining a video that a site
+other than YouTube serves in several parts, which takes its ffprobe as
+well. Neither the
+macOS nor the Windows package bundles a JavaScript runtime such as Deno;
+yt-dlp then asks YouTube only for what plays without one. The bundled
+yt-dlp is GPL-3.0-or-later as a whole, for the libraries its build carries,
+though yt-dlp's own code is Unlicense, and the bundled ffmpeg is
+LGPL-2.1-or-later; `THIRD-PARTY.md` in each package lists what it carries
+and where its source is.
 - `SHA256SUMS` and `SHA256SUMS.asc`: the checksums of all of these, signed
   with the PGP key `252B 901C 8885 3CF9 F939  2559 2497 38C8 641C 3359`.
   Get the key with `gpg --locate-keys jz@jz.bz` (or
@@ -148,8 +177,8 @@ carries:
 - For online video, yt-dlp (and for YouTube, a JavaScript runtime such as
   Deno, which yt-dlp finds by itself); downloads that join separate video
   and audio need ffmpeg. The YouTube section needs yt-dlp too, to search,
-  play and download. The Flatpak carries it; the macOS and Windows packages
-  don't yet, so there you install it yourself
+  play and download. Every package carries yt-dlp and ffmpeg (the Flatpak
+  Deno as well), so only a build of your own needs them installed
 
 Patina loads libmpv when it starts rather than linking to it, so building
 needs no mpv development files. It looks for the library beside the

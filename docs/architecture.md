@@ -384,11 +384,65 @@ The section's downloads share the queue with Jellyfin's in `downloads.rs`, and
 wait by rules of their own: at most two of yt-dlp running, started at least 8
 seconds apart. Neither kind holds the other up.
 
+Which yt-dlp runs is decided in one place, `downloads::find_ytdl`, for the
+hook, downloads and the section alike: the path preference, else a
+`ytdl_path` in the hook's own `script-opts/ytdl_hook.conf` (when mpv is given
+its configuration folder), else a `yt-dlp` in that folder, all the user's
+choice; then the copy the package carries (`platform::bundled`:
+Patina.app/Contents/Helpers on macOS, beside patina.exe on Windows), or a
+`yt-dlp` the user installed instead when that is newer; then the `PATH`. The
+installed one is looked for on the `PATH` and, on macOS, in
+/opt/homebrew/bin and /usr/local/bin, which an app opened from the Finder
+doesn't have there. `ytdl_versions` asks each for its version (`--ignore-config
+--version`) on a thread of its
+own, compares the dates (a nightly's build time after its day's release; a
+tie goes to the package's), and keeps the answer by path, size and
+modification time, in memory and in `yt-dlp-versions.json` in the data
+folder, so each copy is asked once. For a Scoop shim, which `scoop update`
+leaves the same file, the size and time are those of the program its
+`.shim` names. One that doesn't answer within 8
+seconds, or answers something that isn't a version, is passed over for the
+run. The choice never waits: until both have answered the package's copy is
+used. Whenever the choice changes, as when the installed one turns out newer,
+or is removed or replaced by an older one,
+`App::ytdl_choice_changed` hands the hook its new `script-opts` and tells the
+YouTube section and the Downloads window, as a changed path preference
+does; a window makes the choice again before it opens a web address, so a
+copy removed since is noticed before the hook would run it. The Downloads
+window and the section drop a version read for a copy no longer chosen. A `youtube-dl` is never a candidate, as it can't play YouTube. Where a package carries one,
+`Preferences::mpv_options` hands the hook the result as its `ytdl_path`, quoted
+with its length, since the hook would never find the bundled copy itself and
+an app opened from the Finder has only the system's folders on its `PATH`;
+but not when `ytdl_hook.conf` names one, which a `script-opts` would
+override. Where nothing is bundled (a Linux build, the Flatpak, a build from
+the source tree) the search is the hook's own, unchanged, and the hook is
+told nothing unless the preference says. ffmpeg for downloads goes the same
+way (`downloads::Ffmpeg`): an `ffmpeg-location` in Patina's yt-dlp options,
+else the bundled copy, passed as `--ffmpeg-location` (so it wins over one in
+the user's own yt-dlp configuration file, which yt-dlp reads before its
+command line), else the `PATH`. The bundled ffmpeg is built in release.yml
+from FFmpeg's source by `packaging/ffmpeg.sh`, for macOS 11 like the rest
+of Patina.app, and can do only what Patina's downloads ask of it: join video
+and audio and make yt-dlp's fixes, by copying streams. Without any, a
+download that would join video and audio fetches the best single file
+instead. Nor can the bundled ffmpeg record a live stream, which yt-dlp hands
+to ffmpeg and which needs its network protocols, so the player's Download
+refuses one while that ffmpeg is the one to be used, as the section always
+does (`Ffmpeg::records_live`). `patina --version`
+prints the bundled copies it finds, which release.yml checks.
+
 Downloading runs yt-dlp on threads of its own (`downloads.rs`), with
 progress, post-processing and the final file printed in templates of
-Patina's, so nothing depends on the wording of yt-dlp's own output. It is
-looked for as the hook looks for it. Running downloads are stopped when
-Patina quits; yt-dlp picks up their partial files the next time. The same
+Patina's, so nothing depends on the wording of yt-dlp's own output.
+Running downloads are stopped when Patina quits; yt-dlp picks up their
+partial files the next time. A yt-dlp is stopped as a process group, as
+the standalone builds are a launcher and a worker and may have started
+ffmpeg. On Unix the group is asked to end first (SIGTERM) and killed only if
+it is still running 1.5 seconds later (`platform::end_group`), as the macOS
+package's launcher removes the folder it unpacked itself into when asked,
+and can't when killed; Windows has no such request for a windowless console
+program, so there it is killed at once, and can leave that folder in
+`%TEMP%`. The same
 window lists files downloaded from Jellyfin servers, which Patina fetches
 itself (`jellyfin/download.rs`, described in [jellyfin.md](jellyfin.md)),
 one at a time from each server, and reports in yt-dlp's terms; those

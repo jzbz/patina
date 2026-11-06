@@ -218,6 +218,53 @@ jobs:
           print(f"{want}: Cargo.toml and the metainfo agree")
           PY
 
+      # Every package carries a yt-dlp pinned in this commit, and Patina
+      # doesn't update it, so a release with a stale pin ships a yt-dlp that
+      # YouTube may already have broken; the README promises the newest
+      # there was. So a release tag whose commit pins anything older than
+      # yt-dlp's newest release at the time the commit was made fails here,
+      # and any other build, or a newer yt-dlp since, is a warning. Measured
+      # from the commit rather than from now, so that a tag can still be
+      # rebuilt later. yt-dlp/yt-dlp's releases are its stable ones; its
+      # nightlies live in a repository of their own.
+      - name: yt-dlp is the newest there was
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          made=$(git log -1 --format=%ct HEAD)
+          releases=$(gh api --paginate 'repos/yt-dlp/yt-dlp/releases?per_page=100' | jq -s 'add | map(select((.draft | not) and (.prerelease | not)))')
+          at_commit=$(jq -r --argjson made "$made" 'map(select((.published_at | fromdateiso8601) <= $made)) | max_by(.published_at) | .tag_name // empty' <<< "$releases")
+          now=$(jq -r 'max_by(.published_at) | .tag_name // empty' <<< "$releases")
+          [ -n "$at_commit" ] && [ -n "$now" ] || { echo "::error::could not read yt-dlp's releases"; exit 1; }
+          echo "yt-dlp's newest release: $now; when this commit was made: $at_commit"
+          older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$1" ]; }
+          bundled=$(sed -n 's/^YTDLP_VERSION=//p' packaging/bundled-tools.env | tr -d '\r')
+          flatpak=$(sed -n 's|^ *url: https://github.com/yt-dlp/yt-dlp/releases/download/\([^/]*\)/yt-dlp\.tar\.gz$|\1|p' packaging/video.patina.Patina.yml)
+          failed=
+          for pin in "packaging/bundled-tools.env:$bundled" "packaging/video.patina.Patina.yml:$flatpak"; do
+            file=${pin%%:*} version=${pin#*:}
+            if [ -z "$version" ]; then
+              echo "::error::found no yt-dlp version in $file"
+              exit 1
+            fi
+            if older "$version" "$at_commit"; then
+              case "$TAG" in
+                v*)
+                  echo "::error::$file pins yt-dlp $version, but $at_commit was out when this commit was made; refresh it (its comment says how)"
+                  failed=1
+                  ;;
+                *) echo "::warning::$file pins yt-dlp $version, but $at_commit was out when this commit was made" ;;
+              esac
+            elif older "$version" "$now"; then
+              echo "::warning::$file pins yt-dlp $version; $now has come out since this commit"
+            else
+              echo "$file: yt-dlp $version"
+            fi
+          done
+          [ -z "$failed" ]
+
   flatpak:
     name: Flatpak (${{ matrix.arch }})
     needs: [resolve, version]
@@ -465,11 +512,150 @@ jobs:
           path: patina-${{ env.LABEL }}-${{ matrix.arch }}.flatpak
           if-no-files-found: error
 
+  # The Windows folder's ffmpeg.exe, built from FFmpeg's source by
+  # packaging/ffmpeg.sh, which says what the build can do and why. Here
+  # rather than in the Windows job because it is cross-compiled with
+  # mingw-w64: apt gives the compiler in a minute, where building on Windows
+  # would take MSYS2 and a configure run many times slower in its shell, and
+  # it is the same script and shell that build the macOS one and the Linux
+  # build the configuration was tried with. Built afresh every run, like
+  # everything else here (see the comment above `permissions`), and handed
+  # to the Windows job as an artifact with the hashes of its two files,
+  # which that job checks.
+  ffmpeg-windows:
+    name: ffmpeg for Windows
+    needs: [resolve, version]
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.check.outputs.files }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      # The win32-threads variant of the compiler: ffmpeg.sh asks for Win32
+      # threads and links statically, so nothing of winpthreads ends up in
+      # the exe either way, but this one has no posix variant to choose.
+      - name: Install mingw-w64
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # The same apt shape as the Flatpak job's, for the same reason.
+          opts=(
+            -o Acquire::Retries=2
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            -o Acquire::Languages=none
+          )
+          attempts=2
+          for attempt in $(seq 1 $attempts); do
+            rc=0
+            sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
+              apt-get "${opts[@]}" update || rc=$?
+            if [ "$rc" -eq 0 ] || [ "$attempt" -eq "$attempts" ]; then
+              rc=0
+              sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 300s \
+                apt-get "${opts[@]}" install -y --no-install-recommends \
+                gcc-mingw-w64-x86-64-win32 binutils-mingw-w64-x86-64 || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=10s 60s \
+                  dpkg --configure -a || true
+              fi
+            fi
+            if [ "$rc" -eq 0 ]; then
+              x86_64-w64-mingw32-gcc --version | head -n1
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed with $rc"
+            if [ "$attempt" -lt "$attempts" ]; then sleep 5; fi
+          done
+          echo "::error::apt failed twice; the Ubuntu mirrors are not answering"
+          exit 1
+
+      - name: Build ffmpeg
+        timeout-minutes: 20
+        run: packaging/ffmpeg.sh windows "$RUNNER_TEMP/ffmpeg-downloads" "$RUNNER_TEMP/ffmpeg-work" "$RUNNER_TEMP/ffmpeg"
+
+      # What can be told without running it, which the Windows job does: a
+      # 64-bit console exe; importing only DLLs that are part of Windows 10
+      # and later (no libgcc, winpthreads or Visual C++ runtime); configured
+      # without GPL, nonfree or network parts, and under the LGPL 2.1, both
+      # as the exe itself records them. And THIRD-PARTY.md, which both
+      # packages carry, naming the tarball's digest and the configuration
+      # as ffmpeg.sh has them, since it is what tells a user where the
+      # source is. Then the hashes of both files, kept for the Windows job.
+      - name: Check ffmpeg.exe
+        id: check
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/ffmpeg"
+          found=$(cd "$dir" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ')
+          if [ "$found" != "LICENSE-ffmpeg.txt ffmpeg.exe " ]; then
+            echo "::error::$dir holds $found, not LICENSE-ffmpeg.txt and ffmpeg.exe"
+            exit 1
+          fi
+          exe="$dir/ffmpeg.exe"
+          ls -l "$dir"
+          # Read into variables before grep: with pipefail, grep -q leaving
+          # early would fail the writer, and the check with it.
+          header=$(x86_64-w64-mingw32-objdump -p "$exe")
+          if ! grep -q 'file format pei-x86-64$' <<< "$header" || ! grep -qE '^Subsystem[[:space:]].*\(Windows CUI\)$' <<< "$header"; then
+            echo "::error::ffmpeg.exe is not a 64-bit console exe"
+            exit 1
+          fi
+          imports=$(sed -n 's/^[[:space:]]*DLL Name: //p' <<< "$header" | sort -fu)
+          echo "ffmpeg.exe imports:"
+          echo "$imports"
+          [ -n "$imports" ] || { echo "::error::read no imports from ffmpeg.exe"; exit 1; }
+          # The Universal CRT counts as Windows' own, as in windows-imports.ps1.
+          extra=$(grep -viE '^(kernel32|msvcrt|ucrtbase|shell32|advapi32|bcrypt|ole32|psapi|user32|api-ms-win-[a-z0-9-]+)\.dll$' <<< "$imports" || true)
+          if [ -n "$extra" ]; then
+            echo "::error::ffmpeg.exe imports DLLs Windows doesn't carry: $extra"
+            exit 1
+          fi
+          text=$(strings -a "$exe")
+          configuration=$(grep -m1 -e '--disable-everything' <<< "$text") || {
+            echo "::error::found no configuration in ffmpeg.exe"
+            exit 1
+          }
+          echo "configuration: $configuration"
+          if grep -qE -e '--enable-(gpl|version3|nonfree)\b' <<< "$configuration" || ! grep -q -e '--disable-network' <<< "$configuration"; then
+            echo "::error::ffmpeg.exe was not configured as packaging/ffmpeg.sh configures it"
+            exit 1
+          fi
+          grep -qx 'libavformat license: LGPL version 2.1 or later' <<< "$text" || {
+            echo "::error::ffmpeg.exe does not say it is under the LGPL 2.1 or later"
+            exit 1
+          }
+          digest=$(sed -n 's/^FFMPEG_SOURCE_SHA256=//p' packaging/bundled-tools.env | tr -d '\r')
+          grep -qF "\`$digest\`" packaging/THIRD-PARTY.md || {
+            echo "::error::packaging/THIRD-PARTY.md does not name the tarball's SHA-256, $digest"
+            exit 1
+          }
+          want=$(packaging/ffmpeg.sh flags | tr '\n' ' ')
+          named=$(sed -n 's/^    \(--.*\)$/\1/p' packaging/THIRD-PARTY.md | tr '\n' ' ' | tr -s ' ')
+          if [ "$want" != "$named" ]; then
+            echo "::error::packaging/THIRD-PARTY.md names the configuration \"$named\", but packaging/ffmpeg.sh has \"$want\""
+            exit 1
+          fi
+          files=$(cd "$dir" && sha256sum ffmpeg.exe LICENSE-ffmpeg.txt | jq -Rnc '[inputs | capture("^(?<hash>[0-9a-f]{64})  (?<name>.+)$") | {(.name): (.hash | ascii_upcase)}] | add')
+          echo "$files"
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-windows
+          path: ${{ runner.temp }}/ffmpeg
+          if-no-files-found: error
+
   # Wired into `release` below, which needs this job and uploads its files:
   # the winget manifests point at the installer produced here.
   #
   # Two files come out of it, holding the same folder: patina.exe with the
-  # libmpv-2.dll and vulkan-1.dll it loads from beside itself, and the
+  # libmpv-2.dll and vulkan-1.dll it loads from beside itself, the yt-dlp.exe
+  # and ffmpeg.exe it runs for online video and downloads, and the
   # licences. patina-<tag>-windows-x86_64.zip is that folder, for whoever
   # wants to unpack it and run it from anywhere. patina-<tag>-x86_64-setup.exe
   # is the same folder inside a per-user Inno Setup installer
@@ -484,7 +670,7 @@ jobs:
   # without cutting a release.
   windows:
     name: Windows (x86_64)
-    needs: [resolve, version]
+    needs: [resolve, version, ffmpeg-windows]
     # A cold release build with thin LTO and one codegen unit, then two
     # installer compiles and an install and uninstall.
     timeout-minutes: 75
@@ -508,7 +694,7 @@ jobs:
       - name: Windows dependency pins
         shell: bash
         # The checkout has CRLF line endings on Windows.
-        run: grep -E '^[A-Z0-9_]+=' packaging/windows-deps.env | tr -d '\r' >> "$GITHUB_ENV"
+        run: grep -hE '^[A-Z0-9_]+=' packaging/windows-deps.env packaging/bundled-tools.env | tr -d '\r' >> "$GITHUB_ENV"
 
       # Fetched afresh and checked against the digests pinned in
       # packaging/windows-deps.env (see the comment above `permissions`).
@@ -538,28 +724,48 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      # ffmpeg.exe and its licence, as ffmpeg-windows built and hashed them.
+      - name: Get ffmpeg
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ffmpeg-windows
+          path: ${{ runner.temp }}/ffmpeg
+
       # patina.exe with libmpv-2.dll beside it, where Patina looks first, and
       # the vulkan-1.dll libmpv imports, which Windows finds in the exe's
-      # folder; then the licences. This folder is the zip's content and what
-      # the installer puts in {app}, so it is checked to hold exactly these
-      # seven files, and each one's hash is kept as well as printed: Inno
-      # Setup's installer, its compiler and the setup exe all run in this
-      # workspace after this, and the last step checks against these hashes
-      # rather than against the files as they are by then.
+      # folder; yt-dlp.exe from packaging/bundled-tools.env and the ffmpeg.exe
+      # built from FFmpeg's source, beside it too, where Patina looks for
+      # them, ffmpeg.exe checked against the hashes ffmpeg-windows recorded;
+      # then the licences, those two's notices among them. This folder
+      # is the zip's content and what the installer puts in {app}, so it is
+      # checked to hold exactly these twelve files, and each one's hash is
+      # kept as well as printed: Inno Setup's installer, its compiler and the
+      # setup exe all run in this workspace after this, and the last step
+      # checks against these hashes rather than against the files as they
+      # are by then.
       - name: Stage the folder
         id: stage
         shell: pwsh
+        env:
+          FFMPEG_FILES: ${{ needs.ffmpeg-windows.outputs.files }}
         run: |
           $ErrorActionPreference = 'Stop'
           $dir = 'dist\Patina'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           Copy-Item target\release\patina.exe $dir
-          ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads') -Lib $dir
+          ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads') -Lib $dir -Tools $dir
+          $built = $env:FFMPEG_FILES | ConvertFrom-Json
+          foreach ($name in 'ffmpeg.exe', 'LICENSE-ffmpeg.txt') {
+            $file = Join-Path $env:RUNNER_TEMP "ffmpeg\$name"
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
+            if (-not $built.$name -or $hash -ne $built.$name) { throw "$name is not the file ffmpeg-windows built" }
+            Copy-Item -LiteralPath $file -Destination $dir
+          }
           Copy-Item LICENSE (Join-Path $dir 'LICENSE.txt')
           Copy-Item ui\icons\LICENSE (Join-Path $dir 'LICENSE-lucide.txt')
           Copy-Item ui\fonts\LICENSE (Join-Path $dir 'LICENSE-ibm-plex.txt')
           Copy-Item packaging\THIRD-PARTY.md (Join-Path $dir 'THIRD-PARTY.md')
-          $expected = 'LICENSE-ibm-plex.txt', 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY.md', 'libmpv-2.dll', 'patina.exe', 'vulkan-1.dll'
+          $expected = 'LICENSE-GPLv3.txt', 'LICENSE-ffmpeg.txt', 'LICENSE-ibm-plex.txt', 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY-yt-dlp.txt', 'THIRD-PARTY.md', 'ffmpeg.exe', 'libmpv-2.dll', 'patina.exe', 'vulkan-1.dll', 'yt-dlp.exe'
           $found = @(Get-ChildItem -LiteralPath $dir -Force | ForEach-Object Name)
           if (Compare-Object $expected $found) {
             throw "$dir holds $($found -join ', '), not $($expected -join ', ')"
@@ -577,6 +783,17 @@ jobs:
         shell: pwsh
         run: ./packaging/windows-imports.ps1 dist\Patina\patina.exe
 
+      # The digest proves this is the yt-dlp.exe that was pinned; this proves
+      # it is an asset of yt-dlp's own immutable release of that version.
+      - name: Check yt-dlp's release attestation
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release verify-asset $env:YTDLP_VERSION dist\Patina\yt-dlp.exe --repo yt-dlp/yt-dlp
+          if ($LASTEXITCODE -ne 0) { throw "yt-dlp.exe is not an asset of yt-dlp's release $env:YTDLP_VERSION" }
+
       # Run from the folder with nothing else on PATH that could stand in for
       # its DLLs. A GUI-subsystem exe has no console, but it does write to
       # the handles it is given.
@@ -593,6 +810,81 @@ jobs:
           $text
           if ($p.ExitCode -ne 0) { throw ('patina --version exited 0x{0:X8}' -f $p.ExitCode) }
           if ($text -notmatch 'Patina\\libmpv-2\.dll') { throw 'Patina did not load the bundled libmpv-2.dll' }
+          # Patina finds the yt-dlp and ffmpeg beside it by itself, and both
+          # run: yt-dlp is the version pinned, and ffmpeg the FFmpeg release
+          # pinned, configured without GPL, nonfree or network parts, so LGPL
+          # 2.1 or later, as THIRD-PARTY.md says. (yt-dlp.exe is
+          # GPL-3.0-or-later as a whole, for what it carries;
+          # LICENSE-GPLv3.txt is its licence.)
+          foreach ($tool in 'yt-dlp', 'ffmpeg') {
+            if ($text -notmatch "(?m)^bundled ${tool}: .*Patina\\${tool}\.exe\s*$") { throw "Patina did not find the bundled $tool.exe" }
+          }
+          $ytdlp = & (Join-Path $PWD 'dist\Patina\yt-dlp.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw ('yt-dlp.exe --version exited 0x{0:X8}' -f $LASTEXITCODE) }
+          "yt-dlp $ytdlp"
+          if ("$ytdlp".Trim() -ne $env:YTDLP_VERSION) { throw "yt-dlp.exe is version $ytdlp, not the pinned $env:YTDLP_VERSION" }
+          $ffmpeg = & (Join-Path $PWD 'dist\Patina\ffmpeg.exe') -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw ('ffmpeg.exe -version exited 0x{0:X8}' -f $LASTEXITCODE) }
+          $ffmpeg[0]
+          if ($ffmpeg[0] -notmatch "^ffmpeg version $([regex]::Escape($env:FFMPEG_VERSION)) ") { throw "ffmpeg.exe is not FFmpeg $env:FFMPEG_VERSION" }
+          $configuration = @($ffmpeg | Where-Object { $_ -like 'configuration:*' })
+          if (-not $configuration) { throw 'ffmpeg.exe -version printed no configuration' }
+          if ($configuration[0] -match '--enable-(gpl|version3|nonfree)\b') { throw "ffmpeg.exe is not an LGPL 2.1 build: $($Matches[0])" }
+          if ($configuration[0] -notmatch '--disable-network\b') { throw 'ffmpeg.exe was built with network support' }
+
+      # The two together, as a download runs them: yt-dlp.exe given an info
+      # JSON whose two formats are already on disk, as fragmented MP4 like
+      # YouTube's, made by the tests' full ffmpeg (packaging/windows-deps.env),
+      # so that it skips the download, joins them with the bundled ffmpeg.exe
+      # and prints the file as Patina reads it. Under a title with characters
+      # outside the ANSI code page, which reach ffmpeg.exe only through its
+      # Unicode command line. The joined file is then decoded in full by the
+      # full ffmpeg. That this configuration handles every codec and fixup
+      # YouTube needs was shown on Linux, from the same source and script;
+      # this shows the cross-compiled exe does the same on Windows.
+      - name: Join video and audio with the bundled yt-dlp and ffmpeg
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Console]::OutputEncoding = [Text.Encoding]::UTF8
+          $full = Join-Path $env:RUNNER_TEMP 'test-ffmpeg'
+          ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads') -Ffmpeg $full
+          $full = Join-Path $full 'ffmpeg.exe'
+          $work = Join-Path $env:RUNNER_TEMP 'join'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          $title = "Patina $([char]0x2013) $([char]0x65E5)$([char]0x672C) join"
+          $base = Join-Path $work "$title [join]"
+          $frag = '+frag_keyframe+empty_moov+default_base_moof'
+          & $full -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=2 -c:v mpeg4 -movflags $frag -f mp4 "$base.f1.mp4"
+          if ($LASTEXITCODE -ne 0) { throw 'could not make the video' }
+          & $full -v error -y -f lavfi -i sine=frequency=440:duration=2 -c:a aac -movflags $frag -f mp4 "$base.f2.m4a"
+          if ($LASTEXITCODE -ne 0) { throw 'could not make the audio' }
+          $info = [ordered]@{
+            id = 'join'; title = $title; extractor = 'generic'; extractor_key = 'Generic'
+            webpage_url = 'http://127.0.0.1:9/join'; _type = 'video'
+            formats = @(
+              [ordered]@{ format_id = '1'; url = 'http://127.0.0.1:9/1'; protocol = 'https'; ext = 'mp4'; vcodec = 'mp4v.20.9'; acodec = 'none'; width = 320; height = 180 },
+              [ordered]@{ format_id = '2'; url = 'http://127.0.0.1:9/2'; protocol = 'https'; ext = 'm4a'; vcodec = 'none'; acodec = 'mp4a.40.2' }
+            )
+          }
+          $json = Join-Path $work 'info.json'
+          [IO.File]::WriteAllText($json, ($info | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+          $out = & dist\Patina\yt-dlp.exe --ignore-config --no-cache-dir --newline --no-playlist --encoding utf-8 `
+            --print 'after_move:patina-file %(filepath)s' --paths $work `
+            --ffmpeg-location (Join-Path $PWD 'dist\Patina\ffmpeg.exe') --format 1+2 --load-info-json $json
+          $code = $LASTEXITCODE
+          $out
+          if ($code -ne 0) { throw ('yt-dlp.exe exited 0x{0:X8}' -f $code) }
+          $file = @($out | Where-Object { $_ -like 'patina-file *' } | ForEach-Object { $_.Substring(12) })
+          if ($file.Count -ne 1 -or [IO.Path]::GetFileName($file[0]) -ne "$title [join].mp4" -or -not (Test-Path -LiteralPath $file[0])) {
+            throw "yt-dlp.exe did not join them into $title [join].mp4"
+          }
+          & $full -v error -xerror -i $file[0] -map 0:v:0 -map 0:a:0 -f null -
+          if ($LASTEXITCODE -ne 0) { throw 'the joined file does not decode' }
+          $left = @(Get-ChildItem -LiteralPath $work -Name | Where-Object { $_ -ne 'info.json' -and $_ -ne "$title [join].mp4" })
+          if ($left) { throw "left behind: $($left -join ', ')" }
+          "joined into $($file[0])"
 
       # The folder under a top-level Patina\, so it unpacks into one folder
       # rather than over whatever sits beside the zip. Read back once written:
@@ -930,6 +1222,11 @@ jobs:
             if ($text -notmatch ([regex]::Escape((Join-Path $app 'libmpv-2.dll')))) {
               throw 'the installed Patina did not load the libmpv-2.dll installed beside it'
             }
+            foreach ($tool in 'yt-dlp', 'ffmpeg') {
+              if ($text -notmatch ('(?m)^bundled {0}: {1}\s*$' -f $tool, [regex]::Escape((Join-Path $app "$tool.exe")))) {
+                throw "the installed Patina did not find the $tool.exe installed beside it"
+              }
+            }
             "installed $($env:PATINA_VERSION): payload, shortcut, App Paths and uninstall entry as expected"
 
             $exe = "`"$installed`""
@@ -1000,8 +1297,9 @@ jobs:
   # of confidence. What it cannot do is reach a user: Gatekeeper refuses an
   # unsigned .app downloaded from the web outright, offering to move it to
   # the Bin and nothing else. So this artifact is an input to
-  # packaging/macos-sign.sh, which signs every library in the bundle and then
-  # the bundle with the Developer ID, notarises it and staples the ticket, on
+  # packaging/macos-sign.sh, which signs the yt-dlp and ffmpeg and every
+  # library in the bundle and then the bundle with the Developer ID,
+  # notarises it and staples the ticket, on
   # the machine holding that key. The key is not here for the same reason no
   # signing key is. The bundle is signed ad hoc by packaging/macos-bundle.sh,
   # which gives it a code identity and proves nothing about who built it.
@@ -1031,6 +1329,14 @@ jobs:
           rustup target add x86_64-apple-darwin
           rustc -Vv
 
+      # ffmpeg for Contents/Helpers, built from FFmpeg's source by
+      # packaging/ffmpeg.sh for both architectures and macOS 11, and joined
+      # with lipo. Built afresh every run, like everything else here (see
+      # the comment above `permissions`).
+      - name: Build ffmpeg
+        timeout-minutes: 20
+        run: packaging/ffmpeg.sh macos "$RUNNER_TEMP/ffmpeg-downloads" "$RUNNER_TEMP/ffmpeg-work" "$RUNNER_TEMP/ffmpeg"
+
       # IINA's libmpv and the libraries it links, fetched afresh and checked
       # against packaging/macos-libmpv.txt (see the comment above
       # `permissions`). packaging/macos-bundle.sh copies every dylib in this
@@ -1049,6 +1355,20 @@ jobs:
             diff <(echo "$expected") <(echo "$found") || true
             exit 1
           fi
+
+      # yt-dlp for Contents/Helpers, fetched afresh and checked against
+      # packaging/bundled-tools.env, laid out with the ffmpeg built above;
+      # then yt-dlp checked against its release's attestation, as on
+      # Windows.
+      - name: Download yt-dlp
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          packaging/macos-tools.sh "$RUNNER_TEMP/macos-tools-downloads" "$RUNNER_TEMP/ffmpeg" "$RUNNER_TEMP/macos-tools"
+          version=$(sed -n 's/^YTDLP_VERSION=//p' packaging/bundled-tools.env)
+          gh release verify-asset "$version" "$RUNNER_TEMP/macos-tools-downloads/yt-dlp_macos" --repo yt-dlp/yt-dlp
 
       # Both halves of the universal binary.
       #
@@ -1069,12 +1389,16 @@ jobs:
       # same one used to build a bundle by hand on a Mac, so what CI produces
       # and what a developer produces cannot drift.
       - name: Bundle
-        run: packaging/macos-bundle.sh "$RUNNER_TEMP/macos-libmpv"
+        run: packaging/macos-bundle.sh "$RUNNER_TEMP/macos-libmpv" "$RUNNER_TEMP/macos-tools"
 
       # The bundle on its own: a valid plist, both halves of the binary, each
       # demanding the macOS the plist promises, nothing outside it linked but
       # the system, and its libmpv starting a core from Contents/Frameworks.
-      # (The runner is arm64; the x86_64 half runs on a test Mac.)
+      # Then the helpers: both architectures in each, each built for no
+      # newer macOS than Patina's; Patina finding both in Contents/Helpers;
+      # yt-dlp the pinned version; ffmpeg the pinned FFmpeg release, running,
+      # and configured without GPL, nonfree or network parts. (The runner is
+      # arm64; the x86_64 halves run on a test Mac.)
       - name: Check the bundle
         run: |
           set -euo pipefail
@@ -1092,7 +1416,7 @@ jobs:
               exit 1
             fi
           done
-          if otool -L "$bin" "$app"/Contents/Frameworks/*.dylib \
+          if otool -L "$bin" "$app"/Contents/Frameworks/*.dylib "$app"/Contents/Helpers/* \
               | grep -E '^\s+/' | grep -vE '^\s+/(System|usr/lib)/'; then
             echo "::error::the bundle links libraries from outside it"
             exit 1
@@ -1104,6 +1428,51 @@ jobs:
             echo "::error::Patina did not load the bundled libmpv"
             exit 1
           }
+
+          # LC_BUILD_VERSION's minos, or an older LC_VERSION_MIN_MACOSX's
+          # version, which yt-dlp's x86_64 half carries.
+          minos() {
+            otool -l -arch "$2" "$1" | awk '
+              /LC_BUILD_VERSION/ { b = 1 } /LC_VERSION_MIN_MACOSX/ { v = 1 }
+              b && /^ *minos / && !m { m = $2 } v && /^ *version / && !m { m = $2 }
+              END { print m }'
+          }
+          not_newer() { awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, "."); exit !(x[1] < y[1] || (x[1] == y[1] && x[2] <= y[2])) }'; }
+          limit=11.0
+          for name in yt-dlp ffmpeg; do
+            for arch in arm64 x86_64; do
+              lipo "$app/Contents/Helpers/$name" -verify_arch "$arch"
+              found=$(minos "$app/Contents/Helpers/$name" "$arch")
+              echo "$name $arch: minimum macOS $found"
+              if [ -z "$found" ] || ! not_newer "$found" "$limit"; then
+                echo "::error::the bundled $name's $arch half demands macOS $found, newer than the $limit it is used on"
+                exit 1
+              fi
+            done
+            grep -qE "^bundled $name: .*/Patina\.app/Contents/Helpers/$name\$" <<< "$out" || {
+              echo "::error::Patina did not find the bundled $name"
+              exit 1
+            }
+          done
+          version=$("$app/Contents/Helpers/yt-dlp" --version)
+          echo "yt-dlp $version"
+          if [ "$version" != "$(sed -n 's/^YTDLP_VERSION=//p' packaging/bundled-tools.env)" ]; then
+            echo "::error::the bundled yt-dlp is version $version, not the one pinned"
+            exit 1
+          fi
+          ffmpeg=$("$app/Contents/Helpers/ffmpeg" -hide_banner -version)
+          head -n3 <<< "$ffmpeg"
+          want="ffmpeg version $(sed -n 's/^FFMPEG_VERSION=//p' packaging/bundled-tools.env) "
+          if [ "$(head -n1 <<< "$ffmpeg" | cut -c1-${#want})" != "$want" ]; then
+            echo "::error::the bundled ffmpeg is not the FFmpeg release pinned"
+            exit 1
+          fi
+          configuration=$(grep -m1 '^configuration:' <<< "$ffmpeg" || true)
+          if [ -z "$configuration" ] || grep -qE -e '--enable-(gpl|version3|nonfree)\b' <<< "$configuration" \
+              || ! grep -q -e '--disable-network' <<< "$configuration"; then
+            echo "::error::the bundled ffmpeg was not configured as packaging/ffmpeg.sh configures it"
+            exit 1
+          fi
 
       # ditto rather than zip: it preserves the bundle's metadata, and it is
       # what notarisation expects to be handed later. `-unsigned` in the name

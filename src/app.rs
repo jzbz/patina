@@ -84,6 +84,9 @@ pub struct App {
     jellyfin: Rc<crate::jellyfin::session::Session>,
     /// The YouTube section's lists and feed, which every window shows.
     youtube: Rc<crate::youtube::session::Session>,
+    /// The yt-dlp choice handed on last (`ytdl_choice_changed`), by
+    /// `ytdl_versions::Versions::changes`.
+    ytdl_handed_on: Cell<u64>,
     /// Takes the toast shown last down (`explain`).
     #[cfg(all(unix, not(target_os = "macos")))]
     toast_timer: slint::Timer,
@@ -101,6 +104,7 @@ impl App {
             crate::jellyfin::session::Session::new(&paths.data, paths.jellyfin_images_dir());
         jellyfin.set_image_limit(prefs.jellyfin_image_cache_mb.saturating_mul(1 << 20));
         let youtube = crate::youtube::session::Session::new(&paths);
+        crate::ytdl_versions::remember_in(paths.ytdl_versions_file());
         let app = Rc::new(Self {
             paths,
             prefs: RefCell::new(Rc::new(prefs)),
@@ -135,6 +139,7 @@ impl App {
             accepted: RefCell::new(Some(Vec::new())),
             jellyfin,
             youtube,
+            ytdl_handed_on: Cell::new(0),
             #[cfg(all(unix, not(target_os = "macos")))]
             toast_timer: slint::Timer::default(),
             #[cfg(all(unix, not(target_os = "macos")))]
@@ -168,6 +173,59 @@ impl App {
         settings::save_json(&self.paths.settings_file(), &prefs);
         *self.prefs.borrow_mut() = Rc::new(prefs);
         self.prefs_changed(&old);
+    }
+
+    /// The yt-dlp chosen between the package's and the user's installed one
+    /// changed (`ytdl_versions`): the user's turned out newer once both had
+    /// said their versions, or theirs was removed or replaced. mpv's hook,
+    /// the YouTube section and the Downloads window move to it, as for a
+    /// changed path preference. The hook is told through `script-opts`,
+    /// unless the user's own mpv options set that, which would win at start
+    /// and should go on winning. Once a change: `ytdl_current` may have
+    /// handed it on before the call queued for it comes.
+    pub fn ytdl_choice_changed(&self) {
+        let changes = crate::ytdl_versions::global().changes();
+        if changes == self.ytdl_handed_on.get() {
+            return;
+        }
+        self.ytdl_handed_on.set(changes);
+        let prefs = self.prefs();
+        let own_script_opts = prefs
+            .mpv_options
+            .iter()
+            .chain(&self.cli_mpv_options)
+            .any(|(name, _)| name == "script-opts");
+        let script_opts: Vec<(&'static str, String)> = if own_script_opts {
+            Vec::new()
+        } else {
+            prefs
+                .mpv_options()
+                .into_iter()
+                .filter(|(name, _)| *name == "script-opts")
+                .collect()
+        };
+        let windows = self.windows.borrow().clone();
+        for window in &windows {
+            window.apply_mpv_options(&script_opts);
+            window.yt_dlp_changed();
+        }
+        if let Some(downloads) = self.existing_downloads() {
+            downloads.ytdl_changed();
+        }
+    }
+
+    /// Makes the yt-dlp choice again, before a web address opens, and hands it
+    /// on at once if it changed: otherwise a user's copy removed since it was
+    /// chosen would be noticed only when the Downloads window or the section
+    /// next looked, and mpv's hook would go on running what has gone. Only
+    /// where a package carries yt-dlp, the one place the choice can change
+    /// by itself.
+    pub fn ytdl_current(&self) {
+        if crate::platform::bundled("yt-dlp").is_none() {
+            return;
+        }
+        crate::downloads::find_ytdl(&self.prefs(), &self.mpv_config_dir());
+        self.ytdl_choice_changed();
     }
 
     /// Applies changed preferences to everything already running, as IINA

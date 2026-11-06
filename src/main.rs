@@ -38,6 +38,7 @@ mod wayland;
 mod window;
 mod youtube;
 mod ytdl;
+mod ytdl_versions;
 
 use std::process::ExitCode;
 
@@ -64,6 +65,14 @@ fn main() -> ExitCode {
             return match mpv::describe() {
                 Ok(libmpv) => {
                     println!("{libmpv}");
+                    // And the programs a macOS or Windows package carries, as
+                    // Patina finds them; a Linux build carries none and prints
+                    // nothing more.
+                    for name in ["yt-dlp", "ffmpeg"] {
+                        if let Some(path) = platform::bundled(name) {
+                            println!("bundled {name}: {}", path.display());
+                        }
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(error) => {

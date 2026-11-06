@@ -55,10 +55,16 @@ explains the design.
   libmpv, pinned in `packaging/macos-libmpv.txt`), and a Windows folder
   (patina.exe, libmpv-2.dll and vulkan-1.dll, pinned in
   `packaging/windows-deps.env`) with its installer
-  (`packaging/windows/patina.iss`). Run by hand with a pushed commit's SHA
-  (`gh workflow run release.yml --repo jzbz/patina --ref master -f
-  ref=<sha>`), it builds and tests them all and publishes nothing, which is
-  how to try a change to packaging; never pass it a `v*` tag by hand.
+  (`packaging/windows/patina.iss`). Patina.app and the Windows folder also
+  carry yt-dlp and ffmpeg, pinned for both in `packaging/bundled-tools.env`
+  (`packaging/macos-tools.sh` and `windows-deps.ps1 -Tools` fetch yt-dlp;
+  `packaging/ffmpeg.sh` builds ffmpeg from FFmpeg's source tarball, and
+  `packaging/ffmpeg.sh linux <downloads> <work> <out>` builds the same
+  configuration on Linux, outside the tree, to try a change to it). Run
+  by hand with a pushed commit's SHA (`gh workflow run release.yml --repo
+  jzbz/patina --ref master -f ref=<sha>`), it builds and tests them all and
+  publishes nothing, which is how to try a change to packaging; never pass
+  it a `v*` tag by hand.
   `packaging/icons.sh` renders the icons the packages use.
 - After editing `ui/menus.slint`, run `tools/menubar.py` to copy the menus
   into the macOS menu bar. The menus read `MenuPlayback` and `MenuMedia`
@@ -110,7 +116,13 @@ The runbook is the header of `.github/workflows/release.yml` and
    version job checks both); the screenshot URLs there pinned to a commit;
    and live pins in `packaging/windows-deps.env` (zhongfly's builds expire
    after about a month) and `packaging/macos-libmpv.txt`, since release
-   builds download them afresh.
+   builds download them afresh. And yt-dlp in `packaging/bundled-tools.env`
+   moved to its newest release, every time: the macOS and Windows packages
+   carry it, Patina doesn't update it, and YouTube breaks old ones; and the
+   Flatpak manifest's yt-dlp with it. The comment at the top of that file
+   says how, and how FFmpeg's source pin moves. The version job fails a tag
+   whose commit pins a yt-dlp older than the newest there was when the
+   commit was made, and warns on any other build.
 2. A signed `vX.Y.Z` tag starts `release.yml`, which attaches the Flatpaks,
    the Windows installer and the portable zip to a draft release.
 3. The macOS bundle comes from the run as an unsigned artifact; it is signed

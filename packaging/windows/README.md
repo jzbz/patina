@@ -4,8 +4,11 @@
 the per-user installer each release carries beside the portable
 `patina-vX.Y.Z-windows-x86_64.zip`. It installs the folder that zip holds,
 file for file: `patina.exe`, the `libmpv-2.dll` and `vulkan-1.dll` it needs
-beside it, `LICENSE.txt`, `LICENSE-lucide.txt`, `LICENSE-ibm-plex.txt` and
-`THIRD-PARTY.md`. To that it adds what an unpacked folder cannot have: a
+beside it, the `yt-dlp.exe` and `ffmpeg.exe` it runs for online video and
+downloads, `LICENSE.txt`, `LICENSE-lucide.txt`, `LICENSE-ibm-plex.txt`,
+`THIRD-PARTY.md`, and those two programs' notices, `THIRD-PARTY-yt-dlp.txt`,
+`LICENSE-GPLv3.txt` and `LICENSE-ffmpeg.txt`. To that it adds what an
+unpacked folder cannot have: a
 Start Menu entry, an Apps & Features entry, an uninstaller that removes both
 along with the file types Patina registered, and an App Paths entry so that
 Win+R `patina` finds the program from a normal, not elevated, Run box. It is
@@ -38,7 +41,9 @@ and it turns off Inno Setup's RedirectionGuard, which the script says why.
   sign-out, and without asking anyone when the upgrade is silent, as
   winget's is. Restart Manager finds it by the files it holds open,
   `patina.exe` and the two DLLs; Patina has no named mutex for Setup to
-  check instead. Where it cannot be closed that way, the upgrade fails and
+  check instead. A `yt-dlp.exe` or `ffmpeg.exe` still running for a
+  download holds its own exe open too; whether Restart Manager can close
+  those, console programs with no window, has not been tried. Where it cannot be closed that way, the upgrade fails and
   leaves the old version installed and running rather than ending it
   (`CloseApplications` in the script says why). Setup then exits with code
   5, which winget's default return codes for an Inno installer map to
@@ -57,6 +62,10 @@ and it turns off Inno Setup's RedirectionGuard, which the script says why.
   again. If it fails, the uninstall goes on and the keys stay. release.yml
   writes those keys for a few file types and the link before uninstalling
   on its runner, and fails a build that leaves any of them behind.
+- Leaves alone what the bundled yt-dlp writes outside the folder, as any
+  yt-dlp does: its cache, `%USERPROFILE%\.cache\yt-dlp`, which the
+  YouTube section's own calls never write, and any `_MEI` folder in
+  `%TEMP%` that a stopped yt-dlp left (below).
 - Never touches `%APPDATA%\Patina`: `config` (settings, key bindings, mpv's
   configuration, scripts and fonts) and `data` (history, the place in each
   file, thumbnails, downloaded subtitles). Nor the OpenSubtitles password in
@@ -76,6 +85,66 @@ closed.
 
 `patina.exe` is the portable folder's, so the Visual C++ runtime stays linked
 into it (`.cargo/config.toml`) and the installer carries no redistributable.
+`ffmpeg.exe` is linked statically with MinGW's runtime and imports only
+DLLs that are part of Windows itself, which `release.yml` checks in its
+import table, and `yt-dlp.exe` carries its own.
+
+## yt-dlp.exe and ffmpeg.exe
+
+Both are pinned by digest in `packaging/bundled-tools.env`, whose comment
+says how to move them; yt-dlp should move to its newest release for every
+Patina release. `yt-dlp.exe` is yt-dlp's own standalone build, and
+`release.yml` also checks it against the attestation of yt-dlp's immutable
+release. `ffmpeg.exe` is built in `release.yml` from FFmpeg's source
+tarball by `packaging/ffmpeg.sh`, cross-compiled with mingw-w64, a few
+MB: it joins video and audio and makes yt-dlp's fixes by copying
+streams, and can convert nothing, so yt-dlp options such as
+`--extract-audio` or `--embed-subs` fail with ffmpeg's own message; nor
+is there an ffprobe, which yt-dlp needs to join a video that a site other
+than YouTube serves in several parts. For those, name a full ffmpeg, with
+its ffprobe beside it, with `ffmpeg-location=` in Patina's yt-dlp
+options. `release.yml` joins two files with the two programs on the
+runner, as a download does, before staging the folder.
+
+The folder's licences change with them. `yt-dlp.exe` is GPL-3.0-or-later as
+a whole, though yt-dlp's own code is Unlicense: the build carries mutagen
+(GPL-2.0-or-later) and certifi (MPL-2.0) among Python's libraries, as
+yt-dlp's README says. So the folder holds a GPL program, run as a program of
+its own, which leaves `patina.exe` MIT and `libmpv-2.dll` LGPL; its licence
+is `LICENSE-GPLv3.txt`. `ffmpeg.exe` is LGPL-2.1-or-later as configured,
+and its licence is `LICENSE-ffmpeg.txt`, the text from FFmpeg's tarball.
+`THIRD-PARTY.md` says where each one's source is.
+
+Patina finds both beside itself, after a yt-dlp the user named in
+Preferences › Network, in mpv's own `script-opts/ytdl_hook.conf`, or put in
+mpv's configuration folder (a `youtube-dl` there doesn't count). A
+`yt-dlp.exe` the user installed on the `PATH` (winget's, pip's) is used
+instead of the bundled one when its version is newer; each is asked once,
+and asked again only when its file changes (for Scoop's shim, the program
+the shim starts). Patina passes yt-dlp `--ffmpeg-location`,
+which wins over an `ffmpeg-location` in the user's own yt-dlp configuration
+file; Patina's yt-dlp options are the place to name another.
+
+Neither carries an Authenticode signature, like `patina.exe` itself. Files
+the installer writes carry no mark of the web, and Patina starts both
+directly rather than through the shell, so SmartScreen's prompt, which the
+shell shows, is not expected for them; from a zip unpacked with Explorer
+they do carry the mark. Antivirus programs have flagged PyInstaller-built
+programs such as `yt-dlp.exe` as malware from time to time; a quarantined
+`yt-dlp.exe` shows in Patina as yt-dlp missing. None of this has been tried
+on a test machine yet.
+
+`yt-dlp.exe` unpacks itself into a new `_MEI` folder in `%TEMP%` each time
+it starts, about 40 MB, and removes it when it ends. Patina stops a yt-dlp
+it no longer needs with `taskkill /T /F`, and PyInstaller says a folder is
+left behind when its program is killed, so a cancelled download, a cancelled
+search and one that runs out of time can each leave one, which Windows
+doesn't clear by itself. No gentler way to ask is known to work:
+`taskkill` without `/F` is known to refuse a console program with no window,
+which is how Patina starts it (not yet tried with yt-dlp.exe), and the
+launcher's one window, a hidden one, handles only the session ending. On
+macOS Patina asks first, and PyInstaller's launcher removes its folder when
+asked.
 
 ## Building it by hand
 
@@ -96,7 +165,7 @@ same commit:
   it from the exe:
   `(Get-Item C:\scratch\zip\Patina\patina.exe).VersionInfo.ProductVersion`.
 - `SourceDir` is the folder, by its full path; a relative one is read from
-  `packaging\windows`, not from where ISCC was started. The seven files are
+  `packaging\windows`, not from where ISCC was started. The twelve files are
   named one by one in the script, and a missing one stops the compile.
 - `--output-dir` keeps the result out of the tree; without it ISCC writes
   into `packaging\windows\Output`. The name is
@@ -188,7 +257,7 @@ From Linux, innoextract is no help, since its newest code knows Inno Setup
 only up to 6.4, but the Rust `inno` crate reads Inno Setup 7 from 0.6.0
 (Komac 2.17 uses 0.7.0). With its `extract` feature, `inno::Inno::new`
 on the setup exe opened as a plain `std::fs::File` (a `BufReader` around it
-trips a bug in 0.6.0), then `files()`, yields the seven `{app}\…` files and
+trips a bug in 0.6.0), then `files()`, yields the twelve `{app}\…` files and
 their bytes, each of whose SHA-256 should equal the same file's in the
 unpacked zip. That shows the payload is the signed folder, though not what
 else the setup does with it; only the rebuild above compares every byte.

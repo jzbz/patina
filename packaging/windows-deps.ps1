@@ -1,27 +1,35 @@
-# Fetches the libraries pinned in windows-deps.env, checks their digests, and
-# unpacks them.
+# Fetches the libraries pinned in windows-deps.env, and the yt-dlp pinned in
+# bundled-tools.env, checks their digests, and unpacks them.
 #
 #   pwsh packaging/windows-deps.ps1 -Downloads <dir>
-#   pwsh packaging/windows-deps.ps1 -Downloads <dir> -Lib <dir> [-Ffmpeg <dir>]
+#   pwsh packaging/windows-deps.ps1 -Downloads <dir> -Lib <dir> [-Ffmpeg <dir>] [-Tools <dir>]
 #
-# The first form only fetches and checks. A file already in -Downloads is
-# checked, not fetched again, so a cache of that folder outlives the pinned
-# assets being deleted upstream. -Lib receives libmpv-2.dll and the
-# vulkan-1.dll it imports; -Ffmpeg receives ffmpeg.exe.
+# The first form only fetches and checks the libraries. A file already in
+# -Downloads is checked, not fetched again, so a cache of that folder
+# outlives the pinned assets being deleted upstream. -Lib receives
+# libmpv-2.dll and the vulkan-1.dll it imports; -Ffmpeg receives the tests'
+# ffmpeg.exe, a full build. -Tools receives the yt-dlp.exe the Patina folder
+# carries for online video, and its notices as THIRD-PARTY-yt-dlp.txt and
+# LICENSE-GPLv3.txt, its licence; those are fetched only when it is given.
+# The folder's own ffmpeg.exe is not fetched but built, by
+# packaging/ffmpeg.sh in release.yml's ffmpeg-windows job.
 
 param(
     [Parameter(Mandatory = $true)]
     [string] $Downloads,
     [string] $Lib,
-    [string] $Ffmpeg
+    [string] $Ffmpeg,
+    [string] $Tools
 )
 
 $ErrorActionPreference = 'Stop'
 
 $pins = @{}
-foreach ($line in Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-deps.env')) {
-    if ($line -match '^([A-Z0-9_]+)=(.+)$') {
-        $pins[$Matches[1]] = $Matches[2]
+foreach ($file in 'windows-deps.env', 'bundled-tools.env') {
+    foreach ($line in Get-Content -LiteralPath (Join-Path $PSScriptRoot $file)) {
+        if ($line -match '^([A-Z0-9_]+)=(.+)$') {
+            $pins[$Matches[1]] = $Matches[2]
+        }
     }
 }
 
@@ -31,13 +39,13 @@ function Get-Pinned([string] $name) {
     $url = $pins["${name}_URL"]
     $sha256 = $pins["${name}_SHA256"]
     if (-not $url -or -not $sha256) {
-        throw "windows-deps.env has no ${name}_URL and ${name}_SHA256"
+        throw "windows-deps.env and bundled-tools.env have no ${name}_URL and ${name}_SHA256"
     }
     $file = Join-Path $Downloads ([IO.Path]::GetFileName($url))
     if (-not (Test-Path -LiteralPath $file)) {
         curl.exe -fsSL --retry 3 -o $file $url
         if ($LASTEXITCODE -ne 0) {
-            throw "could not download $url; if it was deleted upstream, bump its pin in packaging/windows-deps.env"
+            throw "could not download $url; if it was deleted upstream, bump its pin in packaging/windows-deps.env or bundled-tools.env"
         }
     }
     $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
@@ -63,6 +71,15 @@ $ffmpegArchive = Get-Pinned 'WIN_FFMPEG'
 if ($Lib) {
     Expand-One $libmpvArchive $Lib 'libmpv-2.dll'
     Expand-One $vulkanArchive $Lib 'vulkan-1.dll'
+}
+if ($Tools) {
+    $ytdlp = Get-Pinned 'YTDLP_WINDOWS'
+    $notices = Get-Pinned 'YTDLP_LICENSES'
+    $gplv3 = Get-Pinned 'GPLV3_LICENSE'
+    New-Item -ItemType Directory -Force -Path $Tools | Out-Null
+    Copy-Item -LiteralPath $ytdlp -Destination (Join-Path $Tools 'yt-dlp.exe')
+    Copy-Item -LiteralPath $notices -Destination (Join-Path $Tools 'THIRD-PARTY-yt-dlp.txt')
+    Copy-Item -LiteralPath $gplv3 -Destination (Join-Path $Tools 'LICENSE-GPLv3.txt')
 }
 if ($Ffmpeg) {
     Expand-One $ffmpegArchive $Ffmpeg 'ffmpeg.exe'

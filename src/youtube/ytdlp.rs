@@ -172,15 +172,17 @@ impl Ytdlp {
                     break;
                 }
             }
+            // Asked to end first, so that a standalone yt-dlp's launcher
+            // removes what it unpacked (`platform::end_group`).
             if cancel.cancelled() {
-                crate::platform::kill_group(&mut child);
+                crate::platform::stop_group(&mut child);
                 let _ = child.wait();
                 return Err(Failure::Cancelled.into());
             }
             let full = stdout.as_ref().is_some_and(Reader::overflowed);
             timed_out = Instant::now() >= until;
             if timed_out || full {
-                crate::platform::kill_group(&mut child);
+                crate::platform::stop_group(&mut child);
                 let _ = child.wait();
                 if full {
                     return Err(Error::new(Failure::BadOutput, "too much output"));
