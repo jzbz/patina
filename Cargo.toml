@@ -23,10 +23,10 @@ glow = "0.18.0"
 # keep_keyboard in src/window.rs). At Slint's exact version (see src/backend.rs).
 i-slint-core = { version = "=1.18.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
-jiff = "0.2.38"
+jiff = "0.2.39"
 keyring-core = "1.0.1"
 libloading = "0.9.0"
-log = "0.4.34"
+log = "0.4.35"
 raw-window-handle = "0.6.2"
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 roxmltree = "0.21.2"
@@ -42,8 +42,8 @@ slint = { version = "1.18.1", default-features = false, features = [
     "unstable-fontique-011",
     "unstable-winit-030",
 ] }
-trash = "5.2.9"
-ureq = { version = "3.5.0", default-features = false, features = ["rustls", "platform-verifier", "socks-proxy"] }
+trash = "5.3.0"
+ureq = { version = "3.5.1", default-features = false, features = ["rustls", "platform-verifier", "socks-proxy"] }
 url = "2.5.8"
 
 [target.'cfg(unix)'.dependencies]
@@ -55,7 +55,7 @@ smithay-clipboard = "0.7.3"
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
-zbus = { version = "6.1.0", default-features = false, features = ["default-rt", "service"] }
+zbus = { version = "6.2.1", default-features = false, features = ["default-rt", "service"] }
 zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-async-io-crypto-rust"] }
 
 [target.'cfg(windows)'.dependencies]
