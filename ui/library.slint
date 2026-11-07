@@ -5,13 +5,12 @@
 //
 // The view has a bar under Patina's title bar (Back, the server's
 // libraries, the account) and below it the page Library.page names: Home,
-// a library's grid, an item, Search, This Computer (the welcome screen) or
-// signing in.
+// a library's grid, an item, Search or signing in. Back from Home goes to
+// the welcome screen, as the title bar's Home button does from any page.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton, TextButton, Spinner } from "widgets.slint";
-import { WelcomeView } from "welcome.slint";
 import { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn } from "library-model.slint";
 import { LibraryUi, Avatar, Card, CardRow, ChoiceTabs, MenuButton, Chip, Notice, KeyFocus, PageField } from "library-parts.slint";
 import { DetailPage } from "library-detail.slint";
@@ -19,7 +18,7 @@ import { SignInPage } from "library-sign-in.slint";
 
 export { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn }
 
-// An entry in the bar: Home, a library, Search, This Computer. A long
+// An entry in the bar: Home, a library, Search. A long
 // library name is cut short, the whole of it going to screen readers.
 component NavEntry inherits Rectangle {
     in property <LibraryNav> entry;
@@ -180,8 +179,8 @@ component AccountButton inherits Rectangle {
 }
 
 // Back, the entries, and the account. Home and the libraries scroll
-// sideways when there are more than fit, with the wheel too; Search and
-// This Computer stay in sight at the end.
+// sideways when there are more than fit, with the wheel too; Search stays
+// in sight at the end.
 component LibraryBar inherits HorizontalLayout {
     property <int> count: Library.nav.length + Library.nav-end.length;
     height: 32px;
@@ -195,7 +194,7 @@ component LibraryBar inherits HorizontalLayout {
         icon-size: 18px;
         hover-background: true;
         enabled: Library.can-go-back;
-        tooltip: "Back";
+        tooltip: Library.at-root ? "Back to the Welcome Screen" : "Back";
         clicked => {
             Library.back();
         }
@@ -712,10 +711,11 @@ component SearchPage inherits VerticalLayout {
     // Loaded again in place, the results are made again: one of them
     // may have had the keyboard's focus, which Slint would keep on it,
     // gone (see keep_keyboard in src/window.rs), and the field is what a
-    // search has it back in.
+    // search has it back in. A load of another page is this one going,
+    // field and all, which must not take the keyboard on its way out.
     property <int> loads: Library.loads;
     changed loads => {
-        if !root.covered {
+        if Library.page == "search" && !root.covered {
             field.focus();
         }
     }
@@ -866,13 +866,12 @@ export component LibraryView inherits Rectangle {
     // A dialog over the library has the keyboard, which the library leaves
     // it.
     in property <bool> covered;
-    callback clear-recent;
     // Where the bar starts: under Patina's title bar, which is drawn over
     // the window's top.
     property <length> bar-top: Theme.titlebar-height + 6px;
     property <length> content-top: root.bar-top + 32px + 12px;
     property <length> content-height: root.height - root.content-top;
-    property <bool> failed: Library.error != "" && Library.page != "sign-in" && Library.page != "local";
+    property <bool> failed: Library.error != "" && Library.page != "sign-in";
     background: #141416;
 
     // Takes the keyboard for Backspace (Back), and for Enter, which opens
@@ -966,21 +965,6 @@ export component LibraryView inherits Rectangle {
             }
         }
 
-        // The welcome screen pads its top for the title bar; it is moved
-        // up so that its content starts under the library's bar, which is
-        // drawn over its padding.
-        if Library.page == "local": WelcomeView {
-            y: root.content-top - 52px;
-            height: root.height - self.y;
-            drop-active: root.drop-active;
-            init => {
-                root.take-focus();
-            }
-            clear-recent => {
-                root.clear-recent();
-            }
-        }
-
         if root.failed: Notice {
             y: root.content-top;
             height: root.content-height;
@@ -1037,7 +1021,7 @@ export component LibraryView inherits Rectangle {
         }
 
         // On a plate, since what is loading may draw under it.
-        if Library.loading && !root.failed && Library.page != "sign-in" && Library.page != "local": Rectangle {
+        if Library.loading && !root.failed && Library.page != "sign-in": Rectangle {
             x: (root.width - self.width) / 2;
             y: root.content-top + (root.content-height - self.height) / 2;
             width: 56px;
@@ -1052,6 +1036,6 @@ export component LibraryView inherits Rectangle {
             width: root.width;
         }
 
-        if root.drop-active && Library.page != "local": DropOverlay { }
+        if root.drop-active: DropOverlay { }
     }
 }

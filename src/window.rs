@@ -2439,6 +2439,19 @@ impl PlayerController {
                     youtube.open();
                 }
             }
+            // The title bar's Home, shown over the library and the YouTube
+            // section: both go, for the welcome screen. Not under a file
+            // playing, which would end on the welcome screen.
+            "welcome" => {
+                if self.is_idle() {
+                    if let Some(youtube) = self.youtube() {
+                        youtube.hide();
+                    }
+                    if let Some(library) = self.library() {
+                        library.leave();
+                    }
+                }
+            }
             "close-window" => self.close(),
             "quit" => app.quit(),
             "minimize" => self.window.window().set_minimized(true),
@@ -6458,9 +6471,9 @@ mod tests {
         window.global::<Playback>().set_has_media(false);
         works("back in the section after the video");
 
-        // Over the library, This Computer included, which comes back as it was.
+        // Over the library, which comes back as it was.
         youtube.set_shown(false);
-        library.set_page("local".into());
+        library.set_page("home".into());
         library.set_shown(true);
         works("in the library");
         youtube.set_shown(true);
@@ -6591,8 +6604,10 @@ mod tests {
     }
 
     /// The mouse's back button goes back in the section, and leaves the library
-    /// under it as it was: the library keeps its pages, on This Computer two of
-    /// them, and a press that popped one would go unseen.
+    /// under it as it was: a press that went back in the library, from its Home
+    /// to the welcome screen, would go unseen. With the section gone it goes
+    /// back in the library, and so do Backspace and the bar's Back, enabled on
+    /// Home. The window's shortcuts work on once the library has gone.
     #[test]
     fn the_back_button_goes_back_in_what_shows() {
         use slint::platform::{PointerEventButton, WindowEvent};
@@ -6623,7 +6638,7 @@ mod tests {
                 .window()
                 .dispatch_event(WindowEvent::PointerReleased { position, button });
         };
-        library.set_page("local".into());
+        library.set_page("home".into());
         library.set_can_go_back(true);
         library.set_shown(true);
         youtube.set_page("feed".into());
@@ -6633,6 +6648,152 @@ mod tests {
         youtube.set_shown(false);
         back();
         assert_eq!((library_backs.get(), youtube_backs.get()), (1, 1));
+
+        i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        press_key(&window, slint::platform::Key::Backspace);
+        assert_eq!(library_backs.get(), 2, "Backspace");
+        // The bar's Back, first in the library's bar: under the title bar,
+        // past the bar's padding.
+        click(&window, 16.0 + 14.0, 32.0 + 6.0 + 2.0 + 14.0);
+        assert_eq!(library_backs.get(), 3, "the bar's Back");
+
+        // The controller lets the library go, for the welcome screen.
+        let keys = keys_reaching_the_window(&window);
+        library.set_shown(false);
+        assert!(press_ctrl_q(&window, &keys), "on the welcome screen");
+    }
+
+    /// Search left from its field, by each way of going back, leaves the keys
+    /// with the page that shows next: Backspace there goes back again, rather
+    /// than to the window's shortcuts (where it is a speed). The field went
+    /// with the keyboard's focus on it, and the view takes it back.
+    #[test]
+    fn backspace_goes_back_again_after_search_is_left() {
+        use slint::platform::{Key, PointerEventButton, WindowEvent};
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let library = window.global::<Library>();
+        let youtube = window.global::<YouTube>();
+        // As the controllers do: back from Search shows the first page, a
+        // load of its own, and back from there is counted.
+        let left = Rc::new(Cell::new(0));
+        let counted = left.clone();
+        let weak = window.as_weak();
+        library.on_back(move || {
+            let window = weak.unwrap();
+            let library = window.global::<Library>();
+            if library.get_page() == "search" {
+                library.set_page("home".into());
+                library.set_loads(library.get_loads() + 1);
+            } else {
+                counted.set(counted.get() + 1);
+            }
+        });
+        let counted = left.clone();
+        let weak = window.as_weak();
+        youtube.on_back(move || {
+            let window = weak.unwrap();
+            let youtube = window.global::<YouTube>();
+            if youtube.get_page() == "search" {
+                youtube.set_page("feed".into());
+                youtube.set_loads(youtube.get_loads() + 1);
+            } else {
+                counted.set(counted.get() + 1);
+            }
+        });
+        library.set_can_go_back(true);
+        // A pass of the event loop: changes' handlers, then what the pages
+        // make and take away.
+        let pass = || {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(50));
+            i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        };
+        for view in ["library", "youtube"] {
+            for how in ["escape", "backspace", "bar", "mouse"] {
+                show_page(&window, view, "search");
+                pass();
+                match how {
+                    "escape" => press_key(&window, Key::Escape),
+                    "backspace" => press_key(&window, Key::Backspace),
+                    // The bar's Back, under the title bar past the bar's
+                    // padding, and the mouse's back button over the page.
+                    "bar" => click(&window, 16.0 + 14.0, 32.0 + 6.0 + 2.0 + 14.0),
+                    _ => {
+                        let position = slint::LogicalPosition::new(600.0, 500.0);
+                        let button = PointerEventButton::Back;
+                        let window = window.window();
+                        window.dispatch_event(WindowEvent::PointerMoved { position });
+                        window.dispatch_event(WindowEvent::PointerPressed { position, button });
+                        window.dispatch_event(WindowEvent::PointerReleased { position, button });
+                    }
+                }
+                let first = if view == "library" { "home" } else { "feed" };
+                let page = if view == "library" {
+                    library.get_page()
+                } else {
+                    youtube.get_page()
+                };
+                assert_eq!(page, first, "{view} {how}");
+                left.set(0);
+                keys.borrow_mut().clear();
+                pass();
+                press_key(&window, Key::Backspace);
+                assert_eq!(left.get(), 1, "{view} {how}: Backspace went back");
+                assert!(
+                    keys.borrow().is_empty(),
+                    "{view} {how}: {:?}",
+                    keys.borrow()
+                );
+                assert!(press_ctrl_q(&window, &keys), "{view} {how}");
+            }
+        }
+    }
+
+    /// The title bar's Home shows over the library and the YouTube section, not
+    /// on the welcome screen or over a file playing, and asks for the welcome
+    /// screen. The keys work on as the view goes for it.
+    #[test]
+    fn the_title_bar_goes_home_from_the_library_and_the_section() {
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let actions: Rc<RefCell<Vec<String>>> = Rc::default();
+        let seen = actions.clone();
+        window
+            .global::<Actions>()
+            .on_patina(move |action| seen.borrow_mut().push(action.to_string()));
+        for (view, page, shown) in [
+            ("welcome", "", false),
+            ("library", "home", true),
+            ("library", "sign-in", true),
+            ("youtube", "feed", true),
+            ("player", "", false),
+            ("music", "", false),
+        ] {
+            show_page(&window, view, page);
+            assert_eq!(window.get_can_go_home(), shown, "{view} {page}");
+        }
+
+        for view in ["library", "youtube"] {
+            show_page(
+                &window,
+                view,
+                if view == "library" { "home" } else { "feed" },
+            );
+            actions.borrow_mut().clear();
+            // Clicked as the mouse does. The title bar ends in the window's
+            // buttons, 40px each after 4px, then Float on Top and Picture in
+            // Picture, 28px each after 6px; Home is before them.
+            click(&window, 1280.0 - 124.0 - 3.0 * 34.0 + 14.0, 2.0 + 14.0);
+            assert_eq!(*actions.borrow(), ["welcome"], "{view}");
+            // As the window does with it.
+            window.global::<Library>().set_shown(false);
+            window.global::<YouTube>().set_shown(false);
+            assert!(!window.get_can_go_home(), "{view}: on the welcome screen");
+            assert!(
+                press_ctrl_q(&window, &keys),
+                "{view}: on the welcome screen"
+            );
+        }
     }
 
     /// A page that loads again in place (a server switched to, Home or a
@@ -6754,6 +6915,17 @@ mod tests {
                 .window()
                 .dispatch_event(WindowEvent::KeyReleased { text });
         }
+    }
+
+    /// A click of the left button at `x`, `y`.
+    fn click(window: &PlayerWindow, x: f32, y: f32) {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let position = slint::LogicalPosition::new(x, y);
+        let button = PointerEventButton::Left;
+        let window = window.window();
+        window.dispatch_event(WindowEvent::PointerMoved { position });
+        window.dispatch_event(WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(WindowEvent::PointerReleased { position, button });
     }
 
     fn press_key(window: &PlayerWindow, key: impl Into<SharedString>) {
@@ -6902,7 +7074,6 @@ mod tests {
         for (view, page) in [
             ("library", "home"),
             ("library", "grid"),
-            ("library", "local"),
             ("youtube", "feed"),
             ("youtube", "saved"),
             ("youtube", "channel"),
@@ -7269,7 +7440,6 @@ mod tests {
             ("library", "home"),
             ("library", "grid"),
             ("library", "detail"),
-            ("library", "local"),
             ("youtube", "feed"),
             ("youtube", "saved"),
             ("youtube", "channel"),

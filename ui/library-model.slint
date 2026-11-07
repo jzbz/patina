@@ -36,11 +36,11 @@ export struct LibraryRow {
     cards: [LibraryCard],
 }
 
-// An entry in the library's bar: Home, a library, Search, This Computer.
+// An entry in the library's bar: Home, a library, Search.
 export struct LibraryNav {
     id: string,
     title: string,
-    // home, movies, tvshows, music, boxsets, playlists, folders, search, local
+    // home, movies, tvshows, music, boxsets, playlists, folders, search
     kind: string,
 }
 
@@ -168,13 +168,17 @@ export global Library {
     in property <bool> can-download;
 
     // The bar's entries that scroll (Home and the libraries), and those
-    // that stay at its end (Search and This Computer).
+    // that stay at its end (Search).
     in property <[LibraryNav]> nav;
     in property <[LibraryNav]> nav-end;
     in property <string> nav-current;
-    // home, grid, detail, search, local, sign-in
+    // home, grid, detail, search, sign-in
     in property <string> page;
+    // Back goes somewhere: to the page under, a step of signing in, or from
+    // Home to the welcome screen.
     in property <bool> can-go-back;
+    // Back leaves for the welcome screen, which the bar's Back says.
+    in property <bool> at-root;
     in property <bool> loading;
     in property <string> error;
 

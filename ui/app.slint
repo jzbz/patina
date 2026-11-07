@@ -86,6 +86,9 @@ export component PlayerWindow inherits Window {
     property <bool> youtube-open: !Playback.has-media && !root.music-mode && YouTube.shown;
     // The library is on screen, in the welcome screen's place.
     property <bool> library-open: !Playback.has-media && !root.music-mode && Library.shown && !YouTube.shown;
+    // The title bar's Home shows, for the welcome screen: over the library or
+    // the YouTube section, never over a file.
+    out property <bool> can-go-home: root.library-open || root.youtube-open;
     // A Jellyfin item's intro, credits or the like plays (Playback.skip-label).
     // The button shows for a few seconds as the span begins, and again with
     // the controller or a key: in a small window it would sit over the
@@ -1214,15 +1217,12 @@ export component PlayerWindow inherits Window {
             }
 
             // A signed-in Jellyfin server's library, in the welcome
-            // screen's place; This Computer shows the welcome screen in it.
+            // screen's place; Back from its Home goes to the welcome screen.
             if root.library-open: LibraryView {
                 width: parent.width;
                 height: parent.height;
                 drop-active: root.drop-active;
                 covered: root.dialog != "";
-                clear-recent => {
-                    root.dialog = "clear-recent";
-                }
             }
 
             if root.youtube-open: YouTubeView {
@@ -1318,6 +1318,7 @@ export component PlayerWindow inherits Window {
                     width: parent.width;
                     always-on-top: root.always-on-top;
                     maximized: root.maximized;
+                    can-go-home: root.can-go-home;
                     show-menu(x, y) => {
                         root.open-menu(x, y);
                     }

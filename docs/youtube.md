@@ -553,7 +553,9 @@ closing asks the same: the field being typed in has it back, or else the view.
 Nothing that arrives under a dialog takes the keyboard from it, and what is typed
 while the Channels page's field waits on a channel being added stops at the view.
 
-The bar's Back and the mouse's back button go through pages and then leave.
+The bar's Back and the mouse's back button go through pages and then leave,
+for the library if the section was opened over it. The title bar's Home
+button leaves both for the welcome screen (the window action `welcome`).
 Each page keeps its scroll when left. Lines are made afresh only when a page
 is shown; what comes later changes them in place, so a list being read
 doesn't jump. Pictures are held only near the screen, as a decoded image for

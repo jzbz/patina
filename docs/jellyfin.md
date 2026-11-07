@@ -184,17 +184,23 @@ again when picked. The servers saved as signed in are listed from
 to do, or wait to be unlocked first; one picked meanwhile says what it waits
 for and opens when the keyring has answered. Picking a server, or signing in
 to one, puts the library view in the welcome view's place in that idle
-player window, until the server is signed out of. Its bar has Home, the account's libraries, Search
-and This Computer, which is the welcome view again.
+player window, until the server is signed out of or the user goes back to
+the welcome view. Its bar has Home, the account's libraries and Search.
 Pages stack: opening an item pushes its page, Back (the button, the mouse's
-back button, Backspace) pops it. What plays from the library plays in its
-place; Escape (outside full screen, where it does nothing as bound by
-default) or Stop goes back to it, and so does the end of the playlist's
-last entry, rather than mpv's last frame. The window takes back the size
-it had in the library, which fitting it to a small video or a cover
-changed. Signing in, the keys typed where no field has the keyboard are no
-shortcuts (a name typed there would quit at its first "q"), and the user
-name field has it even with the server's accounts listed.
+back button, Backspace) pops it, and Back from Home goes to the welcome
+view, as the YouTube section's Back does from its first page. The title
+bar's Home button (a house, shown over the library and the YouTube section
+and never over a file; not in the system's title bar, where Patina draws
+none) goes there from any page. Going there the window lets its server go,
+as a window starts without one, and picking the server again opens its
+Home. What plays from the library plays in its place; Escape (outside
+full screen, where it does nothing as bound by default) or Stop goes back
+to it, and so does the end of the playlist's last entry, rather than mpv's
+last frame. The window takes back the size it had in the library, which
+fitting it to a small video or a cover changed. Signing in, the keys typed
+where no field has the keyboard are no shortcuts (a name typed there would
+quit at its first "q"), and the user name field has it even with the server's
+accounts listed.
 
 When a playback ends, in its window or another, and the server has taken
 the report, a library showing that server loads its page again if the page

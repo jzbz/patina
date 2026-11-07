@@ -445,7 +445,8 @@ impl YouTubeController {
         self.global().set_adding(false);
     }
 
-    /// Something else is about to show in this window: the library's sign-in.
+    /// Something else is about to show in this window: the library's sign-in,
+    /// or the welcome screen from the title bar's Home.
     pub fn hide(&self) {
         if self.is_shown() {
             self.leave();

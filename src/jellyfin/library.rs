@@ -553,8 +553,6 @@ enum Page {
     Grid(GridPage),
     Detail(DetailPage),
     Search,
-    /// This Computer: the welcome screen's Open, Open URL and Recent.
-    Local,
     SignIn,
 }
 
@@ -566,7 +564,6 @@ impl Page {
             Page::Grid(_) => "grid",
             Page::Detail(_) => "detail",
             Page::Search => "search",
-            Page::Local => "local",
             Page::SignIn => "sign-in",
         }
     }
@@ -675,6 +672,13 @@ impl Pages {
         self.0.len() > 1
     }
 
+    /// Whether Back leaves the library for the welcome screen: from a
+    /// server's page with none under it, as the YouTube section's Back
+    /// leaves from its first page. Signing in has Cancel for that.
+    fn leaves(&self) -> bool {
+        self.0.len() == 1 && self.top() != Some(&Page::SignIn)
+    }
+
     /// The entry of the bar the page is under.
     fn nav_current(&self) -> String {
         match self.top() {
@@ -682,7 +686,6 @@ impl Pages {
             Some(Page::Grid(page)) => page.root.clone(),
             Some(Page::Detail(page)) => page.root.clone(),
             Some(Page::Search) => "search".into(),
-            Some(Page::Local) => "local".into(),
             Some(Page::SignIn) | None => String::new(),
         }
     }
@@ -2188,18 +2191,15 @@ impl LibraryController {
         self.all_servers.set_vec(listed);
     }
 
-    /// A server picked on the welcome screen: its Home, whether this window
-    /// has it already (This Computer shows the welcome screen in the
-    /// library) or it is another, or signing in again where its sign-in
-    /// has been lost. While the keyring has yet to say which, the row says
-    /// what it waits for, and `open_after_loading` goes on from there.
+    /// A server picked on the welcome screen: its Home, or signing in again
+    /// where its sign-in has been lost. While the keyring has yet to say
+    /// which, the row says what it waits for, and `open_after_loading` goes
+    /// on from there.
     fn open_server(&self, id: &str) {
         let waiting = self.session.waiting_for_token(id);
         *self.awaited.borrow_mut() = waiting.then(|| id.to_owned());
         if !waiting {
-            if self.server.borrow().as_deref() == Some(id) {
-                self.navigate("home");
-            } else if self.session.account(id).is_some() {
+            if self.session.account(id).is_some() {
                 self.switch_server(id);
             } else {
                 self.sign_in_to(id, "Sign in again to see this server's library.");
@@ -2211,7 +2211,7 @@ impl LibraryController {
     /// The keyring has answered: the server picked while it hadn't opens,
     /// unless the user has since gone on to something else in this window.
     fn open_after_loading(&self, id: &str) {
-        let on_welcome = matches!(self.top(), None | Some(Page::Local));
+        let on_welcome = self.top().is_none();
         if on_welcome && self.player.upgrade().is_some_and(|player| player.is_idle()) {
             self.open_server(id);
         }
@@ -2228,8 +2228,9 @@ impl LibraryController {
         self.update_shown();
     }
 
-    /// The bar: Home, the account's libraries, Search and This Computer;
-    /// nothing without a server.
+    /// The bar: Home, the account's libraries and Search; nothing without a
+    /// server. The welcome screen is reached by Back from Home, and by the
+    /// title bar's button.
     fn set_nav(&self) {
         let nav = |id: &str, title: &str, kind: &str| LibraryNav {
             id: id.into(),
@@ -2248,10 +2249,8 @@ impl LibraryController {
             }
         }
         self.nav.set_vec(entries);
-        self.nav_end.set_vec(vec![
-            nav("search", "Search", "search"),
-            nav("local", "This Computer", "local"),
-        ]);
+        self.nav_end
+            .set_vec(vec![nav("search", "Search", "search")]);
     }
 
     /// The account's name and picture, and its policy, which says whether
@@ -2364,7 +2363,7 @@ impl LibraryController {
         let Some(page) = page else {
             return;
         };
-        if self.account().is_none() && !matches!(page, Page::SignIn | Page::Local) {
+        if self.account().is_none() && page != Page::SignIn {
             return;
         }
         match page {
@@ -2376,7 +2375,6 @@ impl LibraryController {
                 let text = library.get_search_text().to_string();
                 self.run_search(&text);
             }
-            Page::Local => library.set_title("This Computer".into()),
             Page::SignIn => {
                 library.set_title("Sign In".into());
                 if let Some(flow) = self.flow() {
@@ -2447,8 +2445,10 @@ impl LibraryController {
             && self
                 .flow()
                 .is_some_and(|flow| flow.state().step != session::Step::Address);
-        self.library()
-            .set_can_go_back(self.pages.borrow().can_go_back() || step_back);
+        let pages = self.pages.borrow();
+        let library = self.library();
+        library.set_can_go_back(pages.can_go_back() || pages.leaves() || step_back);
+        library.set_at_root(pages.leaves());
     }
 
     /// A new page: what was asked for the last one is dropped as it comes.
@@ -2543,7 +2543,6 @@ impl LibraryController {
         let page = match id {
             "home" => None,
             "search" => Some(Page::Search),
-            "local" => Some(Page::Local),
             id => {
                 let view = self
                     .views
@@ -2584,7 +2583,22 @@ impl LibraryController {
             self.leave_error();
             self.restore_scroll();
             self.show_page();
+        } else if self.pages.borrow().leaves() {
+            self.leave();
         }
+    }
+
+    /// Back at the welcome screen, from Back on Home or the title bar's
+    /// button. The window lets its server go, as it started without one:
+    /// the welcome screen lists the servers, and picking this one there
+    /// opens its Home again. Signing in under way stops.
+    pub fn leave(&self) {
+        self.cancel_flow();
+        self.leave_error();
+        self.server.borrow_mut().take();
+        self.server_changed();
+        self.update_servers();
+        self.update_shown();
     }
 
     /// Has the page on top start where it was scrolled to when it was
@@ -4529,7 +4543,7 @@ fn first_cards(had: usize) -> u32 {
 /// minutes, and loading a page again empties it until it comes.
 fn shows_played(page: &Page, audio: bool) -> bool {
     match page {
-        Page::Local | Page::SignIn => false,
+        Page::SignIn => false,
         _ if !audio => true,
         Page::Search => true,
         Page::Grid(grid) => grid.tab == Tab::Items,
@@ -4822,9 +4836,18 @@ mod tests {
         assert_eq!(pages.nav_current(), "search");
 
         // The bar's pages start again from Home.
-        pages.go_to(Some(Page::Local));
-        assert_eq!(pages.0, [(Page::Home, 0.0), (Page::Local, 0.0)]);
-        assert_eq!(pages.top().unwrap().name(), "local");
+        pages.go_to(Some(Page::Search));
+        assert_eq!(pages.0, [(Page::Home, 0.0), (Page::Search, 0.0)]);
+        assert!(!pages.leaves(), "Back goes to Home first");
+        assert!(pages.pop());
+        // Back from Home leaves for the welcome screen.
+        assert!(pages.leaves());
+        pages.push(Page::SignIn, 0.0);
+        assert!(!pages.leaves());
+        pages.set(vec![Page::SignIn]);
+        assert!(!pages.leaves(), "signing in has Cancel");
+        pages.set(Vec::new());
+        assert!(!pages.leaves());
     }
 
     fn card(id: &str) -> LibraryCard {
@@ -5235,7 +5258,6 @@ mod tests {
         }
         assert!(!shows_played(&Page::Home, true));
         for audio in [false, true] {
-            assert!(!shows_played(&Page::Local, audio));
             assert!(!shows_played(&Page::SignIn, audio));
         }
     }
@@ -5414,6 +5436,77 @@ mod tests {
             (found.title.as_str(), found.kind),
             ("Film", ItemKind::Movie)
         );
+    }
+
+    /// Back from a server's Home goes to the welcome screen, as the YouTube
+    /// section's does from its first page, and so does the title bar's Home
+    /// from any page. The window lets the server go, and picking it on the
+    /// welcome screen opens its Home again. The bar has no This Computer.
+    #[test]
+    fn back_from_home_goes_to_the_welcome_screen() {
+        i_slint_backend_testing::init_no_event_loop();
+        let folder = std::env::temp_dir().join(format!(
+            "patina-jellyfin-library-welcome-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&folder);
+        let session = Session::new(&folder, folder.join("images"));
+        // A closed port: what the pages ask is refused at once, and their
+        // answers have no event loop to come back on anyway.
+        let server = Server {
+            id: "s1".into(),
+            name: "Server".into(),
+            address: "http://127.0.0.1:9".into(),
+            version: "12.4.0".into(),
+            user_id: "u1".into(),
+            user_name: "User".into(),
+            ..Default::default()
+        };
+        session.add_account(server, "token").unwrap();
+        let window = PlayerWindow::new().unwrap();
+        let controller = LibraryController::new(&session, &window, Weak::new());
+        let library = window.global::<Library>();
+        let on_welcome = |what: &str| {
+            assert!(!library.get_shown(), "{what}");
+            assert_eq!(library.get_page(), "", "{what}");
+        };
+        let on_page = |page: &str, what: &str| {
+            assert!(library.get_shown(), "{what}");
+            assert_eq!(library.get_page(), page, "{what}");
+            assert!(library.get_can_go_back(), "{what}");
+            // The bar's Back says where it goes from Home.
+            assert_eq!(library.get_at_root(), page == "home", "{what}");
+        };
+        on_welcome("as the window opens");
+
+        controller.open_server("s1");
+        on_page("home", "picked on the welcome screen");
+        let end: Vec<_> = controller
+            .nav_end
+            .iter()
+            .map(|entry| entry.id.to_string())
+            .collect();
+        assert_eq!(end, ["search"]);
+        library.invoke_back();
+        on_welcome("Back from Home");
+
+        controller.open_server("s1");
+        on_page("home", "picked again");
+        library.invoke_navigate("search".into());
+        on_page("search", "Search");
+        library.invoke_back();
+        on_page("home", "Back from Search");
+        library.invoke_back();
+        on_welcome("Back from Home after Search");
+
+        controller.open_server("s1");
+        library.invoke_navigate("search".into());
+        controller.leave();
+        on_welcome("the title bar's Home");
+        controller.open_server("s1");
+        on_page("home", "picked after Home");
+
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     // Against the local test server (tools/jellyfin-server.sh).

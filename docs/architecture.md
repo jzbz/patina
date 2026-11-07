@@ -487,10 +487,10 @@ rules about the account's token; this is how it sits among the rest.
   (`jellyfin/library.rs`), which fills the window's `Library` global and
   answers its callbacks. A window starts on the welcome view, which lists
   the servers; one picked or signed in to puts the library in that idle
-  window where the welcome view was, and its This Computer tab is the
-  welcome view again. Page loads, from every
-  window, share six threads (`session::load`), and an answer for a page
-  the user has left is dropped.
+  window where the welcome view was, until Back from its Home or the title
+  bar's Home button lets the server go and the welcome view comes back.
+  Page loads, from every window, share six threads (`session::load`), and
+  an answer for a page the user has left is dropped.
 - **Playing.** What the library plays goes into mpv's playlist as
   `jellyfin://<server id>/<item id>`, so the playlist, the history, Recent
   and the system's media controls see neither the token nor a stream's
