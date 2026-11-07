@@ -68,8 +68,12 @@ export global Theme {
     out property <length> control-radius: 6px;
     out property <length> titlebar-height: 32px;
     out property <length> sidebar-width: 340px;
-    out property <length> font-small: 11px;
-    out property <length> font-normal: 13px;
-    out property <length> font-title: 13px;
-    out property <length> font-heading: 15px;
+    // Type sizes, a step above 11, 13 and 15 px, which read small from
+    // where a player is watched. The few sizes given in pixels elsewhere
+    // (page headings, the Quick Connect code, the controller's times) are a
+    // step up too, and what holds text is sized for these.
+    out property <length> font-small: 12px;
+    out property <length> font-normal: 14px;
+    out property <length> font-title: 14px;
+    out property <length> font-heading: 16px;
 }

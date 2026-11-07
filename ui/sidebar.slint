@@ -696,7 +696,7 @@ component SpeedControl inherits VerticalLayout {
         for label in ["0.25×", "1×", "4×", "16×"]: Text {
             text: label;
             color: Theme.tertiary-text;
-            font-size: 10px;
+            font-size: 11px;
             horizontal-alignment: label == "0.25×" ? left : label == "16×" ? right : center;
             horizontal-stretch: 1;
         }
@@ -910,7 +910,7 @@ component EqualizerBand inherits VerticalLayout {
     Text {
         text: root.label;
         color: Theme.tertiary-text;
-        font-size: 9px;
+        font-size: 10px;
         horizontal-alignment: center;
     }
 }

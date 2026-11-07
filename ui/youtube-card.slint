@@ -8,7 +8,7 @@ import { LibraryUi, Artwork, Avatar, Badge, KeyFocus, PlayOverlay, ProgressStrip
 
 export global YouTubeUi {
     // The title's two lines, the channel's and the facts'.
-    out property <length> caption-height: 76px;
+    out property <length> caption-height: 81px;
     out property <length> heading-height: 34px;
     out property <length> channel-height: 66px;
 
@@ -283,7 +283,7 @@ export component VideoCard inherits Rectangle {
             x: 0;
             y: root.image-height + 6px;
             width: parent.width;
-            height: 36px;
+            height: 38px;
             text: root.card.title;
             color: root.marked || keys.has-focus ? Theme.icon-hover : Theme.text;
             font-size: Theme.font-normal;
@@ -292,9 +292,9 @@ export component VideoCard inherits Rectangle {
         }
         channel-touch := TouchArea {
             x: 0;
-            y: root.image-height + 42px;
+            y: root.image-height + 45px;
             width: parent.width - 28px;
-            height: 16px;
+            height: 17px;
             enabled: root.card.channel-id != "";
             mouse-cursor: self.enabled ? pointer : default;
             clicked => {
@@ -319,9 +319,9 @@ export component VideoCard inherits Rectangle {
         }
         Text {
             x: 0;
-            y: root.image-height + 58px;
+            y: root.image-height + 62px;
             width: parent.width - 28px;
-            height: 15px;
+            height: 16px;
             text: root.card.facts;
             color: Theme.tertiary-text;
             font-size: Theme.font-small;
@@ -330,7 +330,7 @@ export component VideoCard inherits Rectangle {
         }
         IconButton {
             x: parent.width - self.width + 4px;
-            y: root.image-height + 44px;
+            y: root.image-height + 48px;
             icon: @image-url("icons/ellipsis.svg");
             icon-size: 16px;
             hover-background: true;

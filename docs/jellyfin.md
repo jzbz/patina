@@ -200,7 +200,9 @@ last frame. The window takes back the size it had in the library, which
 fitting it to a small video or a cover changed. Signing in, the keys typed
 where no field has the keyboard are no shortcuts (a name typed there would
 quit at its first "q"), and the user name field has it even with the server's
-accounts listed.
+accounts listed. Each step's card is in the middle of the space under the
+bar, as a dialog is in the window, and a window too short or narrow for it
+scrolls it rather than cutting it off.
 
 When a playback ends, in its window or another, and the server has taken
 the report, a library showing that server loads its page again if the page

@@ -105,8 +105,15 @@ const MUSIC_WIDTH: f32 = 300.0;
 const MUSIC_PANEL: f32 = 72.0;
 const MUSIC_DRAWER: f32 = 300.0;
 const MUSIC_DRAWER_MIN: f32 = 200.0;
-/// The player window's size when it opens (its preferred size in app.slint).
-const DEFAULT_SIZE: slint::LogicalSize = slint::LogicalSize::new(960.0, 600.0);
+/// The player window's size when it opens (its preferred size in app.slint),
+/// on a screen with room for it (`default_size`).
+const DEFAULT_SIZE: slint::LogicalSize = slint::LogicalSize::new(1280.0, 800.0);
+/// The most of the screen a window opens to, leaving room for the desktop's
+/// panels; as much as a first fit to a video takes.
+const SCREEN_SHARE: f64 = 0.85;
+/// The events a new window waits through for its screen to be known: on
+/// Wayland only once the compositor has shown it on one.
+const SCREEN_FIT_TRIES: u8 = 100;
 /// How long a size change waits for Slint to apply new size limits: its own
 /// zero-delay timer, which a later one of the same deadline would precede.
 const AFTER_LIMITS: Duration = Duration::from_millis(1);
@@ -179,6 +186,10 @@ pub struct PlayerController {
     /// Counts the sizes asked for, so that a delayed one can tell it came
     /// too late.
     resizes: Cell<u64>,
+    /// How many more of the window's events may pass before it gives up on
+    /// learning its screen, to fit a new window to (`fit_new_window`); 0
+    /// once it has, or need not.
+    screen_fit_tries: Cell<u8>,
     /// Seek-bar thumbnails for the current file, filled in as they arrive.
     thumbnails: RefCell<Vec<Option<slint::Image>>>,
     thumbnail_job: RefCell<Option<thumbnails::Job>>,
@@ -313,6 +324,7 @@ impl PlayerController {
             osd_fallback_timer: Timer::default(),
             wanted_size: Cell::new(None),
             resizes: Cell::new(0),
+            screen_fit_tries: Cell::new(SCREEN_FIT_TRIES),
             thumbnails: RefCell::new(Vec::new()),
             thumbnail_job: RefCell::new(None),
             thumbnail_path: RefCell::new(String::new()),
@@ -2131,6 +2143,7 @@ impl PlayerController {
                 &this.window,
                 matches!(event, winit::event::WindowEvent::KeyboardInput { .. }),
             );
+            this.fit_new_window();
             this.style_titlebar();
             this.check_window_system();
             this.app().start_media_controls(&this);
@@ -2873,6 +2886,48 @@ impl PlayerController {
             .flatten()
     }
 
+    /// Shrinks a new window to a screen too small for DEFAULT_SIZE. Slint
+    /// opens it at its preferred size whatever the screen, and the screen is
+    /// known only once winit has made the window, which it does as the event
+    /// loop runs, so this waits for the window's events. A window that has
+    /// another size by then, given by the user or fitted to a video, keeps it.
+    fn fit_new_window(&self) {
+        let tries = self.screen_fit_tries.get();
+        if tries == 0 {
+            return;
+        }
+        let window = self.window.window();
+        // Before its first configure a window can have no size yet.
+        let sized = window.size().width > 0;
+        if (sized && !self.has_size(DEFAULT_SIZE))
+            || window.is_fullscreen()
+            || window.is_maximized()
+            || self.in_music_mode()
+        {
+            self.screen_fit_tries.set(0);
+            return;
+        }
+        let screen = self.monitor_logical_size().filter(|_| sized);
+        if screen.is_none() {
+            self.screen_fit_tries.set(tries - 1);
+            return;
+        }
+        self.screen_fit_tries.set(0);
+        let size = self.default_size();
+        if size != DEFAULT_SIZE {
+            log::debug!("fitting the new window to the screen at {size:?}");
+            self.resize_window(size);
+        }
+    }
+
+    /// The size a window opens to: DEFAULT_SIZE, or as much of it as fits
+    /// a smaller screen, in its shape.
+    fn default_size(&self) -> slint::LogicalSize {
+        let screen = self.monitor_logical_size();
+        let (width, height) = fit_default(screen);
+        slint::LogicalSize::new(width as f32, height as f32)
+    }
+
     /// Resizes the window to the video size times `scale`, limited to the
     /// screen. An infinite scale fills the screen.
     fn fit_to_video(&self, scale: f64, initial: bool) {
@@ -2895,7 +2950,7 @@ impl PlayerController {
         if let Some((screen_w, screen_h)) = self.monitor_logical_size() {
             // Leave room for panels; an initial fit uses at most 85% of the
             // screen, an explicit "fit to screen" all of it.
-            let limit = if initial { 0.85 } else { 1.0 };
+            let limit = if initial { SCREEN_SHARE } else { 1.0 };
             let factor = (screen_w * limit / width).min(screen_h * limit / height);
             if factor < 1.0 || scale.is_infinite() {
                 width *= factor;
@@ -3241,7 +3296,7 @@ impl PlayerController {
                 _ if maximized => this.window.window().set_maximized(true),
                 Some(size) => this.resize_window(size),
                 None if this.state.borrow().video.is_some() => this.fit_to_video(1.0, true),
-                None => this.resize_window(DEFAULT_SIZE),
+                None => this.resize_window(this.default_size()),
             }
         });
     }
@@ -5835,6 +5890,21 @@ enum PipPending {
     Opening,
 }
 
+/// DEFAULT_SIZE, shrunk in its shape to SCREEN_SHARE of a screen too small
+/// for it, though not below the window's least (app.slint's min-width and
+/// min-height). Unchanged when the screen isn't known.
+fn fit_default(screen: Option<(f64, f64)>) -> (f64, f64) {
+    let (width, height) = (DEFAULT_SIZE.width as f64, DEFAULT_SIZE.height as f64);
+    let Some((screen_w, screen_h)) = screen.filter(|(w, h)| *w > 0.0 && *h > 0.0) else {
+        return (width, height);
+    };
+    let factor = (screen_w * SCREEN_SHARE / width)
+        .min(screen_h * SCREEN_SHARE / height)
+        .min(1.0)
+        .max((360.0 / width).max(220.0 / height));
+    ((width * factor).round(), (height * factor).round())
+}
+
 /// Music mode's cover, where mpv draws in it, in physical pixels; None for
 /// the whole window. At least a pixel, so that video keeps playing while
 /// the cover is hidden.
@@ -6371,6 +6441,18 @@ mod tests {
     }
 
     #[test]
+    fn a_new_window_fits_a_small_screen_in_its_shape() {
+        assert_eq!(fit_default(None), (1280.0, 800.0));
+        assert_eq!(fit_default(Some((1920.0, 1080.0))), (1280.0, 800.0));
+        // 85% of 1366 by 768 is 653 tall, which sets the width.
+        assert_eq!(fit_default(Some((1366.0, 768.0))), (1044.0, 653.0));
+        assert_eq!(fit_default(Some((1024.0, 1280.0))), (870.0, 544.0));
+        // Never below the window's least size.
+        assert_eq!(fit_default(Some((320.0, 240.0))), (360.0, 225.0));
+        assert_eq!(fit_default(Some((0.0, 0.0))), (1280.0, 800.0));
+    }
+
+    #[test]
     fn aspect_ratios_map_to_menu_entries() {
         assert_eq!(aspect_index(0.0), 0);
         assert_eq!(aspect_index(16.0 / 9.0), 2);
@@ -6807,6 +6889,162 @@ mod tests {
                 assert!(press_ctrl_q(&window, &keys), "{view} {how}");
             }
         }
+    }
+
+    /// The sign-in card is in the middle of the space under the library's
+    /// bar, as a dialog is in the window, however tall or wide the window;
+    /// in the smallest, which it doesn't fit, it scrolls both ways. Found by
+    /// where clicks press its Cancel button, on the card's last row.
+    #[test]
+    fn the_sign_in_card_is_in_the_middle_under_the_bar() {
+        use slint::platform::WindowEvent;
+        let window = window_for_keys();
+        let library = window.global::<Library>();
+        let cancels = Rc::new(Cell::new(0));
+        let counted = cancels.clone();
+        library.on_cancel_sign_in(move || counted.set(counted.get() + 1));
+        library.set_sign_in(crate::LibrarySignIn {
+            step: "address".into(),
+            ..Default::default()
+        });
+        show_page(&window, "library", "sign-in");
+        let presses = |x: f32, y: f32| {
+            let before = cancels.get();
+            click(&window, x, y);
+            cancels.get() > before
+        };
+        let resize = |width: u32, height: u32| {
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, height));
+            i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        };
+        // Cancel's box: the first point pressing it of a grid of clicks
+        // between `left` and `right`, then its edges, from there outwards.
+        let find = |left: f32, right: f32, height: f32| {
+            let (x, y) = (76..height as i32).step_by(8).find_map(|y| {
+                (left as i32..right as i32)
+                    .step_by(12)
+                    .find(|x| presses(*x as f32, y as f32))
+                    .map(|x| (x as f32, y as f32))
+            })?;
+            let edge = |step: (f32, f32)| {
+                let mut at = (x, y);
+                while presses(at.0 + step.0, at.1 + step.1) {
+                    at = (at.0 + step.0, at.1 + step.1);
+                }
+                at
+            };
+            Some((
+                edge((-1.0, 0.0)).0,
+                edge((0.0, -1.0)).1,
+                edge((1.0, 0.0)).0,
+                edge((0.0, 1.0)).1,
+            ))
+        };
+        let mut boxes = Vec::new();
+        for (width, height) in [(1280, 800), (1280, 1000), (960, 800)] {
+            resize(width, height);
+            // In the right half of a card 440 wide in the window's middle.
+            let middle = width as f32 / 2.0;
+            boxes.push(find(middle, middle + 220.0, height as f32).expect("no Cancel"));
+        }
+        // 200 px taller moves the card down by half that, and 320 px narrower
+        // moves it left by half that, as the middle does.
+        assert!((boxes[1].1 - boxes[0].1 - 100.0).abs() <= 1.0, "{boxes:?}");
+        assert!((boxes[0].0 - boxes[2].0 - 160.0).abs() <= 1.0, "{boxes:?}");
+
+        // The smallest window: scrolling down and then across moves the card.
+        resize(360, 220);
+        let position = slint::LogicalPosition::new(180.0, 150.0);
+        let scroll = |delta_x: f32, delta_y: f32| {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x,
+                    delta_y,
+                });
+        };
+        scroll(0.0, -1000.0);
+        let (left, _, _, bottom) = find(0.0, 360.0, 220.0).expect("no Cancel at the bottom");
+        assert!(bottom < 220.0);
+        scroll(-1000.0, 0.0);
+        let (left_after, ..) = find(0.0, 360.0, 220.0).expect("no Cancel across");
+        assert!(left_after < left, "{left} to {left_after}");
+    }
+
+    /// What appears in a step while it shows grows the card downwards: the
+    /// field being typed in stays where it is, so Cancel, below the message
+    /// that Enter brings, moves down by all of the message's height rather
+    /// than half of it. A step arriving centres the card again.
+    #[test]
+    fn a_note_appearing_grows_the_sign_in_card_downwards() {
+        let window = window_for_keys();
+        let library = window.global::<Library>();
+        let cancels = Rc::new(Cell::new(0));
+        let counted = cancels.clone();
+        library.on_cancel_sign_in(move || counted.set(counted.get() + 1));
+        library.set_sign_in(crate::LibrarySignIn {
+            step: "address".into(),
+            ..Default::default()
+        });
+        let pass = || {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(50));
+            i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        };
+        show_page(&window, "library", "sign-in");
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(1280, 800));
+        // The step is put in place, then measured a moment later.
+        pass();
+        pass();
+        let presses = |x: f32, y: f32| {
+            let before = cancels.get();
+            click(&window, x, y);
+            cancels.get() > before
+        };
+        // The top of Cancel, in the right half of the card.
+        let cancel_top = || {
+            (76..800)
+                .find(|y| (640..860).step_by(6).any(|x| presses(x as f32, *y as f32)))
+                .expect("no Cancel") as f32
+        };
+        let before = cancel_top();
+        // A message after Enter.
+        let message: SharedString = "Couldn't reach the server: connection refused.".into();
+        library.set_sign_in(crate::LibrarySignIn {
+            step: "address".into(),
+            message: message.clone(),
+            ..Default::default()
+        });
+        pass();
+        let grown = cancel_top() - before;
+        // Its line and the step's spacing above it are more than 30 px;
+        // centring the card again would move Cancel by half.
+        assert!(grown > 30.0, "Cancel moved down by {grown}");
+
+        // Through the password step and back with the same message, the
+        // card is centred with it: Cancel moves by half as much.
+        library.set_sign_in(crate::LibrarySignIn {
+            step: "password".into(),
+            ..Default::default()
+        });
+        pass();
+        pass();
+        library.set_sign_in(crate::LibrarySignIn {
+            step: "address".into(),
+            message,
+            ..Default::default()
+        });
+        pass();
+        pass();
+        let centred = cancel_top() - before;
+        assert!(
+            (centred - grown / 2.0).abs() <= 1.0,
+            "{centred} after {grown}"
+        );
     }
 
     /// The YouTube search field tells the controller what it holds as it is

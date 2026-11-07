@@ -10,7 +10,7 @@ import { LibraryUi, Avatar, KeyFocus, PageField } from "library-parts.slint";
 
 component Heading inherits Text {
     color: Theme.text;
-    font-size: 20px;
+    font-size: 22px;
     font-weight: 700;
     wrap: word-wrap;
 }
@@ -419,7 +419,7 @@ component PasswordStep inherits VerticalLayout {
             Text {
                 text: Library.sign-in.user;
                 color: Theme.text;
-                font-size: 18px;
+                font-size: 20px;
                 font-weight: 700;
                 overflow: elide;
             }
@@ -509,7 +509,7 @@ component QuickConnectStep inherits VerticalLayout {
         Text {
             text: Library.sign-in.code;
             color: Theme.text;
-            font-size: 38px;
+            font-size: 40px;
             font-weight: 700;
             letter-spacing: 8px;
             horizontal-alignment: center;
@@ -554,37 +554,84 @@ export component SignInPage inherits ScrollView {
     // A step without a field to type in hands the keyboard back to the view.
     callback focus-view;
     property <string> step: Library.sign-in.step;
-    content-width: self.visible-width;
+    // The page starts 12 px below the library's bar, which the top's smaller
+    // padding makes up.
+    property <length> top-padding: LibraryUi.inset - 12px;
+    // Never narrower than a step's row of buttons, which a narrow window
+    // scrolls to rather than cuts off.
+    property <length> card-width: max(steps.min-width, min(440px, root.visible-width - 2 * LibraryUi.inset));
+    content-width: max(self.visible-width, root.card-width + 2 * LibraryUi.inset);
+    // The step's height once it appeared, or once a change of width last
+    // wrapped it. The card is centred on that rather than on its height now,
+    // so that a message, the plain-http warning or the servers a scan finds
+    // grow it downwards instead of moving the field being typed in, or the
+    // row being pointed at.
+    property <length> centred-height;
+    // Steps that have appeared, and which of them, at what width, the height
+    // above was measured for: until it is the one showing, the card is
+    // centred on its height now.
+    property <int> appeared;
+    property <int> measured-for: -1;
+    property <length> measured-width;
+    property <bool> measured: root.measured-for == root.appeared && root.measured-width == root.card-width;
+    // In the middle of the space under the bar, as a dialog is in the
+    // window's.
+    property <length> top: root.top-padding + max(0px, (root.visible-height - (root.measured ? root.centred-height : steps.preferred-height) - root.top-padding - LibraryUi.inset) / 2);
+    // Down to the card's bottom, so that a window too short for it scrolls
+    // it: a ScrollView goes only by its content's minimum height otherwise.
+    content-height: max(self.visible-height, root.top + steps.preferred-height + LibraryUi.inset);
 
-    // From a top that depends on the view's height only, so that a
-    // message appearing grows the card downwards rather than moving it.
+    // A moment after a step appears, with the notes it came with: the steps'
+    // layout counts only what is in place, and a step is put in place as the
+    // page is next drawn, after Library.sign-in.step has changed.
+    Timer {
+        interval: 1ms;
+        running: root.appeared > 0 && !root.measured;
+        triggered => {
+            root.centred-height = steps.preferred-height;
+            root.measured-for = root.appeared;
+            root.measured-width = root.card-width;
+        }
+    }
+
     VerticalLayout {
-        min-height: root.visible-height;
         alignment: start;
         padding: LibraryUi.inset;
-        padding-top: max(12px, (root.visible-height - 420px) / 3);
+        padding-top: root.top;
 
         HorizontalLayout {
             alignment: center;
             Rectangle {
-                width: min(420px, root.visible-width - 2 * LibraryUi.inset);
+                width: root.card-width;
                 border-radius: Theme.panel-radius;
                 background: #ffffff08;
                 border-width: 1px;
                 border-color: Theme.panel-divider;
 
-                VerticalLayout {
+                steps := VerticalLayout {
                     padding: 24px;
                     if root.step == "address": AddressStep {
                         covered: root.covered;
+                        init => {
+                            root.appeared += 1;
+                        }
                     }
                     if root.step == "users": UsersStep {
                         covered: root.covered;
+                        init => {
+                            root.appeared += 1;
+                        }
                     }
                     if root.step == "password": PasswordStep {
                         covered: root.covered;
+                        init => {
+                            root.appeared += 1;
+                        }
                     }
                     if root.step == "quick-connect": QuickConnectStep {
+                        init => {
+                            root.appeared += 1;
+                        }
                         focus-view => {
                             root.focus-view();
                         }

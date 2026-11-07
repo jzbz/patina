@@ -279,8 +279,13 @@ component KeyBindingsPage inherits VerticalLayout {
             color: Theme.text;
             vertical-alignment: center;
         }
+        // Narrower in a narrow window, so that the buttons after it stay
+        // in sight.
         ComboBox {
-            width: 220px;
+            min-width: 120px;
+            preferred-width: 220px;
+            max-width: 220px;
+            horizontal-stretch: 1;
             model: root.sets;
             current-index: root.set-index;
             selected => {
@@ -458,7 +463,7 @@ component BindingEditor inherits Rectangle {
                     Text {
                         text: root.keys != "" ? root.keys : capture.has-focus ? "Press a key or key combination" : "Click here, then press a key";
                         color: root.keys != "" ? Theme.playing : Theme.tertiary-text;
-                        font-size: root.keys != "" ? 18px : Theme.font-normal;
+                        font-size: root.keys != "" ? 20px : Theme.font-normal;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -536,9 +541,9 @@ export component PreferencesWindow inherits Window {
     title: "Patina Preferences";
     icon: @image-url("icons/patina.svg");
     background: #1c1c1e;
-    preferred-width: 880px;
-    preferred-height: 640px;
-    min-width: 680px;
+    preferred-width: 940px;
+    preferred-height: 680px;
+    min-width: 720px;
     min-height: 440px;
     default-font-family: Theme.font-family;
     default-font-size: Theme.font-normal;
@@ -632,7 +637,7 @@ export component PreferencesWindow inherits Window {
             Text {
                 text: root.heading;
                 color: Theme.text;
-                font-size: 20px;
+                font-size: 22px;
                 font-weight: 700;
             }
 

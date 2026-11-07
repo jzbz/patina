@@ -173,7 +173,14 @@ The Slint files mirror IINA's window:
   buttons, and the artwork for audio without a cover.
 - `ui/menus.slint`: the application menu.
 - `ui/welcome.slint`, `ui/dialogs.slint`, `ui/widgets.slint`,
-  `ui/theme.slint`, `ui/globals.slint`.
+  `ui/theme.slint` (colours, metrics and the type sizes: 12, 14 and 16 px
+  for small text, the rest and headings), `ui/globals.slint`.
+
+A new player window opens at 1280 by 800 (`DEFAULT_SIZE` in
+`src/window.rs`, the window's preferred size in `ui/app.slint`), or in that
+shape at 85% of a screen too small for it, once the window knows its
+screen. A file opened in it fits it to the video, as the preference has it
+by default, and music mode has sizes of its own.
 
 Rust and Slint meet in the globals of `ui/globals.slint`: `Playback` and
 `Media` carry state into the interface; `Actions` carries user intent out,

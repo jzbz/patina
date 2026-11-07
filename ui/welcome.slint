@@ -9,7 +9,7 @@ component WelcomeAction inherits Rectangle {
     in property <string> title;
     in property <string> detail;
     callback clicked;
-    height: 44px;
+    height: 48px;
     border-radius: Theme.panel-radius;
     background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
     accessible-role: button;
@@ -66,7 +66,7 @@ export component WelcomeView inherits Rectangle {
         spacing: 28px;
 
         Rectangle {
-            width: min(300px, root.width * 0.45);
+            width: min(320px, root.width * 0.45);
 
             // Scrolls only when the window is too short for it, as with many
             // servers; otherwise a press here still moves the window. It
@@ -105,7 +105,7 @@ export component WelcomeView inherits Rectangle {
                     Text {
                         text: "Patina";
                         color: Theme.text;
-                        font-size: 26px;
+                        font-size: 28px;
                         font-weight: 700;
                     }
                     Text {
@@ -210,7 +210,7 @@ export component WelcomeView inherits Rectangle {
                 if Media.recent.length > 0: ListView {
                     vertical-stretch: 1;
                     for item[index] in Media.recent: Rectangle {
-                        height: 40px;
+                        height: 44px;
                         border-radius: Theme.control-radius;
                         background: touch.has-hover ? Theme.hover : transparent;
                         HorizontalLayout {
@@ -270,7 +270,7 @@ export component WelcomeView inherits Rectangle {
                 Text {
                     text: "Drop to play";
                     color: Theme.text;
-                    font-size: 18px;
+                    font-size: 20px;
                     horizontal-alignment: center;
                 }
             }

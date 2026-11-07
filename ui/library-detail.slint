@@ -12,7 +12,7 @@ import { LibraryUi, Artwork, Avatar, Badge, PlayOverlay, ProgressStrip, CardRow,
 // from the keyboard, Enter opens it and Space or Shift+Enter plays it.
 component EpisodeRow inherits Rectangle {
     in property <LibraryTrack> track;
-    property <length> thumb-width: 160px;
+    property <length> thumb-width: 176px;
     property <string> heading: root.track.number != "" ? root.track.number + ". " + root.track.title : root.track.title;
 
     height: root.thumb-width * 9 / 16 + 16px;
@@ -97,7 +97,7 @@ component EpisodeRow inherits Rectangle {
             VerticalLayout {
                 spacing: 3px;
                 HorizontalLayout {
-                    height: 18px;
+                    height: 19px;
                     spacing: 10px;
                     Text {
                         horizontal-stretch: 1;
@@ -116,7 +116,7 @@ component EpisodeRow inherits Rectangle {
                     }
                 }
                 if root.track.subtitle != "": Text {
-                    height: 15px;
+                    height: 16px;
                     text: root.track.subtitle;
                     color: Theme.secondary-text;
                     font-size: Theme.font-small;
@@ -396,7 +396,7 @@ component PersonTile inherits Rectangle {
         Text {
             y: 90px;
             width: parent.width;
-            height: 17px;
+            height: 19px;
             text: root.person.name;
             color: touch.has-hover ? Theme.icon-hover : Theme.text;
             font-size: Theme.font-normal;
@@ -404,9 +404,9 @@ component PersonTile inherits Rectangle {
             overflow: elide;
         }
         Text {
-            y: 107px;
+            y: 109px;
             width: parent.width;
-            height: 15px;
+            height: 16px;
             text: root.person.role;
             color: Theme.secondary-text;
             font-size: Theme.font-small;
@@ -669,7 +669,7 @@ export component DetailPage inherits ScrollView {
                 if !root.has-logo: Text {
                     text: Library.detail.title;
                     color: Theme.text;
-                    font-size: 26px;
+                    font-size: 28px;
                     font-weight: 700;
                     wrap: word-wrap;
                 }

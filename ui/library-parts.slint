@@ -14,7 +14,7 @@ export global LibraryUi {
     out property <length> inset: 28px;
     out property <length> card-gap: 16px;
     // The title and subtitle under a card's image.
-    out property <length> caption-height: 40px;
+    out property <length> caption-height: 44px;
 
     // Items that play by themselves or as a queue, which a double-click
     // plays rather than opens.
@@ -64,9 +64,9 @@ export global LibraryUi {
     }
 
     // A card's width for its image's shape: posters and squares about
-    // 150 px, thumbnails 240.
+    // 180 px, thumbnails 288.
     public pure function card-width(aspect: float) -> length {
-        return aspect > 1.2 ? 240px : 150px;
+        return aspect > 1.2 ? 288px : 180px;
     }
 
     // The aspect a row or grid lays its cards out at: its first card's.
@@ -548,7 +548,7 @@ export component Card inherits Rectangle {
             x: 0;
             y: root.image-height + 6px;
             width: parent.width;
-            height: 17px;
+            height: 19px;
             text: root.card.title;
             color: root.marked || keys.has-focus ? Theme.icon-hover : Theme.text;
             font-size: Theme.font-normal;
@@ -557,9 +557,9 @@ export component Card inherits Rectangle {
         }
         Text {
             x: 0;
-            y: root.image-height + 23px;
+            y: root.image-height + 25px;
             width: parent.width;
-            height: 15px;
+            height: 16px;
             text: root.card.subtitle;
             color: Theme.secondary-text;
             font-size: Theme.font-small;
@@ -806,7 +806,7 @@ export component ChoiceTabs inherits Rectangle {
                 label := Text {
                     text: choice.title;
                     color: choice.id == root.selected ? Theme.accent-text : Theme.text;
-                    font-size: 12px;
+                    font-size: 13px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }

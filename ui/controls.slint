@@ -140,7 +140,7 @@ export component ControlBar inherits Rectangle {
             y: 12px;
             text: (round(Playback.speed * 100) / 100) + "×";
             color: Theme.secondary-text;
-            font-size: 10px;
+            font-size: 11px;
         }
     }
 
@@ -175,19 +175,19 @@ export component ControlBar inherits Rectangle {
     Text {
         x: 8px;
         y: 44px;
-        width: 58px;
+        width: 64px;
         height: 18px;
         text: Format.time(seek.dragging ? seek.hover-time : Playback.position);
         color: Theme.secondary-text;
-        font-size: 12px;
+        font-size: 13px;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
 
     seek := SeekBar {
-        x: 70px;
+        x: 76px;
         y: 44px;
-        width: root.width - 140px;
+        width: root.width - 152px;
         position: Playback.position;
         duration: Playback.duration;
         cache-end: Playback.cache-end;
@@ -202,13 +202,13 @@ export component ControlBar inherits Rectangle {
     }
 
     Text {
-        x: root.width - 66px;
+        x: root.width - 72px;
         y: 44px;
-        width: 58px;
+        width: 64px;
         height: 18px;
         text: Playback.duration <= 0 ? "--:--" : Prefs.show-remaining-time ? "-" + Format.time(Playback.duration - Playback.position) : Format.time(Playback.duration);
         color: Theme.secondary-text;
-        font-size: 12px;
+        font-size: 13px;
         horizontal-alignment: center;
         vertical-alignment: center;
 
@@ -261,14 +261,14 @@ export component SeekPreview inherits Rectangle {
         Text {
             text: Format.time(root.time);
             color: Theme.text;
-            font-size: 12px;
+            font-size: 13px;
             horizontal-alignment: center;
             min-width: 44px;
         }
         if Playback.preview-chapter != "": Text {
             text: Playback.preview-chapter;
             color: Theme.secondary-text;
-            font-size: 10px;
+            font-size: 11px;
             horizontal-alignment: center;
             overflow: elide;
             max-width: Prefs.thumbnail-width;

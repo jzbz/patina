@@ -38,7 +38,7 @@ component Entry inherits Rectangle {
     callback clicked;
     callback double-clicked;
     callback right-clicked(length, length);
-    height: 44px;
+    height: 48px;
     border-radius: Theme.control-radius;
     background: root.selected ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
 
@@ -117,8 +117,8 @@ export component HistoryWindow inherits Window {
     title: "Playback History";
     icon: @image-url("icons/patina.svg");
     background: #1c1c1e;
-    preferred-width: 760px;
-    preferred-height: 560px;
+    preferred-width: 820px;
+    preferred-height: 600px;
     min-width: 520px;
     min-height: 340px;
     default-font-family: Theme.font-family;

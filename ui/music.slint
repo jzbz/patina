@@ -359,7 +359,7 @@ export component MusicPanel inherits Rectangle {
         Text {
             x: 4px;
             y: 44px;
-            width: 52px;
+            width: 58px;
             height: 18px;
             text: Format.time(seek.dragging ? seek.hover-time : Playback.position);
             color: Theme.secondary-text;
@@ -369,9 +369,9 @@ export component MusicPanel inherits Rectangle {
         }
 
         seek := SeekBar {
-            x: 60px;
+            x: 64px;
             y: 44px;
-            width: root.width - 120px;
+            width: root.width - 128px;
             position: Playback.position;
             duration: Playback.duration;
             cache-end: Playback.cache-end;
@@ -384,9 +384,9 @@ export component MusicPanel inherits Rectangle {
         }
 
         Text {
-            x: root.width - 56px;
+            x: root.width - 62px;
             y: 44px;
-            width: 52px;
+            width: 58px;
             height: 18px;
             text: Playback.duration <= 0 ? "--:--" : Prefs.show-remaining-time ? "-" + Format.time(Playback.duration - Playback.position) : Format.time(Playback.duration);
             color: Theme.secondary-text;
