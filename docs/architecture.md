@@ -228,6 +228,24 @@ none; a player's state changes all the time (tracks and chapters as a file
 plays), which left submenus empty where Slint draws the menus itself, as on
 Linux. The copies don't change while the menu is open.
 
+The library's and the YouTube section's lists are ListViews, which make only
+the rows in sight, and go back to where a page was scrolled to
+(`Library.scroll-offset`, `YouTube.scroll-offset`) as the page shows again
+and its rows arrive. A ListView doesn't know its rows' heights, and places
+itself from the average height of those it has made: with rows of different
+heights (a search's headings, channels and lines of videos; Home's shelves
+of posters and of thumbnails) each set of rows has another average, so a
+list put at a place moves itself elsewhere, and its content-y is an
+estimate. A list is therefore put back only a few times after it has moved
+itself (`follow()` in each), and then left near the place. Put back every
+time, as before, it moved on every frame: Slint gave up after ten rounds of
+change handlers, logging "long callback/instantiation chain detected" each
+time, the rows and their cards were made anew under the pointer, so that a
+card's … button lost its click and its menu went with the card it came from
+(on Windows, a native menu stayed open, and its Download did nothing), and
+the settle timer, restarted each time, never ended the restoring.
+`backend::testing::count_long_chains` counts that message in tests.
+
 ## Music mode
 
 IINA's mini player is a window of its own that the player's one video view

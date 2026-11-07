@@ -226,6 +226,10 @@ component LineList inherits VerticalLayout {
     // user scrolls, it records where it is.
     property <int> settled: -1;
     property <bool> in-place;
+    // The times the list was put back where scroll-offset says and moved
+    // away again by itself, while it had undone-for lines (see follow()).
+    property <int> undone;
+    property <int> undone-for: -1;
 
     init => {
         if root.width > 0 {
@@ -271,6 +275,34 @@ component LineList inherits VerticalLayout {
                     settle-timer.running = true;
                 }
             }
+            // Follows the list as its height or place changes while it goes
+            // where scroll-offset says. Moved away by itself (its rows were
+            // replaced), it is put back, but only a few times for as many
+            // lines: a ListView places itself from the average height of the
+            // rows it has made, and as a search's headings, channels and
+            // lines of videos differ in height, a different set of rows has
+            // another average, and each place it was put moved it on to
+            // another. Put back each time, it moved on every frame, made its
+            // cards anew under the pointer, so that their menus took no
+            // clicks, and restarted the settle-timer before it could fire.
+            // Then it stays near the place, until more lines come, a resize,
+            // or the user scrolls.
+            function follow() {
+                if YouTubeUi.placed(self.content-y, self.content-height, self.visible-height) {
+                    self.check-place();
+                } else {
+                    if root.undone-for != YouTube.lines.length {
+                        root.undone-for = YouTube.lines.length;
+                        root.undone = 0;
+                    }
+                    if root.undone < 3 {
+                        root.undone += 1;
+                        self.restore();
+                    } else {
+                        root.in-place = false;
+                    }
+                }
+            }
             // Tells the controller what of the list is in sight, so that the
             // lines far from it give up their images. It has the heights of
             // the lines below, which it needs to tell which are there: on the
@@ -293,11 +325,12 @@ component LineList inherits VerticalLayout {
                 self.report-lines();
             }
             changed loads => {
+                root.undone-for = -1;
                 self.restore();
             }
             changed content-height => {
                 if root.settled != YouTube.loads {
-                    self.restore();
+                    self.follow();
                 }
                 self.report-lines();
             }
@@ -309,12 +342,7 @@ component LineList inherits VerticalLayout {
             }
             changed content-y => {
                 if root.settled != YouTube.loads {
-                    if YouTubeUi.placed(self.content-y, self.content-height, self.visible-height) {
-                        self.check-place();
-                    } else {
-                        // The list moved itself (its rows were replaced).
-                        self.restore();
-                    }
+                    self.follow();
                 } else if self.content-height > 0 {
                     YouTube.scroll-offset = -self.content-y;
                 }

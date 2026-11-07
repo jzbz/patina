@@ -3291,4 +3291,103 @@ mod tests {
         session.save_video(video("aaaaaaaaaaa", "From Elsewhere"));
         assert_eq!(titles(&controller), ["From Elsewhere"]);
     }
+
+    /// Back to a page of lines of different heights (a search's headings,
+    /// channels and lines of videos), scrolled down, the list goes near where
+    /// it was and then stays still. A ListView with rows of different heights
+    /// places itself from their average, which changes with the rows it makes:
+    /// put back each time it moved itself, it moved again, on every frame, so
+    /// Slint logged "long callback/instantiation chain" and every card was made
+    /// anew under the pointer, whose menus then took no clicks. At rest, a
+    /// frame changes nothing, and the list tells nothing more of what is in
+    /// sight. Lines of one height still go exactly where they were.
+    #[test]
+    fn a_list_of_mixed_lines_comes_to_rest_where_it_was() {
+        use crate::backend::testing::{count_long_chains, frame};
+        use slint::LogicalSize;
+        i_slint_backend_testing::init_no_event_loop();
+        let long_chains = count_long_chains();
+        let window = PlayerWindow::new().unwrap();
+        window.window().set_size(LogicalSize::new(1280.0, 752.0));
+        let youtube = window.global::<YouTube>();
+        let sights = Rc::new(RefCell::new(Vec::new()));
+        let seen = sights.clone();
+        youtube.on_lines_shown(move |sight| seen.borrow_mut().push(sight));
+        let heading = |title: &str| YouTubeLine {
+            id: title.into(),
+            kind: "heading".into(),
+            title: title.into(),
+            ..Default::default()
+        };
+        let videos = |line: usize| {
+            let cards: Vec<YouTubeCard> = (0..4)
+                .map(|column| YouTubeCard {
+                    id: format!("v{line}{column}").into(),
+                    title: format!("Video {line}.{column}").into(),
+                    progress: -1.0,
+                    ..Default::default()
+                })
+                .collect();
+            YouTubeLine {
+                id: format!("videos {line}").into(),
+                kind: "videos".into(),
+                cards: ModelRc::new(VecModel::from(cards)),
+                ..Default::default()
+            }
+        };
+        let mut search = vec![heading("Channels")];
+        search.extend((0..5).map(|n| YouTubeLine {
+            id: format!("channel {n}").into(),
+            kind: "channel".into(),
+            channel: YouTubeChannel {
+                id: format!("UC{n:022}").into(),
+                title: format!("Channel {n}").into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        search.push(heading("Videos"));
+        search.extend((0..8).map(videos));
+        let saved: Vec<YouTubeLine> = (0..8).map(videos).collect();
+        window.show().unwrap();
+        for (page, lines) in [("search", search), ("saved", saved)] {
+            youtube.set_page(page.into());
+            youtube.set_nav_current(page.into());
+            youtube.set_lines(ModelRc::new(VecModel::from(lines)));
+            let mut moving = Vec::new();
+            let mut misplaced = Vec::new();
+            for step in 0..=40 {
+                let offset = step as f32 * 40.0;
+                // Playing takes the section away; it is made again when
+                // playback stops, with the page's list where it was
+                // scrolled to.
+                youtube.set_shown(false);
+                frame(window.window());
+                youtube.set_scroll_offset(offset);
+                youtube.set_shown(true);
+                long_chains.set(0);
+                frame(window.window());
+                let rest = sights.borrow().last().cloned().unwrap();
+                sights.borrow_mut().clear();
+                for _ in 0..3 {
+                    frame(window.window());
+                }
+                if long_chains.get() > 0 || !sights.borrow().is_empty() {
+                    moving.push((offset, long_chains.get(), sights.borrow().len()));
+                }
+                // As far as the lines reach: the last screenful.
+                let place = offset.min(8.0 * rest.videos - (rest.bottom - rest.top));
+                if page == "saved" && (rest.top - place).abs() > 1.0 {
+                    misplaced.push((offset, rest.top));
+                }
+            }
+            assert!(
+                moving.is_empty(),
+                "{page}: still moving (offset, long chains in four frames, reports in \
+                 the last three): {moving:?}"
+            );
+            assert!(misplaced.is_empty(), "{page}: not put back: {misplaced:?}");
+        }
+        window.hide().unwrap();
+    }
 }

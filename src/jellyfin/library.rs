@@ -5839,4 +5839,66 @@ mod tests {
             );
         }
     }
+
+    /// Back to Home after playing, scrolled down past shelves of posters and
+    /// of thumbnails, which differ in height, the list goes near where it was
+    /// and then stays still. As on the YouTube section's search
+    /// (youtube::view's a_list_of_mixed_lines_comes_to_rest_where_it_was), a
+    /// ListView of rows of different heights put back each time it moved
+    /// itself moved again on every frame, which Slint logged as a "long
+    /// callback/instantiation chain".
+    #[test]
+    fn home_of_mixed_shelves_comes_to_rest_where_it_was() {
+        use crate::backend::testing::{count_long_chains, frame};
+        use slint::LogicalSize;
+        i_slint_backend_testing::init_no_event_loop();
+        let long_chains = count_long_chains();
+        let window = PlayerWindow::new().unwrap();
+        window.window().set_size(LogicalSize::new(1280.0, 752.0));
+        let library = window.global::<Library>();
+        let rows: Vec<LibraryRow> = (0..12)
+            .map(|row| {
+                let aspect = if row % 3 == 0 { 16.0 / 9.0 } else { 2.0 / 3.0 };
+                let cards: Vec<LibraryCard> = (0..10)
+                    .map(|card| LibraryCard {
+                        id: format!("{row}-{card}").into(),
+                        kind: "movie".into(),
+                        title: format!("Item {row}.{card}").into(),
+                        aspect,
+                        progress: -1.0,
+                        ..Default::default()
+                    })
+                    .collect();
+                LibraryRow {
+                    id: format!("row {row}").into(),
+                    title: format!("Shelf {row}").into(),
+                    cards: ModelRc::new(VecModel::from(cards)),
+                }
+            })
+            .collect();
+        library.set_signed_in(true);
+        library.set_page("home".into());
+        library.set_rows(ModelRc::new(VecModel::from(rows)));
+        window.show().unwrap();
+        let mut moving = Vec::new();
+        for step in 0..=40 {
+            let offset = step as f32 * 40.0;
+            library.set_shown(false);
+            frame(window.window());
+            library.set_scroll_offset(offset);
+            library.set_shown(true);
+            long_chains.set(0);
+            for _ in 0..4 {
+                frame(window.window());
+            }
+            if long_chains.get() > 0 {
+                moving.push((offset, long_chains.get()));
+            }
+        }
+        window.hide().unwrap();
+        assert!(
+            moving.is_empty(),
+            "still moving (offset and long chains in four frames): {moving:?}"
+        );
+    }
 }

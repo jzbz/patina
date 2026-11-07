@@ -282,6 +282,10 @@ component HomePage inherits VerticalLayout {
     // moment, or the user scrolls, it records where it is.
     property <int> settled: -1;
     property <bool> in-place;
+    // The times the list was put back where scroll-offset says and moved
+    // away again by itself, while it had undone-for rows (see follow()).
+    property <int> undone;
+    property <int> undone-for: -1;
     settle-timer := Timer {
         interval: 250ms;
         running: false;
@@ -315,10 +319,36 @@ component HomePage inherits VerticalLayout {
                     settle-timer.running = true;
                 }
             }
+            // Follows the list as its height or place changes while it
+            // goes where scroll-offset says. Moved away by itself (its rows
+            // were replaced), it is put back, but only a few times for as
+            // many rows: a ListView places itself from the average height
+            // of the rows it has made, so with rows of different heights
+            // (shelves of posters and of thumbnails) each place it was put
+            // could move it on to another, on every frame (see LineList's
+            // follow() in youtube.slint). Then it stays near the place,
+            // until more rows come, a resize, or the user scrolls.
+            function follow() {
+                if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
+                    self.check-place();
+                } else {
+                    if root.undone-for != Library.rows.length {
+                        root.undone-for = Library.rows.length;
+                        root.undone = 0;
+                    }
+                    if root.undone < 3 {
+                        root.undone += 1;
+                        self.restore();
+                    } else {
+                        root.in-place = false;
+                    }
+                }
+            }
             init => {
                 self.restore();
             }
             changed loads => {
+                root.undone-for = -1;
                 self.restore();
             }
             changed busy => {
@@ -328,7 +358,7 @@ component HomePage inherits VerticalLayout {
             }
             changed content-height => {
                 if root.settled != Library.loads {
-                    self.restore();
+                    self.follow();
                 }
             }
             changed visible-height => {
@@ -338,12 +368,7 @@ component HomePage inherits VerticalLayout {
             }
             changed content-y => {
                 if root.settled != Library.loads {
-                    if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
-                        self.check-place();
-                    } else {
-                        // The list moved itself (its rows were replaced).
-                        self.restore();
-                    }
+                    self.follow();
                 } else if self.content-height > 0 {
                     Library.scroll-offset = -self.content-y;
                 }
@@ -457,6 +482,10 @@ component GridPage inherits VerticalLayout {
     // moment, or the user scrolls, it records where it is.
     property <int> settled: -1;
     property <bool> in-place;
+    // The times the list was put back where scroll-offset says and moved
+    // away again by itself, while it had undone-for rows (see follow()).
+    property <int> undone;
+    property <int> undone-for: -1;
     settle-timer := Timer {
         interval: 250ms;
         running: false;
@@ -577,11 +606,37 @@ component GridPage inherits VerticalLayout {
                     settle-timer.running = true;
                 }
             }
+            // Follows the list as its height or place changes while it
+            // goes where scroll-offset says. Moved away by itself (its rows
+            // were replaced), it is put back, but only a few times for as
+            // many rows: a ListView places itself from the average height
+            // of the rows it has made, so with rows of different heights
+            // (shelves of posters and of thumbnails) each place it was put
+            // could move it on to another, on every frame (see LineList's
+            // follow() in youtube.slint). Then it stays near the place,
+            // until more rows come, a resize, or the user scrolls.
+            function follow() {
+                if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
+                    self.check-place();
+                } else {
+                    if root.undone-for != Library.rows.length {
+                        root.undone-for = Library.rows.length;
+                        root.undone = 0;
+                    }
+                    if root.undone < 3 {
+                        root.undone += 1;
+                        self.restore();
+                    } else {
+                        root.in-place = false;
+                    }
+                }
+            }
             init => {
                 self.restore();
                 self.report-lines();
             }
             changed loads => {
+                root.undone-for = -1;
                 self.restore();
             }
             changed busy => {
@@ -591,7 +646,7 @@ component GridPage inherits VerticalLayout {
             }
             changed content-height => {
                 if root.settled != Library.loads {
-                    self.restore();
+                    self.follow();
                 }
                 self.check-more();
                 self.report-lines();
@@ -605,12 +660,7 @@ component GridPage inherits VerticalLayout {
             }
             changed content-y => {
                 if root.settled != Library.loads {
-                    if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
-                        self.check-place();
-                    } else {
-                        // The list moved itself (its rows were replaced).
-                        self.restore();
-                    }
+                    self.follow();
                 } else if self.content-height > 0 {
                     Library.scroll-offset = -self.content-y;
                 }
@@ -691,6 +741,10 @@ component SearchPage inherits VerticalLayout {
     // moment, or the user scrolls, it records where it is.
     property <int> settled: -1;
     property <bool> in-place;
+    // The times the list was put back where scroll-offset says and moved
+    // away again by itself, while it had undone-for rows (see follow()).
+    property <int> undone;
+    property <int> undone-for: -1;
     settle-timer := Timer {
         interval: 250ms;
         running: false;
@@ -771,10 +825,36 @@ component SearchPage inherits VerticalLayout {
                     settle-timer.running = true;
                 }
             }
+            // Follows the list as its height or place changes while it
+            // goes where scroll-offset says. Moved away by itself (its rows
+            // were replaced), it is put back, but only a few times for as
+            // many rows: a ListView places itself from the average height
+            // of the rows it has made, so with rows of different heights
+            // (shelves of posters and of thumbnails) each place it was put
+            // could move it on to another, on every frame (see LineList's
+            // follow() in youtube.slint). Then it stays near the place,
+            // until more rows come, a resize, or the user scrolls.
+            function follow() {
+                if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
+                    self.check-place();
+                } else {
+                    if root.undone-for != Library.rows.length {
+                        root.undone-for = Library.rows.length;
+                        root.undone = 0;
+                    }
+                    if root.undone < 3 {
+                        root.undone += 1;
+                        self.restore();
+                    } else {
+                        root.in-place = false;
+                    }
+                }
+            }
             init => {
                 self.restore();
             }
             changed loads => {
+                root.undone-for = -1;
                 self.restore();
             }
             changed busy => {
@@ -784,7 +864,7 @@ component SearchPage inherits VerticalLayout {
             }
             changed content-height => {
                 if root.settled != Library.loads {
-                    self.restore();
+                    self.follow();
                 }
             }
             changed visible-height => {
@@ -794,12 +874,7 @@ component SearchPage inherits VerticalLayout {
             }
             changed content-y => {
                 if root.settled != Library.loads {
-                    if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
-                        self.check-place();
-                    } else {
-                        // The list moved itself (its rows were replaced).
-                        self.restore();
-                    }
+                    self.follow();
                 } else if self.content-height > 0 {
                     Library.scroll-offset = -self.content-y;
                 }

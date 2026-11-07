@@ -339,3 +339,41 @@ mod tests {
         assert!(kept.borrow().is_empty());
     }
 }
+
+/// For the tests that put a window through Slint's testing backend.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// Counts the times Slint, on this thread, gives up making what changed
+    /// and running change handlers after ten rounds that each changed
+    /// something, which it logs as "long callback/instantiation chain
+    /// detected" (i_slint_core's `WindowInner::ensure_tree_instantiated`):
+    /// something keeps changing, and does so again with each frame. Its other
+    /// messages still reach stderr. Call it after `init_no_event_loop`.
+    pub fn count_long_chains() -> Rc<Cell<usize>> {
+        let count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&count);
+        i_slint_core::context::with_global_context(
+            || unreachable!("the testing backend is set up first"),
+            move |context| {
+                context.set_log_message_handler(Some(Box::new(move |message| {
+                    let text = message.message_arguments().to_string();
+                    if text.contains("long callback/instantiation chain") {
+                        counted.set(counted.get() + 1);
+                    }
+                    eprintln!("{text}");
+                })));
+            },
+        )
+        .unwrap();
+        count
+    }
+
+    /// What Slint does after each event and before each frame: makes what
+    /// changed and runs the change handlers.
+    pub fn frame(window: &slint::Window) {
+        i_slint_core::window::WindowInner::from_pub(window).ensure_tree_instantiated();
+    }
+}
