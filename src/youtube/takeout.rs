@@ -9,6 +9,10 @@
 //! id is counted and skipped, and every address is built again from the id. One
 //! bad row never loses the rest.
 //!
+//! A NewPipe file comes through here too, by the same read and with the same
+//! report, and `newpipe.rs` reads it: JSON is told from CSV by what the file
+//! holds, not by its name.
+//!
 //! The names may be translated in other languages' exports, which hasn't been
 //! confirmed, so a file whose header isn't known is also accepted when its
 //! contents plainly have that shape.
@@ -18,7 +22,7 @@
 //! memory to what a list needs.
 
 use super::store::{Channel, MAX_SAVED, SavedVideo};
-use super::{ChannelId, Video, VideoId, clean_text, plausible_time};
+use super::{ChannelId, Video, VideoId, clean_text, newpipe, plausible_time};
 use std::fmt;
 use std::io::Read;
 use std::path::Path;
@@ -27,10 +31,14 @@ use std::path::Path;
 const FILE_LIMIT: u64 = 32 << 20;
 /// The most rows kept of a file: twice what the longest list can hold, which
 /// leaves room for duplicates and bad rows. Those past it count as skipped.
-const ROW_LIMIT: usize = 2 * MAX_SAVED;
+pub(super) const ROW_LIMIT: usize = 2 * MAX_SAVED;
 /// How many columns a file with an unknown header is looked at for its shape.
 /// The real ones have two or three, and each more is looked at for each row.
 const SHAPE_COLUMNS: usize = 16;
+/// The most fields kept of a row, far more than any of Google's files has.
+/// Each kept field costs more than the comma it came from, so a wrong file of
+/// one long row of commas would otherwise cost many times its size.
+const FIELD_LIMIT: usize = 32;
 
 const CHANNEL_ID: &str = "channel id";
 const CHANNEL_TITLE: &str = "channel title";
@@ -62,6 +70,8 @@ pub enum ImportError {
     /// A zip of the whole export, which has to be unpacked first.
     Archive,
     NotRecognized,
+    /// JSON, but not NewPipe's subscriptions.
+    NotNewPipe,
 }
 
 impl fmt::Display for ImportError {
@@ -76,7 +86,12 @@ impl fmt::Display for ImportError {
             ),
             Self::NotRecognized => formatter.write_str(
                 "That is not a list Patina can read. Choose subscriptions.csv \
-                 or Watch later-videos.csv from a Google export.",
+                 or Watch later-videos.csv from a Google export, or the file \
+                 NewPipe exports its subscriptions to.",
+            ),
+            Self::NotNewPipe => formatter.write_str(
+                "That JSON file is not a list Patina can read. Choose the file \
+                 NewPipe exports its subscriptions to.",
             ),
         }
     }
@@ -151,23 +166,46 @@ fn rows(text: &str) -> (Vec<Vec<String>>, usize) {
 }
 
 /// Adds the rows in `text` to `kept`, and counts those that no longer fit.
+/// It goes a field at a time, as the csv crate's reader would hold where
+/// every field of a row lies, twice over once trimmed, and a row of commas
+/// can have millions. Fields past `FIELD_LIMIT` are read and dropped, and a
+/// row with nothing before them counts as blank. Each field is trimmed as the
+/// csv crate trims, and its parser drops a byte-order mark the same way.
 fn read_records(text: &str, kept: &mut Vec<Vec<String>>, more: &mut usize) {
-    let mut reader = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .flexible(true)
-        .trim(csv::Trim::All)
-        .from_reader(text.as_bytes());
-    let mut record = csv::StringRecord::new();
-    // It reads text from memory with rows of any length, so nothing here can
-    // fail. If it did, what was read is still good.
-    while let Ok(true) = reader.read_record(&mut record) {
-        if record.iter().all(str::is_empty) {
+    let mut reader = csv_core::Reader::new();
+    let mut input = text.as_bytes();
+    let mut output = [0; 4096];
+    let mut field = Vec::new();
+    let mut row: Vec<String> = Vec::new();
+    loop {
+        let (result, read, written) = reader.read_field(input, &mut output);
+        input = &input[read..];
+        if row.len() < FIELD_LIMIT {
+            field.extend_from_slice(&output[..written]);
+        }
+        // Once the input runs out, an empty one tells the parser the text has
+        // ended, and it gives the last field and then the end.
+        let row_ends = match result {
+            csv_core::ReadFieldResult::InputEmpty | csv_core::ReadFieldResult::OutputFull => {
+                continue;
+            }
+            csv_core::ReadFieldResult::Field { record_end } => record_end,
+            csv_core::ReadFieldResult::End => break,
+        };
+        if row.len() < FIELD_LIMIT {
+            row.push(String::from_utf8_lossy(&field).trim().to_owned());
+        }
+        field.clear();
+        if !row_ends {
             continue;
         }
-        if kept.len() < ROW_LIMIT {
-            kept.push(record.iter().map(str::to_owned).collect());
+        if row.iter().all(String::is_empty) {
+            row.clear();
+        } else if kept.len() < ROW_LIMIT {
+            kept.push(std::mem::take(&mut row));
         } else {
             *more += 1;
+            row.clear();
         }
     }
 }
@@ -280,7 +318,11 @@ pub fn parse(bytes: &[u8], now: i64) -> Result<Parsed, ImportError> {
     if bytes.starts_with(b"PK\x03\x04") {
         return Err(ImportError::Archive);
     }
-    let (rows, past_the_limit) = rows(&decode(bytes));
+    let text = decode(bytes);
+    if newpipe::is_json(&text) {
+        return newpipe::parse(&text, now);
+    }
+    let (rows, past_the_limit) = rows(&text);
     let header = rows.first().ok_or(ImportError::NotRecognized)?;
     let (columns, body) = match known_columns(header) {
         Some(columns) => (columns, &rows[1..]),
@@ -634,7 +676,6 @@ mod tests {
             // Eleven-letter words with no timestamps.
             "word,other\nelevenchars,x\nabcdefghijk,y\n",
             "<?xml version=\"1.0\"?><opml></opml>",
-            "{\"subscriptions\":[]}",
         ] {
             assert_eq!(
                 parse(file.as_bytes(), NOW),
@@ -643,6 +684,22 @@ mod tests {
             );
         }
         assert_eq!(parse(b"PK\x03\x04rest", NOW), Err(ImportError::Archive));
+        assert_eq!(
+            parse(b"{\"something\":\"else\"}", NOW),
+            Err(ImportError::NotNewPipe)
+        );
+    }
+
+    /// NewPipe's file is told by what it holds, past a byte-order mark too, and
+    /// read as channels whatever it is called.
+    #[test]
+    fn a_newpipe_file_comes_through_the_same_read() {
+        let file = format!(
+            "\u{feff}  {{\"app_version\":\"0.29.1\",\"app_version_int\":1015,\"subscriptions\":[\
+             {{\"service_id\":0,\"url\":\"https://www.youtube.com/channel/{A}\",\"name\":\"One\"}},\
+             {{\"service_id\":1,\"url\":\"https://soundcloud.com/x\",\"name\":\"Two\"}}]}}"
+        );
+        assert_eq!(channels(file.as_bytes()), (vec![pair(A, "One")], 1));
     }
 
     /// `playlists.csv` lies beside the lists. A title of eleven letters must
@@ -703,6 +760,20 @@ mod tests {
         let (rows, skipped) = channels(file.as_bytes());
         assert_eq!(rows, [pair(A, "y")]);
         assert_eq!(skipped, 1);
+    }
+
+    /// A row is kept to its first fields however wide it is, which keeps a
+    /// file of commas to what its few fields need.
+    #[test]
+    fn a_row_of_endless_commas_keeps_only_its_first_fields() {
+        let commas = ",".repeat(1 << 20);
+        let text = format!("Channel Id,Channel Url,Channel Title{commas}\n{A},,y{commas}\n");
+        let (kept, more) = rows(&text);
+        assert_eq!(more, 0);
+        assert!(kept.iter().all(|row| row.len() == FIELD_LIMIT));
+        let (rows, skipped) = channels(text.as_bytes());
+        assert_eq!(rows, [pair(A, "y")]);
+        assert_eq!(skipped, 0);
     }
 
     #[test]

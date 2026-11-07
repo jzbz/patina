@@ -14,6 +14,7 @@
 
 pub mod client;
 pub mod feed;
+pub mod newpipe;
 pub mod playing;
 pub mod rss;
 pub mod session;

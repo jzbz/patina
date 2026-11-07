@@ -25,7 +25,8 @@ In the first version:
   with Clear History.
 - **Downloads.** From cards, through the Downloads window, into the
   Preferences download folder.
-- **Import and export.** Both lists, in the files Google's data export uses.
+- **Import and export.** Both lists, in the files Google's data export uses,
+  and the channels in the file NewPipe exports its subscriptions to.
 
 Not in it: an account or sign-in of any kind, Google's official API, browser
 cookies, servers of other YouTube front ends, any request of Patina's own
@@ -159,11 +160,12 @@ privacy page has to agree with this section (see development.md).
 | `rss.rs` | Reading a channel feed, as a `Source`. |
 | `ytdlp.rs` | Running yt-dlp: listings as a `Source`, search, resolving a channel, a video's details, its version and age, and its errors by name. |
 | `client.rs` | Plain requests to YouTube's hosts and no others, for feeds and pictures. |
-| `takeout.rs` | Reading and writing Google's files. |
+| `takeout.rs` | Reading and writing Google's files, and telling NewPipe's apart. |
+| `newpipe.rs` | Reading and writing NewPipe's subscriptions file. |
 | `session.rs` | The app-wide state on the interface thread: the store, the feed, the threads requests run on, the picture cache, notices, and the player's history as the History page reads it. Windows follow it as `Listener`s. |
 | `view.rs` | `YouTubeController`, one per window: pages, cards, images near the screen, messages. It fills the `YouTube` global. |
 | `playing.rs` | Time seen, where a video picks up, which part of a list plays, and the default quality. |
-| `fixtures/` | Made-up XML, JSON and error text for the tests. |
+| `fixtures/` | Made-up XML, JSON and error text for the tests, NewPipe files among them. |
 
 `ui/youtube.slint` draws the bar, the message under it and the pages,
 `ui/youtube-card.slint` the cards and channel rows, and
@@ -221,7 +223,9 @@ otherwise look like a video.
 
 Nothing can stop a read once it has begun, so a wrong file has to be quick.
 Rows past 40,000 are only counted, as skipped, which keeps it to seconds and
-the memory to what a list needs.
+the memory to what a list needs. The CSV is read a field at a time, and only
+a row's first 32 fields are kept, so a wrong file of one long row of commas
+costs no more than a list either.
 
 **Nothing in a file is trusted.** A channel's id is `UC` and 22 id
 characters, a video's 11 of them, and that can begin with `-`. Every address
@@ -247,11 +251,38 @@ or two time limits in a row stop the fetching, which picks up the next time
 the section opens. It also stops when a video starts playing, since the two
 count against the same limit on a guest, and is taken up again on coming back.
 
+**NewPipe's file.** Import takes the JSON file NewPipe exports its
+subscriptions to through the same button, the same read and the same report.
+It is told from CSV by what it holds, a brace or bracket first, and not by its
+name. It always means channels: NewPipe has no form of Watch Later here. Its
+`app_version` fields are ignored, as NewPipe itself ignores them, and a JSON
+file without a `subscriptions` list is refused as not NewPipe's. Each entry's
+`service_id` must be 0, NewPipe's number for YouTube; SoundCloud, PeerTube,
+Bandcamp and media.ccc.de entries are counted as skipped. Only a `url` with the
+channel's id in it can be used: `/channel/UC…` on `youtube.com`, `www.`, `m.`
+or `music.`, over http or https or with no scheme at all, with any slash or
+query after, or the id alone. It is read as an address typed into Patina is,
+and only for the id. An `@handle`, `/c/` or `/user/` address would need a
+request to YouTube to become an id, and reading a file asks nobody, so those
+are skipped too, as is an entry with a missing or wrongly typed field. A
+missing name only leaves the title to be fetched. As with Google's files, the
+address is built again from the id, the name is cleaned, and entries past
+40,000 are only counted. Only an entry's three fields are kept, and anything
+else in it is stepped over, so one huge field costs no more than the file.
+
 **Writing.** Export writes the same columns: `subscriptions.csv` with
 Google's own `http://www.youtube.com/channel/<id>` addresses, and `Watch
-later-videos.csv` with the added-at time as `YYYY-MM-DDTHH:MM:SS+00:00`. It
-writes straight to the file chosen, as the sandbox's portal lets Patina at
-that file alone.
+later-videos.csv` with the added-at time as `YYYY-MM-DDTHH:MM:SS+00:00`. The
+Channels page's Export is a menu, As in a Google export (CSV) or For NewPipe
+(JSON), so the form never rests on a filter in the dialog. NewPipe's file has
+NewPipe's keys and no others, since NewPipe refuses a key it doesn't know, on
+one line: for each channel `service_id` 0, `url`
+`https://www.youtube.com/channel/<id>` and `name` its title, empty if it
+hasn't been fetched, then `app_version` `0.29.1` and `app_version_int` `1015`
+(a real release, which NewPipe doesn't check). The list comes first, as 0.29.1
+writes it; older releases put it last, and NewPipe reads the keys in any
+order, as Patina does. Export writes straight to the file chosen, as the
+sandbox's portal lets Patina at that file alone.
 
 ## The feed
 
@@ -663,6 +694,9 @@ with a handful of requests against public channels. Not yet tried:
   What they call is tested below them, and importing through the view.
 - A real export's rarer forms, and a translated one, whose header fallback
   is a guess.
+- NewPipe importing the file Patina writes, and Patina importing a file a
+  real NewPipe wrote. Both follow NewPipe's own source (0.29.1) and its test
+  file's form, but neither has been tried with the app.
 - A real feed outage end to end, a real block, and real private,
   age-restricted, region-locked and members-only videos, whose wording comes
   from research.

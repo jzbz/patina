@@ -201,15 +201,16 @@ comment are the same statement, and a change to one goes in the others.
   and `fixtures/` the tests across them.
 - `src/youtube/`: the YouTube section, with no account
   ([youtube.md](youtube.md)): `store.rs` `youtube.json`, the lists kept here;
-  `feed.rs` building and saving the feed; `rss.rs` channel feeds; `ytdlp.rs` search, listings and details from
-  yt-dlp, with its errors by name; `client.rs` requests to YouTube's hosts
-  alone; `takeout.rs` reading and writing the lists in Google's export
-  format; `session.rs` the app-wide state; `view.rs` the per-window controller
-  that fills `ui/youtube-model.slint`'s global, for `ui/youtube.slint` and
-  `ui/youtube-card.slint` to draw; `playing.rs` what goes with playing a video
-  from it, apart from the window: time seen, where it picks up, its default
-  quality; `fixtures/` the tests' answers. The tests need
-  no network or real yt-dlp: they use saved answers, a local server and a
+  `feed.rs` building and saving the feed; `rss.rs` channel feeds; `ytdlp.rs`
+  search, listings and details from yt-dlp, with its errors by name;
+  `client.rs` requests to YouTube's hosts alone; `takeout.rs` reading and
+  writing the lists in Google's export format, and `newpipe.rs` the channels
+  in NewPipe's; `session.rs` the app-wide state; `view.rs` the per-window
+  controller that fills `ui/youtube-model.slint`'s global, for
+  `ui/youtube.slint` and `ui/youtube-card.slint` to draw; `playing.rs` what
+  goes with playing a video from it, apart from the window: time seen, where
+  it picks up, its default quality; `fixtures/` the tests' answers. The tests
+  need no network or real yt-dlp: they use saved answers, a local server and a
   stand-in script.
 - `src/probe.rs`: playlist durations and tags from a headless mpv core.
 - `src/playlist.rs`: playlist selection, multi-row moves, series-prefix

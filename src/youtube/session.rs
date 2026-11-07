@@ -11,6 +11,7 @@
 
 use super::client::Client;
 use super::feed::{self, ChannelState, Limits, Outcome, Refused, SavedFeed, Source};
+use super::newpipe;
 use super::playing::{self, Seen};
 use super::rss::RssSource;
 use super::store::{Added, Channel, Mark, SavedVideo, Store};
@@ -81,6 +82,17 @@ pub trait Listener {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListKind {
     Subscriptions,
+    WatchLater,
+}
+
+/// A file a list can be written as. Watch Later has no NewPipe form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFile {
+    /// `subscriptions.csv`, as Google's export has it.
+    Subscriptions,
+    /// The channels as the file NewPipe exports its subscriptions to.
+    NewPipe,
+    /// `Watch later-videos.csv`.
     WatchLater,
 }
 
@@ -1352,13 +1364,14 @@ impl Session {
     /// alone, with no room for a temporary one beside it.
     pub fn export(
         &self,
-        kind: ListKind,
+        file: ExportFile,
         path: &Path,
         done: impl FnOnce(Result<(), String>) + 'static,
     ) {
-        let bytes = match kind {
-            ListKind::Subscriptions => takeout::write_subscriptions(self.store().channels()),
-            ListKind::WatchLater => takeout::write_watch_later(self.store().saved()),
+        let bytes = match file {
+            ExportFile::Subscriptions => takeout::write_subscriptions(self.store().channels()),
+            ExportFile::NewPipe => newpipe::write_subscriptions(self.store().channels()),
+            ExportFile::WatchLater => takeout::write_watch_later(self.store().saved()),
         };
         let path = path.to_owned();
         on_worker(
@@ -2211,6 +2224,130 @@ mod tests {
         assert_eq!(working(&folder).channels().len(), 2);
     }
 
+    /// A NewPipe file goes the same way as Google's, whatever it is called:
+    /// the same counts, and only the new channel fetched.
+    #[test]
+    fn importing_a_newpipe_file_counts_adds_and_fetches() {
+        let folder = Folder::new("import-newpipe");
+        let first = Stub::working();
+        let session = session_with(&folder, first.clone(), Stub::working());
+        let prefs = Preferences::default();
+        session.subscribe(&prefs, info(B));
+        let before = first.calls();
+        let path = write_list(
+            &folder,
+            "newpipe_subscriptions_202611061200.txt",
+            &format!(
+                r#"{{"app_version":"0.29.1","app_version_int":1015,"subscriptions":[
+                {{"service_id":0,"url":"https://www.youtube.com/channel/{A}","name":"New"}},
+                {{"service_id":0,"url":"https://www.youtube.com/channel/{B}","name":"Already here"}},
+                {{"service_id":0,"url":"https://www.youtube.com/@handle","name":"A handle"}},
+                {{"service_id":1,"url":"https://soundcloud.com/x","name":"Not YouTube"}}]}}"#
+            ),
+        );
+        let report = Rc::new(RefCell::new(None));
+        let seen = report.clone();
+        session.import(&prefs, &path, move |answer| {
+            *seen.borrow_mut() = Some(answer)
+        });
+        assert_eq!(
+            report.borrow().clone().unwrap(),
+            Ok(ImportReport {
+                kind: ListKind::Subscriptions,
+                added: 1,
+                present: 1,
+                skipped: 2,
+            })
+        );
+        assert_eq!(first.calls(), before + 1, "only the new channel is fetched");
+        assert!(session.is_subscribed(&channel(A)));
+        assert_eq!(working(&folder).channels().len(), 2);
+    }
+
+    #[test]
+    fn json_that_is_not_newpipes_changes_nothing() {
+        let folder = Folder::new("import-json");
+        let session = working(&folder);
+        let path = write_list(&folder, "subscriptions.json", r#"{"channels":[]}"#);
+        let report = Rc::new(RefCell::new(None));
+        let seen = report.clone();
+        session.import(&Preferences::default(), &path, move |answer| {
+            *seen.borrow_mut() = Some(answer);
+        });
+        assert_eq!(
+            report.borrow().clone().unwrap(),
+            Err(ImportError::NotNewPipe)
+        );
+        assert!(session.channels().is_empty());
+        assert!(!folder.paths().youtube_file().exists());
+    }
+
+    /// Channels go out as NewPipe's file and come back the same, into a
+    /// session that had none of them.
+    #[test]
+    fn a_newpipe_export_reads_back_in() {
+        let folder = Folder::new("export-newpipe");
+        let session = session_with(
+            &folder,
+            Stub::failing(Failure::NotFeed),
+            Stub::failing(Failure::Failed),
+        );
+        let prefs = Preferences {
+            ytdl: false,
+            ..Default::default()
+        };
+        let read = write_list(
+            &folder,
+            "subscriptions.csv",
+            &format!(
+                "Channel Id,Channel Url,Channel Title\n\
+                 {A},http://www.youtube.com/channel/{A},\"A, with \"\"quotes\"\"\"\n\
+                 {B},http://www.youtube.com/channel/{B},Ünïcode\n"
+            ),
+        );
+        session.import(&prefs, &read, |answer| assert!(answer.is_ok()));
+        let target = folder.0.join("newpipe.json");
+        session.export(ExportFile::NewPipe, &target, |answer| {
+            assert_eq!(answer, Ok(()))
+        });
+        let written = std::fs::read_to_string(&target).unwrap();
+        assert!(
+            written.starts_with(r#"{"subscriptions":[{"service_id":0,"#)
+                && written.ends_with(r#"],"app_version":"0.29.1","app_version_int":1015}"#),
+            "{written}"
+        );
+
+        let other = Folder::new("export-newpipe-other");
+        let again = session_with(
+            &other,
+            Stub::failing(Failure::NotFeed),
+            Stub::failing(Failure::Failed),
+        );
+        let report = Rc::new(RefCell::new(None));
+        let seen = report.clone();
+        again.import(&prefs, &target, move |answer| {
+            *seen.borrow_mut() = Some(answer)
+        });
+        assert_eq!(
+            report.borrow().clone().unwrap().unwrap(),
+            ImportReport {
+                kind: ListKind::Subscriptions,
+                added: 2,
+                present: 0,
+                skipped: 0,
+            }
+        );
+        let titles = |session: &Session| -> Vec<(String, String)> {
+            session
+                .channels()
+                .into_iter()
+                .map(|channel| (channel.id.as_str().to_owned(), channel.title))
+                .collect()
+        };
+        assert_eq!(titles(&again), titles(&session));
+        assert_eq!(titles(&again)[0].1, "A, with \"quotes\"");
+    }
+
     #[test]
     fn a_file_that_is_not_a_list_changes_nothing() {
         let folder = Folder::new("import-bad");
@@ -2253,16 +2390,16 @@ mod tests {
         let read = write_list(&folder, "watch-later.csv", watch_later);
         session.import(&prefs, &read, |answer| assert!(answer.is_ok()));
         let target = folder.0.join("exported.csv");
-        session.export(ListKind::Subscriptions, &target, |answer| {
+        session.export(ExportFile::Subscriptions, &target, |answer| {
             assert_eq!(answer, Ok(()))
         });
         assert_eq!(std::fs::read_to_string(&target).unwrap(), subscriptions);
-        session.export(ListKind::WatchLater, &target, |answer| {
+        session.export(ExportFile::WatchLater, &target, |answer| {
             assert_eq!(answer, Ok(()))
         });
         assert_eq!(std::fs::read_to_string(&target).unwrap(), watch_later);
         let nowhere = folder.0.join("no").join("such").join("folder.csv");
-        session.export(ListKind::WatchLater, &nowhere, |answer| {
+        session.export(ExportFile::WatchLater, &nowhere, |answer| {
             assert!(answer.is_err())
         });
     }

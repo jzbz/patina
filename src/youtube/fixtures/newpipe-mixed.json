@@ -1,0 +1,30 @@
+{
+  "app_version": "0.28.0",
+  "app_version_int": 1002,
+  "subscriptions": [
+    {"service_id": 0, "url": "https://www.youtube.com/channel/UCq3Zr1Lw8NfTb5Yx0Ck2HmA", "name": "Kettle and Kiln"},
+    {"service_id": 1, "url": "https://soundcloud.com/made-up-artist", "name": "A SoundCloud artist"},
+    {"service_id": 0, "url": "http://www.youtube.com/channel/UC7pDs0Wn4JcXe2Ty9Rb6LuQ", "name": "Plain http"},
+    {"service_id": 3, "url": "https://peertube.example/video-channels/made_up", "name": "A PeerTube channel"},
+    {"service_id": 0, "url": "https://youtube.com/channel/UCm9Hf2Kq5VbZa8Ls1Nd4WxE/?si=abc", "name": "No www, a slash and a query"},
+    {"service_id": 4, "url": "https://madeup.bandcamp.com/", "name": "A Bandcamp artist"},
+    {"service_id": 2, "url": "https://media.ccc.de/c/madeup", "name": "A media.ccc.de conference"},
+    {"service_id": 0, "url": "https://m.youtube.com/channel/UC0xYt6Gr3PlQw9Ec2Mv5KjS", "name": "Mobile"},
+    {"service_id": 1, "url": "https://www.youtube.com/channel/UCq3Zr1Lw8NfTb5Yx0Ck2HmA", "name": "YouTube's address, another service"},
+    {"service_id": 0, "url": "https://www.youtube.com/@kettleandkiln", "name": "A handle"},
+    {"service_id": 0, "url": "https://www.youtube.com/c/KettleAndKiln", "name": "A custom name"},
+    {"service_id": 0, "url": "https://www.youtube.com/user/kettleandkiln", "name": "A user name"},
+    {"service_id": 0, "url": "https://www.youtube.com/channel/UCe4Nw7Bt1KsRy3Pz6Fh0GcD"},
+    {"service_id": 0, "url": "https://evil.example/channel/UCq3Zr1Lw8NfTb5Yx0Ck2HmA", "name": "Another host"},
+    {"service_id": 0, "url": "https://www.youtube.com/channel/UC-too-short", "name": "A bad id"},
+    {"service_id": 0, "url": "https://www.youtube.com/watch?v=abcdefghijk", "name": "A video"},
+    {"service_id": 0, "url": "https://www.youtube.com/channel/UCj8Ux2Lm5QdWv0Ha3Tn7YbK", "name": 42},
+    {"service_id": "0", "url": "https://www.youtube.com/channel/UCq3Zr1Lw8NfTb5Yx0Ck2HmA", "name": "A number as text"},
+    {"url": "https://www.youtube.com/channel/UCq3Zr1Lw8NfTb5Yx0Ck2HmA", "name": "No service"},
+    {"service_id": 0, "name": "No address"},
+    {"service_id": 0, "url": 7, "name": "An address that is a number"},
+    {"service_id": 0, "url": "https://www.youtube.com/channel/UCr1Gk4Sy7XcBn2Me5Pq9VwZ", "name": "a\u202eb\u001bc", "extra": [1, 2]},
+    "not an entry",
+    null
+  ]
+}

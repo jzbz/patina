@@ -3778,6 +3778,7 @@ dependencies = [
  "block2 0.6.2",
  "blurhash",
  "csv",
+ "csv-core",
  "ctrlc",
  "directories",
  "env_logger",

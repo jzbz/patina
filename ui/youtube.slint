@@ -407,6 +407,41 @@ component EmptyNotice inherits Flickable {
     }
 }
 
+// The channels' two files, named in the menu, so that which one is written
+// never rests on a filter in the dialog. The button looks like Import… beside
+// it.
+component ExportMenu inherits Rectangle {
+    height: 28px;
+    min-width: button.min-width;
+    preferred-width: button.preferred-width;
+
+    button := KeyButton {
+        width: parent.width;
+        text: "Export…";
+        clicked => {
+            menu.show({ x: 0, y: root.height + 4px });
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            MenuItem {
+                title: "As in a Google export (CSV)…";
+                activated => {
+                    YouTube.export("subscriptions");
+                }
+            }
+            MenuItem {
+                title: "For NewPipe (JSON)…";
+                activated => {
+                    YouTube.export("newpipe");
+                }
+            }
+        }
+    }
+}
+
 // How many are on the list, that it is Patina's own, and its files. The words
 // go on a line of their own when they wouldn't fit beside the buttons, except
 // in a short window, which needs the room more.
@@ -454,7 +489,8 @@ component ListHeader inherits VerticalLayout {
                 YouTube.import();
             }
         }
-        KeyButton {
+        if root.list == "subscriptions": ExportMenu { }
+        if root.list != "subscriptions": KeyButton {
             text: "Export…";
             clicked => {
                 YouTube.export(root.list);

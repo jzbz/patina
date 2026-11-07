@@ -8,7 +8,7 @@
 
 use super::feed::ChannelState;
 use super::playing;
-use super::session::{Change, ImportReport, ListKind, Listener, Session, ToolState};
+use super::session::{Change, ExportFile, ImportReport, ListKind, Listener, Session, ToolState};
 use super::store::Channel;
 use super::ytdlp::SearchResults;
 use super::{Cancel, ChannelId, ChannelInfo, Error, Failure, Live, Video, VideoId};
@@ -620,9 +620,9 @@ impl YouTubeController {
             Page::Feed => {
                 youtube.set_status(self.status().into());
                 if channels == 0 {
-                    empty = "Add the channels you follow, or import them from a Google export, \
-                             and their new videos show up here. There is no account: they are \
-                             Patina's own list, and they don't appear on YouTube."
+                    empty = "Add the channels you follow, or import them from a Google export \
+                             or NewPipe, and their new videos show up here. There is no account: \
+                             they are Patina's own list, and they don't appear on YouTube."
                         .to_owned();
                     offers_channels = true;
                     offers_import = true;
@@ -671,8 +671,8 @@ impl YouTubeController {
                     .into(),
                 );
                 empty = "Paste a channel's link or @handle above, or import subscriptions.csv \
-                         from a Google export. Channels are Patina's own list, and they don't \
-                         appear on YouTube."
+                         from a Google export or the file NewPipe exports. Channels are \
+                         Patina's own list, and they don't appear on YouTube."
                     .to_owned();
                 offers_import = true;
             }
@@ -1890,8 +1890,8 @@ impl YouTubeController {
 
     // Files.
 
-    /// Asks for a file from a Google export, and adds what it holds to the list
-    /// its columns name.
+    /// Asks for a file from a Google export, or NewPipe's, and adds what it
+    /// holds to the list its contents name.
     fn import(&self) {
         let Some(player) = self.player.upgrade() else {
             return;
@@ -1900,8 +1900,8 @@ impl YouTubeController {
         App::with_current(|app| {
             let dialog = app
                 .dialog_for(Some(&player))
-                .set_title("Import subscriptions.csv or Watch later-videos.csv")
-                .add_filter("CSV files", &["csv"])
+                .set_title("Import subscriptions.csv, Watch later-videos.csv or a NewPipe file")
+                .add_filter("Google or NewPipe lists", &["csv", "json"])
                 .add_filter("All files", &["*"]);
             let spawned = slint::spawn_local(async move {
                 let Some(file) = dialog.pick_file().await else {
@@ -1929,29 +1929,48 @@ impl YouTubeController {
         });
     }
 
-    /// Asks where to write a list, in the form Google's export has it.
+    /// Asks where to write a list: `subscriptions` and `watch-later` in the
+    /// form Google's export has them, `newpipe` the channels as NewPipe's file.
     fn export(&self, list: &str) {
         let Some(player) = self.player.upgrade() else {
             return;
         };
-        let (kind, name) = if list == "subscriptions" {
-            (ListKind::Subscriptions, "subscriptions.csv")
-        } else {
-            (ListKind::WatchLater, "Watch later-videos.csv")
+        let (file, title, name, filter, extension) = match list {
+            "subscriptions" => (
+                ExportFile::Subscriptions,
+                "Export Channels as subscriptions.csv",
+                "subscriptions.csv",
+                "CSV files",
+                "csv",
+            ),
+            "newpipe" => (
+                ExportFile::NewPipe,
+                "Export Channels for NewPipe",
+                "newpipe_subscriptions.json",
+                "JSON files",
+                "json",
+            ),
+            _ => (
+                ExportFile::WatchLater,
+                "Export Watch Later",
+                "Watch later-videos.csv",
+                "CSV files",
+                "csv",
+            ),
         };
         let weak = self.this.clone();
         App::with_current(|app| {
             let dialog = app
                 .dialog_for(Some(&player))
-                .set_title("Export")
+                .set_title(title)
                 .set_file_name(name)
-                .add_filter("CSV files", &["csv"]);
+                .add_filter(filter, &[extension]);
             let spawned = slint::spawn_local(async move {
-                let Some(file) = dialog.save_file().await else {
+                let Some(chosen) = dialog.save_file().await else {
                     return;
                 };
                 if let Some(this) = weak.upgrade() {
-                    this.export_file(kind, file.path());
+                    this.export_file(file, chosen.path());
                 }
             });
             if let Err(error) = spawned {
@@ -1960,13 +1979,13 @@ impl YouTubeController {
         });
     }
 
-    fn export_file(&self, kind: ListKind, path: &Path) {
+    fn export_file(&self, file: ExportFile, path: &Path) {
         let weak = self.this.clone();
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.session.export(kind, path, move |answer| {
+        self.session.export(file, path, move |answer| {
             if let Some(this) = weak.upgrade() {
                 match answer {
                     Ok(()) => this.message("Exported", &name),
@@ -2860,6 +2879,37 @@ mod tests {
         assert!(youtube.get_banner_dismissable());
         controller.dismiss_banner();
         assert!(youtube.get_banner().contains("yt-dlp was not found"));
+    }
+
+    #[test]
+    fn a_newpipe_import_from_the_section_reports_the_same_way() {
+        let folder = Folder::new("import-newpipe");
+        let (window, session, controller) = section(&folder);
+        let youtube = window.global::<YouTube>();
+        controller.open();
+        let file = folder.0.join("newpipe_subscriptions.json");
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"app_version":"0.29.1","app_version_int":1015,"subscriptions":[
+                {{"service_id":0,"url":"https://www.youtube.com/channel/{A}","name":"Aard"}},
+                {{"service_id":3,"url":"https://peertube.example/c/x","name":"Elsewhere"}}]}}"#
+            ),
+        )
+        .unwrap();
+        controller.import_file(&file);
+        assert_eq!(session.channels().len(), 1);
+        assert_eq!(
+            youtube.get_banner(),
+            "Channels imported: 1 added, 0 already there, 1 skipped."
+        );
+        std::fs::write(&file, "{\"videos\":[]}").unwrap();
+        controller.import_file(&file);
+        assert!(
+            youtube.get_banner().contains("NewPipe exports"),
+            "{}",
+            youtube.get_banner()
+        );
     }
 
     #[test]
