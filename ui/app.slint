@@ -6,7 +6,7 @@ import { MainMenu } from "menus.slint";
 import { WelcomeView } from "welcome.slint";
 import { LibraryUi } from "library-parts.slint";
 import { LibraryView, Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn } from "library.slint";
-import { YouTubeView, YouTube, YouTubeCard, YouTubeChannel, YouTubeLine } from "youtube.slint";
+import { YouTubeView, YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeSight } from "youtube.slint";
 import { MusicPanel, MusicWindowButtons, DefaultArt } from "music.slint";
 import { PromptDialog, ConfirmDialog, AboutDialog, ShortcutsDialog, ShortcutItem, OnlineSubtitlesDialog, DialogSize } from "dialogs.slint";
 import { Spinner, IconButton, TextButton, Toast, ToastView } from "widgets.slint";
@@ -16,7 +16,7 @@ import { DownloadsWindow, DownloadRow } from "downloads.slint";
 import { InspectorWindow, InspectorRow } from "inspector.slint";
 
 export { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn }
-export { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine }
+export { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeSight }
 export { Theme, Platform, Playback, Media, Osd, Toast, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, LyricItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
 
 export component PlayerWindow inherits Window {
@@ -1230,6 +1230,9 @@ export component PlayerWindow inherits Window {
                 height: parent.height;
                 drop-active: root.drop-active;
                 covered: root.dialog != "";
+                clear-history => {
+                    root.dialog = "clear-youtube-history";
+                }
             }
         }
 
@@ -1554,6 +1557,23 @@ export component PlayerWindow inherits Window {
             }
             confirm => {
                 Actions.patina("clear-recent");
+                root.dialog = "";
+                keys.focus();
+            }
+        }
+
+        // The YouTube section's History is the history's YouTube videos, so
+        // they go from all of it.
+        if root.dialog == "clear-youtube-history": ConfirmDialog {
+            title: "Clear YouTube History";
+            message: "The YouTube videos played go from the section's History, from Recent and from the History window, and every YouTube video loses its watched mark and progress. Other files stay.";
+            confirm-label: "Clear";
+            cancel => {
+                root.dialog = "";
+                keys.focus();
+            }
+            confirm => {
+                YouTube.clear-history();
                 root.dialog = "";
                 keys.focus();
             }

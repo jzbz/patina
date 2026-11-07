@@ -386,7 +386,14 @@ export component VideoCard inherits Rectangle {
                     YouTube.set-watched(root.card.id, !root.card.watched);
                 }
             }
-            if root.card.channel-id != "": MenuSeparator { }
+            MenuSeparator { }
+            MenuItem {
+                title: "Copy Link";
+                activated => {
+                    LibraryUi.menu-card = "";
+                    YouTube.copy-link(root.card.id);
+                }
+            }
             if root.card.channel-id != "": MenuItem {
                 title: "Go to Channel";
                 activated => {

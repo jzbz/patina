@@ -86,9 +86,9 @@ and its state in Patina.
   them, its previews in the seek bar, and its files to download
   ([docs/jellyfin.md](docs/jellyfin.md))
 - A YouTube section, with no account and no sign-in: a feed of the channels
-  you follow, search, a Watch Later list and downloads. The lists are
-  Patina's own and don't appear on YouTube; they import from and export to
-  the files of Google's data export
+  you follow, search, a Watch Later list, the videos played and downloads.
+  The lists are Patina's own and don't appear on YouTube; they import from
+  and export to the files of Google's data export
   ([docs/youtube.md](docs/youtube.md))
 
 Written but not yet tested: drag and drop, playing from standard input,

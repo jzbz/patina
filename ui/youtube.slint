@@ -10,12 +10,12 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton, TextButton, Spinner } from "widgets.slint";
-import { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine } from "youtube-model.slint";
+import { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeSight } from "youtube-model.slint";
 import { LibraryUi, Avatar, Chip, KeyButton, KeyFocus, Notice, PageField } from "library-parts.slint";
 import { DropOverlay } from "library.slint";
 import { VideoCard, ChannelRow, SubscribeButton, YouTubeUi } from "youtube-card.slint";
 
-export { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine }
+export { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeSight }
 
 // An entry in the bar.
 component NavEntry inherits Rectangle {
@@ -35,7 +35,7 @@ component NavEntry inherits Rectangle {
     accessible-item-selectable: true;
     accessible-item-selected: root.current;
     accessible-item-index: root.index;
-    accessible-item-count: 4;
+    accessible-item-count: 5;
     accessible-action-default => {
         YouTubeUi.navigate(root.id);
     }
@@ -145,6 +145,11 @@ component YouTubeBar inherits HorizontalLayout {
                     id: "channels";
                     title: "Channels";
                     index: 3;
+                }
+                NavEntry {
+                    id: "history";
+                    title: "History";
+                    index: 4;
                 }
             }
         }
@@ -266,13 +271,21 @@ component LineList inherits VerticalLayout {
                     settle-timer.running = true;
                 }
             }
-            // Tells the controller which lines are in sight, so that those far
-            // from them give up their images. A heading or channel is shorter
-            // than a line of videos, which only makes this err towards fewer,
-            // within the margin the controller keeps.
+            // Tells the controller what of the list is in sight, so that the
+            // lines far from it give up their images. It has the heights of
+            // the lines below, which it needs to tell which are there: on the
+            // Channels page, every line is a channel's, a third as tall as a
+            // line of videos, and counting them as videos had pictures stop a
+            // third of the way down.
             function report-lines() {
                 if root.line-height > 0 {
-                    YouTube.lines-shown(floor(-self.content-y / root.line-height), floor((-self.content-y + self.visible-height) / root.line-height));
+                    YouTube.lines-shown({
+                        top: -self.content-y,
+                        bottom: -self.content-y + self.visible-height,
+                        videos: root.line-height,
+                        heading: YouTubeUi.heading-height,
+                        channel: YouTubeUi.channel-height,
+                    });
                 }
             }
             init => {
@@ -557,6 +570,9 @@ component SearchPage inherits VerticalLayout {
                 YouTube.search(text);
                 YouTube.scroll-offset = 0;
             }
+            edited(text) => {
+                YouTube.search-edited(text);
+            }
         }
         // Takes what the field's greatest width leaves.
         Rectangle {
@@ -598,6 +614,42 @@ component SavedPage inherits VerticalLayout {
         vertical-stretch: 1;
         if YouTube.lines.length == 0: EmptyNotice {
             symbol: @image-url("icons/clock.svg");
+        }
+    }
+}
+
+// What was played from YouTube, newest first, and a way to clear it, which a
+// dialog makes sure of first, as the clearing goes further than this page.
+component HistoryPage inherits VerticalLayout {
+    callback clear;
+    spacing: 8px;
+
+    HorizontalLayout {
+        padding-left: LibraryUi.inset;
+        padding-right: LibraryUi.inset;
+        spacing: 8px;
+        height: 28px;
+        Text {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            text: YouTube.list-note;
+            color: Theme.secondary-text;
+            font-size: Theme.font-small;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if YouTube.lines.length > 0: KeyButton {
+            text: "Clear History…";
+            clicked => {
+                root.clear();
+            }
+        }
+    }
+
+    LineList {
+        vertical-stretch: 1;
+        if YouTube.lines.length == 0: EmptyNotice {
+            symbol: @image-url("icons/history.svg");
         }
     }
 }
@@ -782,6 +834,8 @@ export component YouTubeView inherits Rectangle {
     in property <bool> drop-active;
     // A dialog over the view has the keyboard, which the view leaves it.
     in property <bool> covered;
+    // The History page's Clear History…: the window asks first.
+    callback clear-history;
     // Where the bar starts: under Patina's title bar, which is drawn over the
     // window's top.
     property <length> bar-top: Theme.titlebar-height + 6px;
@@ -894,6 +948,16 @@ export component YouTubeView inherits Rectangle {
             covered: root.covered;
             focus-view => {
                 root.take-focus();
+            }
+        }
+        if YouTube.page == "history": HistoryPage {
+            y: root.content-top;
+            height: root.content-height;
+            init => {
+                root.take-focus();
+            }
+            clear => {
+                root.clear-history();
             }
         }
         if YouTube.page == "channel": ChannelPage {

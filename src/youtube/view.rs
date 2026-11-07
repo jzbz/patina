@@ -16,7 +16,7 @@ use crate::app::App;
 use crate::jellyfin::images::Generation;
 use crate::settings::Preferences;
 use crate::window::PlayerController;
-use crate::{PlayerWindow, YouTube, YouTubeCard, YouTubeChannel, YouTubeLine};
+use crate::{PlayerWindow, YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeSight};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -53,6 +53,7 @@ enum Page {
     Search,
     Saved,
     Channels,
+    History,
     Channel(ChannelId),
 }
 
@@ -63,6 +64,7 @@ impl Page {
             Self::Search => "search",
             Self::Saved => "saved",
             Self::Channels => "channels",
+            Self::History => "history",
             Self::Channel(_) => "channel",
         }
     }
@@ -141,6 +143,66 @@ struct ChannelPage {
     working: Option<Cancel>,
 }
 
+/// What of a page's list is in sight, in logical pixels from its top, and how
+/// tall each kind of line is there (`YouTubeSight`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Sight {
+    top: f32,
+    bottom: f32,
+    videos: f32,
+    heading: f32,
+    channel: f32,
+}
+
+impl Sight {
+    fn of(sight: &YouTubeSight) -> Self {
+        Self {
+            top: sight.top,
+            bottom: sight.bottom,
+            videos: sight.videos,
+            heading: sight.heading,
+            channel: sight.channel,
+        }
+    }
+
+    /// How tall a line of this kind is, as the view draws it.
+    fn height(&self, kind: &str) -> f32 {
+        match kind {
+            "heading" => self.heading,
+            "channel" => self.channel,
+            _ => self.videos,
+        }
+    }
+
+    /// The first and last of these lines in sight, going by their heights.
+    /// Lines of videos, headings and channels differ, the last by three
+    /// times, so a count of lines can't be had from a distance alone.
+    fn lines<'a>(&self, kinds: impl Iterator<Item = &'a str>) -> (usize, usize) {
+        if self.bottom <= self.top {
+            return (0, 0);
+        }
+        let (mut first, mut last, mut count) = (None, 0, 0);
+        let mut y = 0.0;
+        for (index, kind) in kinds.enumerate() {
+            count = index + 1;
+            if y >= self.bottom && first.is_some() {
+                break;
+            }
+            let next = y + self.height(kind).max(0.0);
+            if first.is_none() && next > self.top {
+                first = Some(index);
+            }
+            if first.is_some() {
+                last = index;
+            }
+            y = next;
+        }
+        // Scrolled past them all, as a list that just got shorter can be.
+        let first = first.unwrap_or_else(|| count.saturating_sub(1));
+        (first, last.max(first))
+    }
+}
+
 /// How a list's content arrives.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fill {
@@ -166,8 +228,8 @@ pub struct YouTubeController {
     /// for smaller ones again.
     large: Cell<u32>,
     lines: Rc<VecModel<YouTubeLine>>,
-    /// The lines in sight, as the view last said.
-    shown: Cell<(usize, usize)>,
+    /// What of the list is in sight, as the view last said.
+    sight: Cell<Sight>,
     /// Where each video and channel on the page is: `(line, column)`.
     places: RefCell<HashMap<String, (usize, usize)>>,
     /// Pictures asked for since the page showed, or since they last went.
@@ -320,7 +382,7 @@ impl YouTubeController {
             columns: Cell::new(1),
             large: Cell::new(0),
             lines: Rc::new(VecModel::default()),
-            shown: Cell::new((0, 0)),
+            sight: Cell::new(Sight::default()),
             places: RefCell::new(HashMap::new()),
             asked: RefCell::new(HashSet::new()),
             avatars: RefCell::new(HashMap::new()),
@@ -362,10 +424,8 @@ impl YouTubeController {
         }
         on!(on_layout, |this, columns, width| this
             .layout(usize::try_from(columns).unwrap_or(1), width));
-        on!(on_lines_shown, |this, first, last| this.lines_shown(
-            usize::try_from(first).unwrap_or(0),
-            usize::try_from(last).unwrap_or(0)
-        ));
+        on!(on_lines_shown, |this, sight| this
+            .lines_shown(Sight::of(&sight)));
         on!(on_navigate, |this, id| this.navigate(&id));
         on!(on_back, |this| this.back());
         on!(on_play, |this, id| this.play(&id));
@@ -376,6 +436,8 @@ impl YouTubeController {
         on!(on_remove_download, |this, id| this.remove_download(&id));
         on!(on_set_watched, |this, id, watched| this
             .set_watched(&id, watched));
+        on!(on_copy_link, |this, id| this.copy_link(&id));
+        on!(on_clear_history, |this| this.session.clear_history());
         on!(on_open_channel, |this, id| this.open_channel(&id));
         on!(on_set_subscribed, |this, id, subscribed| this
             .set_subscribed(&id, subscribed));
@@ -384,6 +446,7 @@ impl YouTubeController {
             .set_show_shorts(show));
         on!(on_refresh, |this| this.session.refresh(&(this.prefs)()));
         on!(on_search, |this, text| this.search(&text));
+        on!(on_search_edited, |this, text| this.search_edited(&text));
         on!(on_add_channel, |this, text| this.add_channel(&text));
         on!(on_import, |this| this.import());
         on!(on_export, |this, list| this.export(&list));
@@ -502,6 +565,7 @@ impl YouTubeController {
             "search" => Page::Search,
             "saved" => Page::Saved,
             "channels" => Page::Channels,
+            "history" => Page::History,
             _ => Page::Feed,
         };
         let scroll = self.global().get_scroll_offset();
@@ -511,7 +575,13 @@ impl YouTubeController {
     }
 
     fn back(&self) {
+        // Back from Search is done with it: what it was looking for would
+        // arrive unseen. Going to another page of the bar keeps it coming.
+        let leaving_search = self.top() == Page::Search;
         let scroll = self.pages.borrow_mut().pop();
+        if leaving_search {
+            self.stop_search();
+        }
         match scroll {
             Some(scroll) => {
                 self.global().set_scroll_offset(scroll);
@@ -605,6 +675,27 @@ impl YouTubeController {
                          appear on YouTube."
                     .to_owned();
                 offers_import = true;
+            }
+            Page::History => {
+                // An empty page says it all in its middle.
+                let count = self.session.history().len();
+                youtube.set_list_note(if count == 0 {
+                    SharedString::new()
+                } else {
+                    format!(
+                        "{}, newest first. Patina's own history: it doesn't appear on YouTube.",
+                        plural(count, "video", "videos")
+                    )
+                    .into()
+                });
+                empty = if (self.prefs)().record_history {
+                    "Videos you play show up here, newest first. This history is Patina's \
+                     own, kept on this computer, and it doesn't appear on YouTube."
+                } else {
+                    "Patina keeps no history while Remember playback history is off in \
+                     Preferences › General."
+                }
+                .to_owned();
             }
             Page::Channel(_) => {
                 if let Some(page) = &*self.channel.borrow() {
@@ -979,6 +1070,18 @@ impl YouTubeController {
                     .map(|channel| self.channel_line(self.channel_of_list(channel, now)))
                     .collect()
             }
+            Page::History => {
+                let cards = self
+                    .history_videos()
+                    .into_iter()
+                    .map(|(video, played_at)| {
+                        self.keep_video(&video);
+                        let played = format!("Played {}", ago(now - played_at));
+                        self.card(&video, Some(played), now, &saved_ids)
+                    })
+                    .collect();
+                self.video_lines(cards)
+            }
             Page::Channel(id) => {
                 let videos = self
                     .channel
@@ -991,6 +1094,41 @@ impl YouTubeController {
         }
     }
 
+    /// The history's YouTube videos, newest first, with when each was last
+    /// played. What the lists know of one (its channel, its length) fills in
+    /// what the history doesn't keep, and their title is preferred, as the
+    /// history's can be a file's name.
+    fn history_videos(&self) -> Vec<(Video, i64)> {
+        let played = self.session.history();
+        if played.is_empty() {
+            return Vec::new();
+        }
+        let mut known: HashMap<VideoId, Video> = self
+            .session
+            .feed_videos()
+            .into_iter()
+            .map(|video| (video.id.clone(), video))
+            .collect();
+        for saved in self.session.saved() {
+            known.entry(saved.video.id.clone()).or_insert(saved.video);
+        }
+        played
+            .into_iter()
+            .map(|entry| {
+                let mut video = known
+                    .remove(&entry.id)
+                    .unwrap_or_else(|| Video::new(entry.id.clone()));
+                if video.title.is_empty() {
+                    video.title = entry.title;
+                }
+                if video.duration.is_none() && entry.duration >= 1.0 {
+                    video.duration = Some(entry.duration.round() as u64);
+                }
+                (video, entry.played_at)
+            })
+            .collect()
+    }
+
     /// Puts the page's lines in the view, and whatever else it shows.
     fn fill(&self, fill: Fill) {
         let new = self.build_lines();
@@ -1001,9 +1139,13 @@ impl YouTubeController {
             self.asked.borrow_mut().clear();
             self.places.borrow_mut().clear();
             self.lines.set_vec(new);
-            // As many in sight as before, until the view says.
-            let (first, last) = self.shown.get();
-            self.shown.set((0, last - first));
+            // As much in sight as before, from the top, until the view says.
+            let sight = self.sight.get();
+            self.sight.set(Sight {
+                top: 0.0,
+                bottom: sight.bottom - sight.top,
+                ..sight
+            });
         } else {
             self.replace_lines(new, fill);
         }
@@ -1142,17 +1284,24 @@ impl YouTubeController {
         }
     }
 
-    fn lines_shown(&self, first: usize, last: usize) {
-        let shown = (first, last.max(first));
-        if self.shown.replace(shown) != shown {
+    fn lines_shown(&self, sight: Sight) {
+        if self.sight.replace(sight) != sight {
             self.update_images();
         }
+    }
+
+    /// The first and last lines in sight.
+    fn shown(&self) -> (usize, usize) {
+        let kinds: Vec<SharedString> = self.lines.iter().map(|line| line.kind).collect();
+        self.sight
+            .get()
+            .lines(kinds.iter().map(SharedString::as_str))
     }
 
     /// Gives the lines near those in sight their pictures, and takes them from
     /// those further away.
     fn update_images(&self) {
-        let (first, last) = self.shown.get();
+        let (first, last) = self.shown();
         let margin = (last - first + 1) * IMAGE_SCREENS;
         let wanted = first.saturating_sub(margin)..last + margin + 1;
         let mut asks: Vec<(String, Option<String>)> = Vec::new();
@@ -1440,6 +1589,24 @@ impl YouTubeController {
         }
     }
 
+    /// Copies the video's address on YouTube, built again from its id rather
+    /// than taken from anything an answer said, which is the one address
+    /// anywhere in the section (`VideoId::watch_url`).
+    fn copy_link(&self, id: &str) {
+        let Some(video) = VideoId::parse(id) else {
+            return;
+        };
+        let title = self
+            .videos
+            .borrow()
+            .get(id)
+            .map(|known| known.title.clone())
+            .unwrap_or_default();
+        let url = video.watch_url();
+        App::with_current(move |app| app.set_clipboard_text(url));
+        self.message("Link Copied", &title);
+    }
+
     // Channels.
 
     fn open_channel(&self, id: &str) {
@@ -1557,6 +1724,16 @@ impl YouTubeController {
                 Err(error) => page.error = Some(error.said()),
             }
         }
+        // A followed channel keeps what its page heard, its picture above all.
+        let heard = self
+            .channel
+            .borrow()
+            .as_ref()
+            .filter(|page| page.info.id == *id && self.session.is_subscribed(id))
+            .map(|page| page.info.clone());
+        if let Some(info) = heard {
+            self.session.channel_described(&info);
+        }
         if self.top() == Page::Channel(id.clone()) {
             self.fill(Fill::InPlace);
         }
@@ -1627,26 +1804,50 @@ impl YouTubeController {
             return;
         }
         let weak = self.this.clone();
+        let cancel = Cancel::default();
         {
             let mut search = self.search.borrow_mut();
-            if let Some(cancel) = search.working.take() {
-                cancel.cancel();
+            if let Some(last) = search.working.take() {
+                last.cancel();
             }
             search.error = None;
             search.results = None;
             search.query = query.clone();
-            search.working = Some(Cancel::default());
+            search.working = Some(cancel.clone());
         }
         self.fill(Fill::Page);
         self.bump_loads();
-        let cancel = self.session.search(&(self.prefs)(), &query, move |answer| {
-            if let Some(this) = weak.upgrade() {
-                this.search_arrived(answer);
-            }
-        });
-        let mut search = self.search.borrow_mut();
-        if search.working.is_some() {
-            search.working = Some(cancel);
+        self.session
+            .search(&(self.prefs)(), &query, &cancel, move |answer| {
+                if let Some(this) = weak.upgrade() {
+                    this.search_arrived(answer);
+                }
+            });
+    }
+
+    /// The field was emptied: whatever was on its way is no longer wanted.
+    /// Text typed over the query leaves it be, as the results for the query
+    /// typed before are still wanted until Enter asks for others.
+    fn search_edited(&self, text: &str) {
+        if text.trim().is_empty() {
+            self.stop_search();
+        }
+    }
+
+    /// Stops the search on its way, if there is one, and the page goes back
+    /// to asking for one.
+    fn stop_search(&self) {
+        {
+            let mut search = self.search.borrow_mut();
+            let Some(cancel) = search.working.take() else {
+                return;
+            };
+            cancel.cancel();
+            search.query.clear();
+        }
+        if self.top() == Page::Search {
+            self.fill(Fill::Page);
+            self.bump_loads();
         }
     }
 
@@ -1873,6 +2074,11 @@ impl Listener for YouTubeController {
                 let taken = self.session.take_notices();
                 self.notes.borrow_mut().extend(taken);
                 self.update_notes();
+            }
+            Change::History => {
+                if self.top() == Page::History {
+                    self.fill(Fill::InPlace);
+                }
             }
         }
     }
@@ -2672,6 +2878,65 @@ mod tests {
         assert!(youtube.get_error().contains("yt-dlp was not found"));
     }
 
+    /// A search as it is on its way: yt-dlp runs on a thread of its own,
+    /// which the tests' session doesn't use.
+    fn searching(controller: &YouTubeController, query: &str) -> Cancel {
+        let cancel = Cancel::default();
+        {
+            let mut search = controller.search.borrow_mut();
+            search.query = query.to_owned();
+            search.results = None;
+            search.working = Some(cancel.clone());
+        }
+        controller.fill(Fill::Page);
+        cancel
+    }
+
+    /// Emptying the field stops a search on its way, and so does Back from
+    /// its page, where it would arrive unseen; text typed over the query, or
+    /// another page of the bar, leaves it coming.
+    #[test]
+    fn a_search_stops_once_it_is_no_longer_wanted() {
+        let folder = Folder::new("search-stops");
+        let (window, _session, controller) = section(&folder);
+        let youtube = window.global::<YouTube>();
+        controller.open();
+        controller.navigate("search");
+
+        let cancel = searching(&controller, "bridge");
+        assert!(youtube.get_loading());
+        youtube.invoke_search_edited("bridges".into());
+        assert!(!cancel.cancelled());
+        youtube.invoke_search_edited("  ".into());
+        assert!(cancel.cancelled());
+        assert!(!youtube.get_loading());
+        assert!(controller.search.borrow().query.is_empty());
+        assert!(youtube.get_empty_text().contains("press Enter"));
+        // Nothing to stop: the field emptied again does no harm.
+        youtube.invoke_search_edited("".into());
+
+        let cancel = searching(&controller, "bridge");
+        controller.navigate("saved");
+        assert!(!cancel.cancelled());
+        controller.navigate("search");
+        assert!(youtube.get_loading());
+        youtube.invoke_back();
+        assert!(cancel.cancelled());
+        assert_eq!(controller.top(), Page::Feed);
+        assert!(controller.search.borrow().working.is_none());
+
+        // Back from a channel's page to Search is not leaving it.
+        controller.navigate("search");
+        let cancel = searching(&controller, "bridge");
+        controller.pages.borrow_mut().push(
+            Page::Channel(ChannelId::parse("UCabcdefghijklmnopqrstuv").unwrap()),
+            0.0,
+        );
+        controller.back();
+        assert_eq!(controller.top(), Page::Search);
+        assert!(!cancel.cancelled());
+    }
+
     #[test]
     fn one_window_leaving_leaves_another_showing() {
         let folder = Folder::new("leave");
@@ -2690,6 +2955,280 @@ mod tests {
         controller.back();
         assert!(second.global().get_shown());
         assert!(!controller.global().get_shown());
+    }
+
+    /// A channel's line is a third as tall as a line of videos. Counted as
+    /// those, the lines in sight were taken for lines far above them, and the
+    /// Channels page's pictures stopped a third of the way down.
+    #[test]
+    fn the_lines_in_sight_go_by_the_height_of_each_kind() {
+        let sight = Sight {
+            top: 1200.0,
+            bottom: 1600.0,
+            videos: 214.0,
+            heading: 34.0,
+            channel: 66.0,
+        };
+        let channels = ["channel"; 60];
+        assert_eq!(sight.lines(channels.iter().copied()), (18, 24));
+        let videos = ["videos"; 60];
+        assert_eq!(sight.lines(videos.iter().copied()), (5, 7));
+        // A search's: channels under a heading, then its videos under another.
+        let search = [
+            "heading", "channel", "channel", "heading", "videos", "videos", "videos",
+        ];
+        let near_the_top = Sight {
+            top: 150.0,
+            bottom: 500.0,
+            ..sight
+        };
+        assert_eq!(near_the_top.lines(search.iter().copied()), (2, 5));
+        // Before the view has said, and with nothing to show.
+        assert_eq!(Sight::default().lines(channels.iter().copied()), (0, 0));
+        assert_eq!(sight.lines(std::iter::empty()), (0, 0));
+        // Scrolled past the end of a list that has just got shorter.
+        assert_eq!(sight.lines(channels[..5].iter().copied()), (4, 4));
+    }
+
+    #[test]
+    fn channels_far_down_the_page_have_their_pictures_asked_for() {
+        let folder = Folder::new("avatars");
+        let (_window, session, controller) = section(&folder);
+        let prefs = Preferences {
+            ytdl_path: folder.0.join("no-such-yt-dlp").display().to_string(),
+            ..Default::default()
+        };
+        let ids: Vec<String> = (0..60).map(|n| format!("UC{n:022}")).collect();
+        for (n, id) in ids.iter().enumerate() {
+            let mut info = ChannelInfo::new(ChannelId::parse(id).unwrap());
+            info.title = format!("Channel {n:02}");
+            info.avatar = Some(format!("https://yt3.ggpht.com/picture-{n}"));
+            session.subscribe(&prefs, info);
+        }
+        controller.open();
+        controller.navigate("channels");
+        // Lines 18 to 24 in sight, as a window 960 wide has them at this
+        // scroll: two screens each way have theirs asked for, and no more.
+        controller.lines_shown(Sight {
+            top: 1200.0,
+            bottom: 1600.0,
+            videos: 214.0,
+            heading: 34.0,
+            channel: 66.0,
+        });
+        let asked = controller.asked.borrow();
+        for id in &ids[4..39] {
+            assert!(asked.contains(id), "{id} wasn't asked for");
+        }
+        for id in &ids[39..] {
+            assert!(!asked.contains(id), "{id} was asked for");
+        }
+    }
+
+    /// The channel feeds say nothing of a channel's picture: what its page
+    /// heard from yt-dlp is kept, if it is followed.
+    #[test]
+    fn a_followed_channel_keeps_what_its_page_heard() {
+        let folder = Folder::new("described");
+        let (_window, session, controller) = section(&folder);
+        let followed = ChannelId::parse(A).unwrap();
+        session.store_channel_for_a_test(&followed);
+        controller.open();
+        for id in [A, B] {
+            controller.open_channel(id);
+            let id = ChannelId::parse(id).unwrap();
+            let mut info = ChannelInfo::new(id.clone());
+            info.title = "Described".to_owned();
+            info.avatar = Some("https://yt3.ggpht.com/picture".to_owned());
+            controller.channel_arrived(
+                &id,
+                Ok(super::super::Listing {
+                    channel: Some(info),
+                    videos: Vec::new(),
+                }),
+            );
+            controller.back();
+        }
+        let channels = session.channels();
+        assert_eq!(channels.len(), 1, "one not followed isn't added");
+        assert_eq!(
+            channels[0].avatar.as_deref(),
+            Some("https://yt3.ggpht.com/picture")
+        );
+        assert_eq!(channels[0].title, "Described");
+    }
+
+    fn played(path: &str, title: &str, ago: u64) -> crate::settings::HistoryEntry {
+        crate::settings::HistoryEntry {
+            path: path.to_owned(),
+            title: title.to_owned(),
+            played_at: crate::settings::now() - ago,
+            duration: 125.0,
+            position: 0.0,
+            section: false,
+        }
+    }
+
+    /// The History page is the player's history's YouTube videos, newest
+    /// first: by their address, whichever way they were opened, or as a file
+    /// the section downloaded, once each. Other files aren't on it. A title
+    /// or a length an older entry knew is kept.
+    #[test]
+    fn the_history_page_shows_the_videos_played_newest_first() {
+        let folder = Folder::new("history");
+        let (window, session, controller) = section(&folder);
+        let youtube = window.global::<YouTube>();
+        let file = folder.0.join("Two [bbbbbbbbbbb].mp4");
+        std::fs::write(&file, b"video").unwrap();
+        let two = VideoId::parse("bbbbbbbbbbb").unwrap();
+        session.set_download(&two, &file);
+        session.save_video(video("ccccccccccc", "Three, as saved"));
+        let watch = |id: &str| VideoId::parse(id).unwrap().watch_url();
+        session.set_history(&[
+            played(file.to_str().unwrap(), "Two [bbbbbbbbbbb].mp4", 60),
+            played(&watch("aaaaaaaaaaa"), "One", 120),
+            played("/films/a film.mkv", "a film.mkv", 180),
+            played(&watch("bbbbbbbbbbb"), "Two, as played", 240),
+            played(&watch("ccccccccccc"), "Three", 300),
+            played(&watch("ddddddddddd"), &watch("ddddddddddd"), 360),
+        ]);
+        controller.open();
+        controller.navigate("history");
+        assert_eq!(youtube.get_page(), "history");
+        assert_eq!(youtube.get_nav_current(), "history");
+        assert_eq!(
+            titles(&controller),
+            [
+                // Its file's name is no title, but it was played by its
+                // address before.
+                "Two, as played",
+                "One",
+                "Three, as saved",
+                // Its address is no title either.
+                "Untitled video"
+            ]
+        );
+        assert_eq!(
+            card_of(&controller, "aaaaaaaaaaa").facts,
+            "Played 2 minutes ago"
+        );
+        assert_eq!(card_of(&controller, "aaaaaaaaaaa").duration, "2:05");
+        assert!(
+            youtube
+                .get_list_note()
+                .starts_with("4 videos, newest first.")
+        );
+
+        // The file alone is called what yt-dlp named it for; its address,
+        // played last and only just loaded, has the length played before.
+        let mut loaded = played(&watch("bbbbbbbbbbb"), &watch("bbbbbbbbbbb"), 0);
+        loaded.duration = 0.0;
+        session.set_history(&[
+            loaded,
+            played(file.to_str().unwrap(), "Two [bbbbbbbbbbb].mp4", 60),
+        ]);
+        assert_eq!(titles(&controller), ["Two"]);
+        assert_eq!(card_of(&controller, "bbbbbbbbbbb").duration, "2:05");
+
+        // Played again, it comes to the front.
+        session.set_history(&[
+            played(&watch("ccccccccccc"), "Three", 0),
+            played(&watch("aaaaaaaaaaa"), "One", 120),
+        ]);
+        assert_eq!(titles(&controller), ["Three, as saved", "One"]);
+    }
+
+    /// Clearing the page clears its videos from the player's history and
+    /// every watched mark, and leaves the rest of the history be.
+    #[test]
+    fn clearing_the_history_takes_the_videos_and_every_mark() {
+        let folder = Folder::new("clear-history");
+        let (window, session, controller) = section(&folder);
+        let youtube = window.global::<YouTube>();
+        let prefs = Preferences::default();
+        let forgotten = Rc::new(Cell::new(0));
+        let counted = forgotten.clone();
+        session.on_clear_history(Box::new(move || counted.set(counted.get() + 1)));
+        let watch = |id: &str| VideoId::parse(id).unwrap().watch_url();
+        session.set_history(&[
+            played(&watch("aaaaaaaaaaa"), "One", 60),
+            played("/films/a film.mkv", "a film.mkv", 120),
+        ]);
+        session.note_watch(&prefs, &seen("aaaaaaaaaaa", 25.0, 100.0, 25.0));
+        // Marked by hand, and not in the history.
+        session.set_watched(&VideoId::parse("eeeeeeeeeee").unwrap(), true);
+        controller.open();
+        controller.navigate("history");
+        assert_eq!(card_of(&controller, "aaaaaaaaaaa").progress, 0.25);
+
+        controller.global().invoke_clear_history();
+        assert_eq!(forgotten.get(), 1, "the app's history was asked to forget");
+        assert!(titles(&controller).is_empty());
+        assert!(session.history().is_empty());
+        assert_eq!(session.mark(&VideoId::parse("aaaaaaaaaaa").unwrap()), None);
+        assert_eq!(session.mark(&VideoId::parse("eeeeeeeeeee").unwrap()), None);
+        assert_eq!(youtube.get_list_note(), "");
+        assert!(
+            youtube
+                .get_empty_text()
+                .contains("Videos you play show up here")
+        );
+    }
+
+    #[test]
+    fn the_history_page_says_when_no_history_is_kept() {
+        let folder = Folder::new("no-history");
+        i_slint_backend_testing::init_no_event_loop();
+        let window = PlayerWindow::new().unwrap();
+        let session = Session::with_sources(
+            &folder.paths(),
+            Box::new(|_, _| {
+                let refused = || Box::new(Refused(Failure::Missing.into())) as Box<dyn Source>;
+                (refused(), refused())
+            }),
+        );
+        session.set_pictures(Box::new(|_| {
+            Arc::new(|_: &str| Err("no pictures".to_owned()))
+        }));
+        let prefs = Rc::new(Preferences {
+            ytdl_path: folder.0.join("no-such-yt-dlp").display().to_string(),
+            record_history: false,
+            ..Default::default()
+        });
+        let controller = YouTubeController::new(
+            &session,
+            &window,
+            Weak::new(),
+            Box::new(move || prefs.clone()),
+        );
+        controller.open();
+        controller.navigate("history");
+        assert!(
+            window
+                .global::<YouTube>()
+                .get_empty_text()
+                .contains("Remember playback history is off")
+        );
+    }
+
+    /// Copy Link goes by the card's id, and nothing else becomes a link.
+    #[test]
+    fn copy_link_takes_only_a_videos_id() {
+        let folder = Folder::new("copy-link");
+        let (window, session, controller) = section(&folder);
+        session.save_video(video("aaaaaaaaaaa", "One"));
+        controller.open();
+        controller.navigate("saved");
+        // No app here to hold a clipboard: this only shows it neither fails
+        // nor takes what isn't an id.
+        window
+            .global::<YouTube>()
+            .invoke_copy_link("aaaaaaaaaaa".into());
+        controller.copy_link("https://example.com/");
+        assert_eq!(
+            VideoId::parse("aaaaaaaaaaa").unwrap().watch_url(),
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa"
+        );
     }
 
     #[test]

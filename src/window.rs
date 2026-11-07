@@ -6749,6 +6749,37 @@ mod tests {
         }
     }
 
+    /// The YouTube search field tells the controller what it holds as it is
+    /// typed in, which stops a search on its way once it is empty
+    /// (src/youtube/view.rs). Backspace on the empty field still goes back,
+    /// and Ctrl+Q still quits from it.
+    #[test]
+    fn the_youtube_search_field_says_when_it_is_emptied() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let youtube = window.global::<YouTube>();
+        let edits = Rc::new(RefCell::new(Vec::<String>::new()));
+        let heard = edits.clone();
+        youtube.on_search_edited(move |text| heard.borrow_mut().push(text.into()));
+        let backs = Rc::new(Cell::new(0));
+        let counted = backs.clone();
+        youtube.on_back(move || counted.set(counted.get() + 1));
+        youtube.set_search_text(SharedString::new());
+        show_page(&window, "youtube", "search");
+        press_key(&window, "a");
+        press_key(&window, "b");
+        press_key(&window, Key::Backspace);
+        press_key(&window, Key::Backspace);
+        assert_eq!(*edits.borrow(), ["a", "ab", "a", ""]);
+        assert_eq!(backs.get(), 0, "Backspace deleted");
+        press_key(&window, Key::Backspace);
+        assert_eq!(backs.get(), 1, "Backspace on the empty field");
+        assert_eq!(edits.borrow().len(), 4, "nothing more was edited");
+        assert!(keys.borrow().is_empty(), "{:?}", keys.borrow());
+        assert!(press_ctrl_q(&window, &keys));
+    }
+
     /// The title bar's Home shows over the library and the YouTube section, not
     /// on the welcome screen or over a file playing, and asks for the welcome
     /// screen. The keys work on as the view goes for it.
@@ -6895,6 +6926,136 @@ mod tests {
         library.set_loads(library.get_loads() + 1);
         press(&["b".into()]);
         assert_eq!(window.get_dialog_text(), "ab", "the dialog kept the focus");
+    }
+
+    /// The section's History page asks the window to make sure before it
+    /// clears, from the keyboard as from the mouse; Escape leaves it be. The
+    /// button the keyboard pressed goes with the videos, and the keys work on.
+    #[test]
+    fn the_youtube_history_clears_once_a_dialog_has_made_sure() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let youtube = window.global::<YouTube>();
+        let cleared = Rc::new(Cell::new(0));
+        let counted = cleared.clone();
+        youtube.on_clear_history(move || counted.set(counted.get() + 1));
+        let backs = Rc::new(Cell::new(0));
+        let counted = backs.clone();
+        youtube.on_back(move || counted.set(counted.get() + 1));
+        show_page(&window, "youtube", "history");
+        assert!(press_ctrl_q(&window, &keys), "on the page");
+
+        // Tab reaches Clear History… after the bar's entries, which go
+        // nowhere here as nothing answers them.
+        let tab_to_clear = || {
+            for _ in 0..12 {
+                press_key(&window, Key::Tab);
+                press_key(&window, Key::Return);
+                if window.get_dialog() != "" {
+                    return;
+                }
+            }
+            panic!("Clear History… took no focus");
+        };
+        tab_to_clear();
+        assert_eq!(window.get_dialog(), "clear-youtube-history");
+        press_key(&window, Key::Escape);
+        assert_eq!(window.get_dialog(), "");
+        assert_eq!(cleared.get(), 0, "Escape cleared it");
+
+        tab_to_clear();
+        press_key(&window, Key::Return);
+        assert_eq!(window.get_dialog(), "");
+        assert_eq!(cleared.get(), 1);
+        // As the controller does: the page has nothing left, and the button
+        // that had the keyboard has gone.
+        youtube.set_lines(youtube_lines(0));
+        youtube.set_loads(youtube.get_loads() + 1);
+        i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        assert!(press_ctrl_q(&window, &keys), "once cleared");
+        let before = backs.get();
+        press_key(&window, Key::Backspace);
+        assert_eq!(backs.get(), before + 1, "Backspace once cleared");
+    }
+
+    /// A card's menu has Copy Link, which names the card's video; the keys
+    /// work on after it, as after any choice from a menu.
+    #[test]
+    fn a_cards_menu_copies_its_link() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let youtube = window.global::<YouTube>();
+        let plays = Rc::new(Cell::new(0));
+        let counted = plays.clone();
+        youtube.on_play(move |_| counted.set(counted.get() + 1));
+        let copied: Rc<RefCell<Vec<String>>> = Rc::default();
+        let seen = copied.clone();
+        youtube.on_copy_link(move |id| seen.borrow_mut().push(id.to_string()));
+        show_page(&window, "youtube", "feed");
+        let before = plays.get();
+        for _ in 0..12 {
+            press_key(&window, Key::Tab);
+            press_key(&window, Key::Return);
+            if plays.get() > before {
+                break;
+            }
+        }
+        assert_eq!(plays.get(), before + 1, "no card took the focus");
+        press_key(&window, Key::Menu);
+        // Play, Play From Here, Save to Watch Later, Download, Mark as
+        // Watched, then Copy Link past the separator, which the arrows skip.
+        for _ in 0..6 {
+            press_key(&window, Key::DownArrow);
+        }
+        press_key(&window, Key::Return);
+        assert_eq!(*copied.borrow(), ["aaaaaaaaaaa"]);
+        assert!(press_ctrl_q(&window, &keys), "after the menu");
+    }
+
+    /// The Channels page tells the controller what of its list is in sight,
+    /// with the heights its lines have, so that pictures reach the channels
+    /// far down it: a channel's line is a third as tall as a line of videos.
+    #[test]
+    fn the_channels_page_says_what_of_it_is_in_sight() {
+        use slint::platform::WindowEvent;
+        let window = window_for_keys();
+        let youtube = window.global::<YouTube>();
+        let said: Rc<RefCell<Option<crate::YouTubeSight>>> = Rc::default();
+        let seen = said.clone();
+        youtube.on_lines_shown(move |sight| *seen.borrow_mut() = Some(sight));
+        let channel = crate::YouTubeLine {
+            id: "channel".into(),
+            kind: "channel".into(),
+            ..Default::default()
+        };
+        youtube.set_lines(ModelRc::new(VecModel::from(vec![channel; 60])));
+        youtube.set_page("channels".into());
+        youtube.set_loads(youtube.get_loads() + 1);
+        youtube.set_shown(true);
+        i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        let sight = said.borrow().clone().expect("nothing was said");
+        assert_eq!(sight.top, 0.0);
+        assert_eq!((sight.channel, sight.heading), (66.0, 34.0));
+        assert!(sight.videos > 3.0 * sight.channel, "{sight:?}");
+        let height = sight.bottom - sight.top;
+        assert!(height > 400.0, "{sight:?}");
+
+        let position = slint::LogicalPosition::new(600.0, 500.0);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerScrolled {
+                position,
+                delta_x: 0.0,
+                delta_y: -1200.0,
+            });
+        let sight = said.borrow().clone().unwrap();
+        assert!(sight.top >= 1000.0, "{sight:?}");
+        assert_eq!(sight.bottom - sight.top, height);
     }
 
     /// Presses keys as a window's event hook has them reach Slint: each after
@@ -7076,6 +7237,7 @@ mod tests {
             ("library", "grid"),
             ("youtube", "feed"),
             ("youtube", "saved"),
+            ("youtube", "history"),
             ("youtube", "channel"),
             ("welcome", ""),
             ("player", ""),
@@ -7261,10 +7423,17 @@ mod tests {
                 press_key(&window, "1");
                 press_key(&window, Key::Return);
             }
-            "clear-recent" => press_key(&window, Key::Return),
+            "clear-recent" | "clear-youtube-history" => press_key(&window, Key::Return),
             _ => press_key(&window, Key::Escape),
         };
-        for dialog in ["shortcuts", "about", "open-url", "jump-to", "clear-recent"] {
+        for dialog in [
+            "shortcuts",
+            "about",
+            "open-url",
+            "jump-to",
+            "clear-recent",
+            "clear-youtube-history",
+        ] {
             // In a field: typing goes on in it.
             show_page(&window, "library", "search");
             library.set_search_text(SharedString::new());

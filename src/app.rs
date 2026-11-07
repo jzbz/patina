@@ -146,6 +146,14 @@ impl App {
             toast_hide: RefCell::new(None),
         });
         CURRENT.with(|current| *current.borrow_mut() = Rc::downgrade(&app));
+        // The section's History page shows the history's YouTube videos.
+        app.youtube.set_history(&app.history.borrow().entries);
+        let weak = Rc::downgrade(&app);
+        app.youtube.on_clear_history(Box::new(move || {
+            if let Some(app) = weak.upgrade() {
+                app.forget_youtube_history();
+            }
+        }));
         // The saved sign-ins come back from the keyring while the first
         // window opens.
         app.jellyfin.start();
@@ -1449,6 +1457,9 @@ impl App {
             .borrow_mut()
             .update_progress(path, position, duration);
         settings::save_json(&self.paths.history_file(), &*self.history.borrow());
+        // The section's History page shows the length, which a file that has
+        // only just loaded when it is recorded may not have had.
+        self.youtube.set_history(&self.history.borrow().entries);
         self.refresh_history_window();
     }
 
@@ -1473,8 +1484,21 @@ impl App {
         self.history_changed();
     }
 
+    /// The YouTube section's Clear History: its videos leave the history, and
+    /// every other file stays. The section clears the marks itself.
+    fn forget_youtube_history(&self) {
+        let youtube = self.youtube.clone();
+        self.history
+            .borrow_mut()
+            .entries
+            .retain(|entry| youtube.video_at(&entry.path).is_none());
+        self.history_changed();
+    }
+
     fn history_changed(&self) {
         settings::save_json(&self.paths.history_file(), &*self.history.borrow());
+        let entries = self.history.borrow().entries.clone();
+        self.youtube.set_history(&entries);
         let windows = self.windows.borrow().clone();
         for window in windows {
             window.refresh_recent();

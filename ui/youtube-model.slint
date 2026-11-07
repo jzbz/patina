@@ -43,6 +43,17 @@ export struct YouTubeChannel {
     subscribed: bool,
 }
 
+// The part of a page's list in sight, measured from its top, and how tall each
+// kind of line is: lines differ, and only the controller knows which lines a
+// page has, so it works out from these which of them are in sight.
+export struct YouTubeSight {
+    top: length,
+    bottom: length,
+    videos: length,
+    heading: length,
+    channel: length,
+}
+
 // A line of a page's list. Every page's list is made of these.
 export struct YouTubeLine {
     id: string,
@@ -58,7 +69,7 @@ export struct YouTubeLine {
 export global YouTube {
     // Shown in place of the welcome screen and the library.
     in property <bool> shown;
-    // feed, search, saved, channels, channel
+    // feed, search, saved, channels, history, channel
     in property <string> page;
     // The bar's entry that shows as current. A channel's page keeps the one
     // it was reached from.
@@ -115,8 +126,8 @@ export global YouTube {
 
     // The list's width allows this many cards a line, each this wide.
     callback layout(int, length);
-    // The lines in sight, first and last: only those near them keep images.
-    callback lines-shown(int, int);
+    // What of the list is in sight: only the lines near it keep images.
+    callback lines-shown(YouTubeSight);
     callback navigate(string);
     // Back a page, or at the first page to the welcome screen.
     callback back();
@@ -132,15 +143,22 @@ export global YouTube {
     // Its file goes to the trash.
     callback remove-download(string);
     callback set-watched(string, bool);
+    // The video's own address goes to the clipboard.
+    callback copy-link(string);
     callback open-channel(string);
     callback set-subscribed(string, bool);
     callback set-shorts(bool);
     callback refresh();
     callback search(string);
+    // The search field's text as typed: emptied, it stops a search on its way.
+    callback search-edited(string);
     callback add-channel(string);
     callback import();
     // subscriptions or watch-later
     callback export(string);
     callback retry();
+    // The History page's videos leave the history, and every watched mark and
+    // progress goes. Asked once a dialog has made sure.
+    callback clear-history();
     callback dismiss-banner();
 }

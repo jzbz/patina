@@ -1,11 +1,11 @@
 # YouTube section
 
 Patina has a YouTube section in the player window, opened from the welcome
-screen: a feed of the channels the user follows, search, a Watch Later list
-and downloads. There is no account. Patina never signs in to Google, and its
-lists are its own: they don't appear on YouTube, and the interface says so
-where they show. This page is the design as built: what is in, what leaves
-the machine, and the rules the code keeps.
+screen: a feed of the channels the user follows, search, a Watch Later list,
+the videos played and downloads. There is no account. Patina never signs in to
+Google, and its lists are its own: they don't appear on YouTube, and the
+interface says so where they show. This page is the design as built: what is
+in, what leaves the machine, and the rules the code keeps.
 
 ## Scope
 
@@ -21,6 +21,8 @@ In the first version:
 - **Channels.** Added by a pasted link or `@handle`, from search results or
   a channel's page, or by import; a small page for each with its videos and
   Subscribe or Unsubscribe.
+- **History.** The YouTube videos in the player's history, newest first,
+  with Clear History.
 - **Downloads.** From cards, through the Downloads window, into the
   Preferences download folder.
 - **Import and export.** Both lists, in the files Google's data export uses.
@@ -131,13 +133,15 @@ if that is showing; the same address from Open URL still has them.
 `youtube-feed.json` the saved feed and `youtube-images` the thumbnails of
 what was on screen, search results included. Clear Recent clears watched
 marks and nothing else of these, Clear Saved Positions clears where videos
-were left off and keeps what was seen of them, and the thumbnails' folder has
-no button: it can only be deleted by hand. Searches aren't kept or logged, though the
-text is on yt-dlp's command line for as long as it runs, where a process
-list can show it, as with any program's arguments. Errors from the section's
-own yt-dlp calls have the search text, stream addresses and a proxy's
-password cut out before they are shown or kept (`ytdlp::scrub`), and
-`player/mod.rs` cuts stream addresses out of what mpv logs.
+were left off and keeps what was seen of them, the History page's Clear
+History clears the marks and the YouTube videos in the history (see History),
+and the thumbnails' folder has no button: it can only be deleted by hand.
+Searches aren't kept or logged, though the text is on yt-dlp's command line
+for as long as it runs, where a process list can show it, as with any
+program's arguments. Errors from the section's own yt-dlp calls have the
+search text, stream addresses and a proxy's password cut out before they are
+shown or kept (`ytdlp::scrub`), and `player/mod.rs` cuts stream addresses out
+of what mpv logs.
 
 The Flatpak has every permission this needs already: it asks for no new one.
 Its metainfo's comment on the content rating sums this up, and the site's
@@ -156,7 +160,7 @@ privacy page has to agree with this section (see development.md).
 | `ytdlp.rs` | Running yt-dlp: listings as a `Source`, search, resolving a channel, a video's details, its version and age, and its errors by name. |
 | `client.rs` | Plain requests to YouTube's hosts and no others, for feeds and pictures. |
 | `takeout.rs` | Reading and writing Google's files. |
-| `session.rs` | The app-wide state on the interface thread: the store, the feed, the threads requests run on, the picture cache, and notices. Windows follow it as `Listener`s. |
+| `session.rs` | The app-wide state on the interface thread: the store, the feed, the threads requests run on, the picture cache, notices, and the player's history as the History page reads it. Windows follow it as `Listener`s. |
 | `view.rs` | `YouTubeController`, one per window: pages, cards, images near the screen, messages. It fills the `YouTube` global. |
 | `playing.rs` | Time seen, where a video picks up, which part of a list plays, and the default quality. |
 | `fixtures/` | Made-up XML, JSON and error text for the tests. |
@@ -337,8 +341,12 @@ until it has ended.
 On Enter, one process asks for `ytsearch30:<text>` and for the results page
 filtered to channels, a few seconds together, and either can fail alone. The
 page shows at most 5 channels above the videos, as most are near misses. The
-text is cut to 200 characters. A new search cancels the last. Results aren't
-saved, and thumbnails aside nothing of them is kept.
+text is cut to 200 characters. A new search cancels the last, and so do
+emptying the field and Back from the page, which stop yt-dlp: what was
+searched for would otherwise arrive unasked or unseen. Text typed over the
+query, or another page of the bar, leaves the search coming, as the results
+are still wanted until Enter asks for others. Results aren't saved, and
+thumbnails aside nothing of them is kept.
 
 What search finds is whatever anyone has uploaded. Patina adds no filter and
 asks for no Restricted Mode. What YouTube keeps for signed-in adults takes
@@ -351,7 +359,10 @@ an id, an `@handle`, or a link on `youtube.com` to `/channel/`, `/@`, `/c/`
 or `/user/`. The address yt-dlp gets is built from those. It answers with
 the channel's id, name and picture, without listing any videos
 (`--playlist-items 0`). A channel's picture is an address from yt-dlp, kept
-only if it is HTTPS on a host in `client.rs`'s list.
+only if it is HTTPS on a host in `client.rs`'s list. The channel feeds say
+nothing of a picture, so a channel imported from a file has none until yt-dlp
+has been asked about it: by a listing, as when the feed fails for it, or by
+opening its page, whose answer a followed channel keeps.
 
 A channel's page shows what is saved at once, then up to 30 videos from
 yt-dlp. If those don't come, what stopped them shows above the saved ones,
@@ -403,6 +414,9 @@ across its long one, and 1080 is used if the screen can't be read. A
 `ytdl-format` preference wins over it. The Video Quality menu works as usual
 and keeps that limit.
 
+A card's menu has Copy Link, which copies the video's address built again from
+its id (`VideoId::watch_url`), never one an answer gave.
+
 **Ending.** Finishing, Escape, Stop and seeking past the end all return the
 window to the section at the same page and scroll. A list goes on to its
 next entry first. A window waiting for yt-dlp says "Waiting for YouTube…"
@@ -428,9 +442,33 @@ left if that is at least 10 seconds in and more than 15 from the end.
 Any video opened by its one address gets a mark, whichever way it was
 opened, or as a file the section downloaded. With "Remember playback
 history" off nothing is noted, though a video can still be marked by hand.
-Clear Recent, and every other way of clearing the history, clears the marks,
-and removing one history entry clears that video's. Marks are only ever kept
-here.
+Clear Recent, the History page's Clear History, and every other way of
+clearing the history, clears the marks, and removing one history entry clears
+that video's. Marks are only ever kept here.
+
+## History
+
+The History page is the player's history, the one Recent and the History
+window show, with only its YouTube videos: those opened by their one address,
+whichever way, and the files the section downloaded, each once, newest first,
+with when it last played. It keeps nothing of its own. The app hands the
+section its history whenever that changes (`Session::set_history`), a file's
+length and position at its end included, and which entries are videos is
+worked out only when the page shows, as telling a downloaded file needs
+`youtube.json`, which nothing reads before the section does. What the lists
+know of a video, its title, channel and length, fills in what the history
+doesn't keep; the history's title and length are used otherwise, from an older
+entry of the same video where the newest has none: a title that is only the
+address or a file's name is none, and a file that has only just loaded has no
+length. A downloaded file with no title anywhere is called what its name says,
+yt-dlp's "<title> [<id>]". With "Remember playback history" off, nothing is
+added, and the empty page says so.
+
+Clear History asks first, in a dialog, as the clearing goes further than the
+page: the YouTube videos leave the history, Recent and the History window
+with them, other files stay, and every watched mark and progress goes, marks
+of videos not in the history included, as they say what was watched as much
+as the history does.
 
 ## Downloads
 
@@ -555,11 +593,19 @@ while the Channels page's field waits on a channel being added stops at the view
 
 The bar's Back and the mouse's back button go through pages and then leave,
 for the library if the section was opened over it. The title bar's Home
-button leaves both for the welcome screen (the window action `welcome`).
+button leaves both for the welcome screen (the window action `welcome`). The
+History page's Clear History… opens the window's dialog
+(`clear-youtube-history`), whose closing gives the view the keyboard back as
+any dialog's does.
 Each page keeps its scroll when left. Lines are made afresh only when a page
 is shown; what comes later changes them in place, so a list being read
 doesn't jump. Pictures are held only near the screen, as a decoded image for
-each of thousands of videos would run to gigabytes.
+each of thousands of videos would run to gigabytes. The view says what of a
+list is in sight, in pixels, with the height of each kind of line
+(`YouTubeSight`), and the controller counts the lines from those: a channel's
+line is a third as tall as a line of videos, and a count that took every line
+for one of those left most of a long Channels page without pictures until the
+window was made larger.
 
 ## Tests
 
@@ -572,8 +618,10 @@ breaker, batches and mapping by position; a 404 never marking a channel
 gone; a proxy never going direct; the two Google files round-tripping byte
 for byte; what a request carries
 (`a_request_says_who_is_asking_and_nothing_of_the_user`); the section's
-arguments to yt-dlp; the queue's limit and spacing; time seen; and the
-pages, focus and Back through the Slint testing backend.
+arguments to yt-dlp; the queue's limit and spacing; time seen; the lines in
+sight and the pictures asked for them; the History page and its clearing; and
+the pages, focus, Back, Copy Link and the Clear History dialog through the
+Slint testing backend.
 
 To try it by hand without YouTube, point the `ytdl-path` preference at a
 stand-in with its own settings and data folders (development.md). A

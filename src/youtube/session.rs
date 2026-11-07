@@ -20,7 +20,7 @@ use super::{
     Cancel, ChannelId, ChannelInfo, ChannelInput, Error, Failure, Listing, Video, VideoId,
 };
 use crate::jellyfin::images::{self, Fetch, Images};
-use crate::settings::{Paths, Preferences};
+use crate::settings::{HistoryEntry, Paths, Preferences};
 use std::cell::{Cell, OnceCell, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -69,6 +69,8 @@ pub enum Change {
     ShowShorts,
     /// There is something new to tell the user (`Session::take_notices`).
     Notice,
+    /// The player's history, whose YouTube videos the History page shows.
+    History,
 }
 
 pub trait Listener {
@@ -89,6 +91,19 @@ pub struct ImportReport {
     pub added: usize,
     pub present: usize,
     pub skipped: usize,
+}
+
+/// A YouTube video in the player's history, as the History page shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Played {
+    pub id: VideoId,
+    /// What the history calls it; empty when that is only its address or its
+    /// file's name.
+    pub title: String,
+    /// Seconds since the Unix epoch.
+    pub played_at: i64,
+    /// Its length in seconds, 0 when the player never knew.
+    pub duration: f64,
 }
 
 /// yt-dlp as the section sees it.
@@ -176,6 +191,13 @@ pub struct Session {
     /// video in a list not until its turn.
     titles: RefCell<HashMap<String, String>>,
     trash: RefCell<Trash>,
+    /// The player's history, handed over by the app whenever it changes. Which
+    /// of its entries are videos is worked out only when the History page asks,
+    /// as a downloaded file's takes the lists' file, which nothing reads until
+    /// the section needs it.
+    history: RefCell<Vec<HistoryEntry>>,
+    /// Takes the YouTube videos out of the player's history, which is the app's.
+    forget_history: RefCell<Box<dyn Fn()>>,
 }
 
 /// Seconds since the Unix epoch, as the store keeps time.
@@ -309,6 +331,8 @@ impl Session {
             trash: RefCell::new(Box::new(|paths, done| {
                 crate::platform::move_to_trash(paths, done);
             })),
+            history: RefCell::new(Vec::new()),
+            forget_history: RefCell::new(Box::new(|| {})),
         })
     }
 
@@ -496,6 +520,17 @@ impl Session {
     /// the saved feed at the next refresh.
     pub fn unsubscribe(&self, id: &ChannelId) {
         if self.store().remove_channel(id) {
+            self.save();
+            self.notify(Change::Channels);
+        }
+    }
+
+    /// What a channel's page heard of a channel, kept if it is followed. Its
+    /// picture is the point: the channel feeds say nothing of one, so a channel
+    /// imported from a file whose feed answers has none until yt-dlp has been
+    /// asked about it, and the page asks.
+    pub fn channel_described(&self, info: &ChannelInfo) {
+        if self.store().update_channel(info) {
             self.save();
             self.notify(Change::Channels);
         }
@@ -952,6 +987,101 @@ impl Session {
         }
     }
 
+    /// The player's history, as it is now.
+    pub fn set_history(&self, entries: &[HistoryEntry]) {
+        *self.history.borrow_mut() = entries.to_vec();
+        self.notify(Change::History);
+    }
+
+    /// What takes the YouTube videos out of the player's history, for Clear
+    /// History on the section's page.
+    pub fn on_clear_history(&self, forget: Box<dyn Fn()>) {
+        *self.forget_history.borrow_mut() = forget;
+    }
+
+    /// The YouTube videos in the player's history, newest first, each once
+    /// though it was opened both by its address and as a downloaded file.
+    /// Where it was played last says when; what an older entry knew and the
+    /// newest didn't (a downloaded file's history has only its name, a file
+    /// only just loaded no length) is kept. A file the section downloaded
+    /// with no title known anywhere is called what its name says, which is
+    /// yt-dlp's "<title> [<id>]".
+    pub fn history(&self) -> Vec<Played> {
+        let entries = self.history.borrow().clone();
+        let mut played: Vec<Played> = Vec::new();
+        let mut named: Vec<String> = Vec::new();
+        let mut at: HashMap<VideoId, usize> = HashMap::new();
+        for entry in entries {
+            let Some(id) = self.video_at(&entry.path) else {
+                continue;
+            };
+            let file_name = crate::player::state::file_name(&entry.path);
+            let title = if entry.title == file_name {
+                String::new()
+            } else {
+                entry.title
+            };
+            let name = if crate::util::is_url(&entry.path) {
+                String::new()
+            } else {
+                Path::new(&entry.path)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| stem.strip_suffix(&format!(" [{}]", id.as_str())))
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            match at.get(&id) {
+                Some(&index) => {
+                    let kept = &mut played[index];
+                    if kept.title.is_empty() {
+                        kept.title = title;
+                    }
+                    if kept.duration < 1.0 {
+                        kept.duration = entry.duration;
+                    }
+                    if named[index].is_empty() {
+                        named[index] = name;
+                    }
+                }
+                None => {
+                    at.insert(id.clone(), played.len());
+                    played.push(Played {
+                        id,
+                        title,
+                        played_at: i64::try_from(entry.played_at).unwrap_or(i64::MAX),
+                        duration: entry.duration,
+                    });
+                    named.push(name);
+                }
+            }
+        }
+        for (played, name) in played.iter_mut().zip(named) {
+            if played.title.is_empty() {
+                played.title = name;
+            }
+        }
+        played
+    }
+
+    /// Clear History on the section's page. Its videos leave the player's
+    /// history, Recent and the History window with them, as the page is only
+    /// what those hold; other files stay. Every watched mark and progress goes
+    /// too, as they say what was watched as much as the history does.
+    pub fn clear_history(&self) {
+        let kept: Vec<HistoryEntry> = {
+            let entries = self.history.borrow().clone();
+            entries
+                .into_iter()
+                .filter(|entry| self.video_at(&entry.path).is_none())
+                .collect()
+        };
+        *self.history.borrow_mut() = kept;
+        (self.forget_history.borrow())();
+        self.clear_marks();
+        self.notify(Change::History);
+    }
+
     /// Where a video was downloaded to, while that file is there.
     pub fn download(&self, id: &VideoId) -> Option<String> {
         self.store().download(id).map(str::to_owned)
@@ -1060,15 +1190,17 @@ impl Session {
     }
 
     /// Searches, on Enter and never while typing: this is a process and several
-    /// requests. The answer comes to `done`, unless the returned `Cancel` was
-    /// used, when `done` hears nothing.
+    /// requests. The answer comes to `done`, unless `cancel` was used first,
+    /// which stops yt-dlp and leaves `done` hearing nothing. The caller makes
+    /// `cancel` and keeps it before the search starts, so that it can be used
+    /// while the search runs, even one that can't be put off to a thread.
     pub fn search(
         &self,
         prefs: &Preferences,
         query: &str,
+        cancel: &Cancel,
         done: impl FnOnce(Result<SearchResults, Error>) + 'static,
-    ) -> Cancel {
-        let cancel = Cancel::default();
+    ) {
         let tool = Ytdlp::from_prefs(prefs, &self.mpv_config);
         let query = query.to_owned();
         let working = cancel.clone();
@@ -1082,7 +1214,6 @@ impl Session {
                 }
             },
         );
-        cancel
     }
 
     /// Finds the channel a pasted link or `@handle` names.
@@ -2144,7 +2275,7 @@ mod tests {
             ytdl: false,
             ..Default::default()
         };
-        session.search(&prefs, "a query", |answer| {
+        session.search(&prefs, "a query", &Cancel::default(), |answer| {
             assert_eq!(answer.unwrap_err().kind, Failure::Disabled);
         });
         session.channel_page(&prefs, &channel(A), |answer| {
@@ -2426,6 +2557,38 @@ esac
             assert!(version.age_days.unwrap() > 90);
         }
 
+        /// A search stopped while yt-dlp runs ends it at once, and its answer,
+        /// which would come long after, never arrives.
+        #[test]
+        fn a_search_stopped_on_its_way_ends_and_answers_nothing() {
+            let folder = Folder::new("search-stopped");
+            let started = folder.0.join("started");
+            let fake = answering(
+                &folder,
+                &format!(
+                    "touch '{}'\nsleep 30\nprintf 'null\\nnull\\n'",
+                    started.display()
+                ),
+            );
+            let session = working(&folder);
+            let cancel = Cancel::default();
+            let stopping = cancel.clone();
+            let waiting = started.clone();
+            std::thread::spawn(move || {
+                while !waiting.exists() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                stopping.cancel();
+            });
+            let heard = Rc::new(Cell::new(false));
+            let seen = heard.clone();
+            let began = Instant::now();
+            session.search(&prefs(&fake), "a query", &cancel, move |_| seen.set(true));
+            assert!(started.exists());
+            assert!(began.elapsed() < Duration::from_secs(20));
+            assert!(!heard.get());
+        }
+
         #[test]
         fn a_search_runs_yt_dlp_and_gets_its_answer() {
             let folder = Folder::new("search");
@@ -2433,10 +2596,15 @@ esac
             let session = working(&folder);
             let heard = Rc::new(Cell::new(false));
             let seen = heard.clone();
-            session.search(&prefs(&fake), "a query", move |answer| {
-                seen.set(true);
-                assert!(answer.is_err());
-            });
+            session.search(
+                &prefs(&fake),
+                "a query",
+                &Cancel::default(),
+                move |answer| {
+                    seen.set(true);
+                    assert!(answer.is_err());
+                },
+            );
             assert!(heard.get());
             assert_eq!(fake.runs().len(), 1);
             assert!(!fake.runs()[0].iter().any(|arg| arg.contains("cookies")));
