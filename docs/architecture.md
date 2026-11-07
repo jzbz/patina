@@ -560,14 +560,30 @@ leaves the machine and what the terms say; this is how it sits among the rest.
 - **Playing and downloading.** These are in Online video above: `from_section`
   in the window, and the shared queue in `downloads.rs`.
 
-## History and inspector windows
+## History, inspector and Media Info windows
 
-`history.rs` and `inspector.rs` each drive a window of their own, created on
-first use and kept by `App`. The history window rebuilds its rows from the
-history whenever it changes, and checks for missing files on another thread.
-The inspector follows the active player; while open, it reads the current
-tab's properties once a second with `mpv_get_property_async`, and the
-player's event pump hands the replies back to it.
+`history.rs`, `inspector.rs` and `media_info.rs` each drive a window of
+their own, created on first use and kept by `App`. The history window
+rebuilds its rows from the history whenever it changes, and checks for
+missing files on another thread. The inspector follows the active player;
+while open, it reads the current tab's properties once a second with
+`mpv_get_property_async`, and the player's event pump hands the replies
+back to it.
+
+The Media Info window follows the active player too, but polls nothing.
+While it is open it reads `path`, `metadata`, `track-list`, `video-params`
+and the rest the same way when it opens, when it follows another window,
+and when the window it follows sees one of the properties behind them
+change (the file, its title or tags, its tracks or their selection, and the
+decoded video's and audio's parameters), which `sync` passes on through
+`App::media_changed`. Its replies carry a bit of their own (`REPLY_BASE`),
+which the inspector's never set. Its cover is the cover art track's decoded
+picture, taken with mpv's `screenshot-raw` when that track is the one shown,
+scaled down to 640 pixels at most, and taken again only for another file or
+track; if the picture isn't decoded yet, the change of `video-params` that
+comes when it is asks again. A track's colors and decoded format are known
+only of the track being decoded, so other tracks show what their container
+says. The sample format is the decoder's, so a 24-bit file shows 32-bit.
 
 ## Opening, one Patina at a time
 

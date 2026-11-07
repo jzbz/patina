@@ -1,0 +1,131 @@
+// The Media Info window: the playing file's tags, cover and location, and
+// each of its streams' codec and format, read again when the file or its
+// tracks change.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Segmented, SectionTitle, ToastView } from "widgets.slint";
+import { InspectorRow, InspectorLine } from "inspector.slint";
+
+component Rows inherits VerticalLayout {
+    in property <[InspectorRow]> rows;
+    for entry in root.rows: VerticalLayout {
+        if entry.section: SectionTitle {
+            height: 30px;
+            text: entry.label;
+            color: Theme.text;
+            vertical-alignment: bottom;
+            overflow: elide;
+        }
+        if !entry.section: InspectorLine {
+            entry: entry;
+        }
+    }
+}
+
+export component MediaInfoWindow inherits Window {
+    title: "Media Info";
+    icon: @image-url("icons/patina.svg");
+    background: #1c1c1e;
+    preferred-width: 480px;
+    preferred-height: 600px;
+    min-width: 360px;
+    min-height: 320px;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-normal;
+    forward-focus: keys;
+
+    // 0 for General, 1 for Codec.
+    in-out property <int> tab;
+    in property <[InspectorRow]> general;
+    in property <[InspectorRow]> codec;
+    // What is described.
+    in property <string> subject;
+    in property <image> cover;
+    in property <bool> has-cover;
+
+    // Whether the window's keys have the focus rather than a value, which
+    // the tests ask.
+    out property <bool> keys-focused: keys.has-focus;
+
+    // Bumped by the controller as it makes rows anew: for a file of other
+    // tags or tracks, or for none. A value clicked for its text to be
+    // selected goes with its row, and Slint would leave the focus on it,
+    // gone, where no key reached the window, Escape included, until it was
+    // clicked again.
+    in property <int> remade;
+    changed remade => {
+        if !keys.has-focus {
+            keys.focus();
+        }
+    }
+
+    callback dismiss();
+
+    // The window's keys: Escape closes it, as it closes a dialog. Keys go on
+    // to here from a value that has the focus for its text to be selected.
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+
+            Segmented {
+                options: ["General", "Codec"];
+                selected: root.tab;
+                activated(index) => {
+                    root.tab = index;
+                    keys.focus();
+                }
+            }
+
+            Text {
+                text: root.subject;
+                color: Theme.tertiary-text;
+                font-size: Theme.font-small;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+
+            if root.general.length == 0: Text {
+                vertical-stretch: 1;
+                text: "Nothing is playing.";
+                color: Theme.tertiary-text;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            if root.general.length > 0: ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding-right: 10px;
+                    if root.tab == 0 && root.has-cover: Image {
+                        height: 200px;
+                        source: root.cover;
+                        image-fit: contain;
+                        accessible-role: image;
+                        accessible-label: "Cover art";
+                    }
+                    if root.tab == 0: Rows {
+                        rows: root.general;
+                    }
+                    if root.tab == 1: Rows {
+                        rows: root.codec;
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                    }
+                }
+            }
+        }
+    }
+
+    ToastView { }
+}

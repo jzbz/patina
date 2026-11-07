@@ -263,15 +263,7 @@ impl InspectorController {
             Tab::Watch => watch(&values, &self.watched()),
         };
         drop(values);
-        if self.rows.row_count() == rows.len() {
-            for (index, row) in rows.into_iter().enumerate() {
-                if self.rows.row_data(index).as_ref() != Some(&row) {
-                    self.rows.set_row_data(index, row);
-                }
-            }
-        } else {
-            self.rows.set_vec(rows);
-        }
+        set_rows(&self.rows, rows);
     }
 
     fn add_watch(&self, name: &str) {
@@ -306,6 +298,21 @@ impl InspectorController {
         self.app()
             .update_prefs(|prefs| prefs.inspector_watch.retain(|watched| *watched != name));
         self.poll();
+    }
+}
+
+/// Puts `rows` in `model`, changing only the rows that differ when there are
+/// as many as before, so that a selection in a value that stays survives a
+/// refresh.
+pub fn set_rows(model: &VecModel<InspectorRow>, rows: Vec<InspectorRow>) {
+    if model.row_count() == rows.len() {
+        for (index, row) in rows.into_iter().enumerate() {
+            if model.row_data(index).as_ref() != Some(&row) {
+                model.set_row_data(index, row);
+            }
+        }
+    } else {
+        model.set_vec(rows);
     }
 }
 
@@ -541,7 +548,7 @@ fn describe(node: &Node) -> String {
 }
 
 /// At most `places` decimals, without trailing zeros: 23.976, 48, 0.5.
-fn decimals(value: f64, places: usize) -> String {
+pub fn decimals(value: f64, places: usize) -> String {
     let text = format!("{value:.places$}");
     if text.contains('.') {
         text.trim_end_matches('0').trim_end_matches('.').to_owned()
@@ -551,7 +558,7 @@ fn decimals(value: f64, places: usize) -> String {
 }
 
 /// 1532000 → "1.53 MB" (or "Mbps"), in powers of 1000.
-fn format_bytes(value: f64, unit: &str) -> String {
+pub fn format_bytes(value: f64, unit: &str) -> String {
     let mut value = value;
     let mut prefix = "";
     for next in ["k", "M", "G", "T"] {

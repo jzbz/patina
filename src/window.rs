@@ -507,7 +507,15 @@ impl PlayerController {
         }
     }
 
-    /// What the window plays, for the inspector.
+    /// Runs a command for the Media Info window; its result arrives as a
+    /// reply event, which goes to that window.
+    pub fn request_command(&self, userdata: u64, args: &[&str]) {
+        if let Err(error) = self.mpv.command_async(userdata, args) {
+            log::debug!("{error}");
+        }
+    }
+
+    /// What the window plays, for the inspector and the Media Info window.
     pub fn media_name(&self) -> String {
         let state = self.state.borrow();
         crate::inspector::media_name(&state.path, &state.title)
@@ -1176,6 +1184,11 @@ impl PlayerController {
                         app.media_position(self.state.borrow().position, true);
                     }
                 }
+                Event::CommandReply { userdata, result }
+                    if crate::media_info::is_reply(userdata) =>
+                {
+                    self.app().media_info_reply(userdata, result);
+                }
                 Event::CommandReply { userdata, result } => match (userdata, result) {
                     (REPLY_SHOW_TEXT, Ok(node)) => {
                         if let Some(text) = node.as_str() {
@@ -1229,6 +1242,12 @@ impl PlayerController {
                     }
                     Err(error) => log::debug!("{error}"),
                 },
+                Event::GetPropertyReply { userdata, result }
+                    if crate::media_info::is_reply(userdata) =>
+                {
+                    self.app()
+                        .media_info_reply(userdata, result.map(|(_, node)| node));
+                }
                 Event::GetPropertyReply { userdata, result }
                     if userdata >= crate::inspector::REPLY_BASE =>
                 {
@@ -1323,6 +1342,23 @@ impl PlayerController {
                     app.retarget_media();
                 }
             });
+        }
+        // The Media Info window reads again what it shows. Deferred, as the
+        // app may be borrowing its windows right now.
+        if any(&[
+            Prop::Idle,
+            Prop::Path,
+            Prop::MediaTitle,
+            Prop::Metadata,
+            Prop::TrackList,
+            Prop::Vid,
+            Prop::Aid,
+            Prop::Sid,
+            Prop::VideoParams,
+            Prop::AudioParams,
+        ]) && let (Some(app), Some(this)) = (self.app.upgrade(), self.this.upgrade())
+        {
+            Timer::single_shot(Duration::ZERO, move || app.media_changed(&this));
         }
         if any(&[Prop::PausedForCache, Prop::CacheBuffering, Prop::Idle]) {
             playback.set_buffering(!state.idle && (state.paused_for_cache || self.loading.get()));
@@ -2413,6 +2449,7 @@ impl PlayerController {
                 }
             }
             "inspector" => app.open_inspector(),
+            "media-info" => app.open_media_info(),
             // The library shows only in an idle window: while this one
             // plays, signing in starts in a new window rather than behind
             // the video, where it would come up when the playlist ends.

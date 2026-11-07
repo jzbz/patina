@@ -14,10 +14,11 @@ import { PreferencesWindow, PrefRow, BindingRow } from "preferences.slint";
 import { HistoryWindow, HistoryRow } from "history.slint";
 import { DownloadsWindow, DownloadRow } from "downloads.slint";
 import { InspectorWindow, InspectorRow } from "inspector.slint";
+import { MediaInfoWindow } from "media-info.slint";
 
 export { Library, LibraryCard, LibraryRow, LibraryNav, LibraryChoice, LibraryTrack, LibraryPerson, LibraryDetail, LibrarySignIn }
 export { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeSight }
-export { Theme, Platform, Playback, Media, Osd, Toast, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, LyricItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, QualityItem, OnlineSubs, OnlineSubtitle }
+export { Theme, Platform, Playback, Media, Osd, Toast, Prefs, Actions, PlaylistItem, TrackItem, ChapterItem, LyricItem, RecentItem, DeviceItem, ShortcutItem, PreferencesWindow, PrefRow, BindingRow, HistoryWindow, HistoryRow, DownloadsWindow, DownloadRow, InspectorWindow, InspectorRow, MediaInfoWindow, QualityItem, OnlineSubs, OnlineSubtitle }
 
 export component PlayerWindow inherits Window {
     title: !Playback.has-media ? "Patina" : root.music-mode && Playback.music-title != "" ? Playback.music-title : Playback.title;
@@ -1077,6 +1078,13 @@ export component PlayerWindow inherits Window {
                 }
             }
             MenuSeparator { }
+            MenuItem {
+                title: "Media Info";
+                enabled: Playback.has-media;
+                activated => {
+                    Actions.patina("media-info");
+                }
+            }
             MenuItem {
                 title: "Inspector";
                 activated => {

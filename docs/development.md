@@ -216,8 +216,8 @@ comment are the same statement, and a change to one goes in the others.
   folding and pasted sources, without mpv.
 - `src/subtitle_match.rs`: finding the subtitle files that belong to a
   video.
-- `src/history.rs`, `src/inspector.rs`: the playback history and inspector
-  windows.
+- `src/history.rs`, `src/inspector.rs`, `src/media_info.rs`: the playback
+  history, inspector and Media Info windows.
 - `src/media_controls/`: MPRIS, SMTC and MediaPlayer integration.
 - `src/inhibit.rs`: keeping the screen awake during playback.
 - `src/fonts.rs`: puts the interface's typeface (`Theme.font-family`)

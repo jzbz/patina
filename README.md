@@ -66,6 +66,11 @@ and its state in Patina.
 - A playback history window, grouped by day or folder and searchable, and
   an inspector with the file, its tracks, live playback statistics and any
   mpv property you choose to watch
+- A Media Info window (Window › Media Info, Ctrl+Shift+I) with what is
+  playing: its tags, cover art and location, and each stream's codec,
+  language and format (a video's resolution, pixel format and colors, an
+  audio track's sample rate, channels and sample format), following the
+  file and its tracks as they change
 - Music mode, IINA's mini player: the cover with the title and artist (an
   album in one file by its chapters), compact controls and the playlist as
   a drawer below; it comes on for audio files and goes for video, and
@@ -257,6 +262,7 @@ Help > Keyboard Shortcuts lists all of them.
 | Ctrl+J | Jump to a time |
 | Ctrl+, | Preferences |
 | Ctrl+Y, Ctrl+I | Playback history, inspector |
+| Ctrl+Shift+I | Media info |
 | Ctrl+W, Ctrl+Q | Close the window, quit |
 
 With the mouse: double click toggles full screen, a click shows or hides the

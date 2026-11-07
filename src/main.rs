@@ -20,6 +20,7 @@ mod jellyfin;
 #[cfg(target_os = "macos")]
 mod macos;
 mod media_controls;
+mod media_info;
 mod mpv;
 mod opensubtitles;
 mod platform;

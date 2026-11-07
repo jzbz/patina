@@ -16,7 +16,8 @@ export struct InspectorRow {
     removable: bool,
 }
 
-component Row inherits Rectangle {
+// A label and its value, which the Media Info window shows too.
+export component InspectorLine inherits Rectangle {
     in property <InspectorRow> entry;
     callback remove;
     min-height: layout.preferred-height;
@@ -110,7 +111,7 @@ export component InspectorWindow inherits Window {
                         color: Theme.text;
                         vertical-alignment: bottom;
                     }
-                    if !entry.section: Row {
+                    if !entry.section: InspectorLine {
                         entry: entry;
                         remove => {
                             root.remove-watch(index);

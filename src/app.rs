@@ -54,6 +54,7 @@ pub struct App {
     history_window: RefCell<Option<Rc<crate::history::HistoryController>>>,
     downloads: RefCell<Option<Rc<crate::downloads::Downloads>>>,
     inspector: RefCell<Option<Rc<crate::inspector::InspectorController>>>,
+    media_info: RefCell<Option<Rc<crate::media_info::MediaInfoController>>>,
     /// Subtitle choices made from the playlist menu, by file.
     subtitle_choices: crate::subtitle_match::Choices,
     /// What patina:// links opened, and what their playlists name, which
@@ -124,6 +125,7 @@ impl App {
             history_window: RefCell::new(None),
             downloads: RefCell::new(None),
             inspector: RefCell::new(None),
+            media_info: RefCell::new(None),
             subtitle_choices: Default::default(),
             link_sources: Default::default(),
             clipboard: RefCell::new(None),
@@ -1174,6 +1176,45 @@ impl App {
         }
     }
 
+    // ---- Media Info -----------------------------------------------------
+
+    pub fn open_media_info(self: &Rc<Self>) {
+        let existing = self.media_info.borrow().clone();
+        let media_info = match existing {
+            Some(media_info) => media_info,
+            None => match crate::media_info::MediaInfoController::new(self) {
+                Ok(media_info) => {
+                    *self.media_info.borrow_mut() = Some(media_info.clone());
+                    media_info
+                }
+                Err(error) => {
+                    log::error!("could not open the media info: {error}");
+                    return;
+                }
+            },
+        };
+        let active = self.active.borrow().upgrade();
+        if let Some(active) = active {
+            media_info.follow(&active);
+        }
+        media_info.show();
+    }
+
+    pub fn media_info_reply(&self, userdata: u64, result: crate::mpv::Result<crate::mpv::Node>) {
+        let media_info = self.media_info.borrow().clone();
+        if let Some(media_info) = media_info {
+            media_info.reply(userdata, result);
+        }
+    }
+
+    /// What `player` plays, its tags or its tracks changed.
+    pub fn media_changed(&self, player: &PlayerController) {
+        let media_info = self.media_info.borrow().clone();
+        if let Some(media_info) = media_info {
+            media_info.changed(player);
+        }
+    }
+
     /// Plays a file from the history window: in the active window, or in a
     /// new one.
     pub fn play_from_history(self: &Rc<Self>, path: String, new_window: bool) {
@@ -1275,6 +1316,10 @@ impl App {
             let inspector = self.inspector.borrow().clone();
             if let Some(inspector) = inspector {
                 inspector.follow(controller);
+            }
+            let media_info = self.media_info.borrow().clone();
+            if let Some(media_info) = media_info {
+                media_info.follow(controller);
             }
         }
         self.retarget_media();

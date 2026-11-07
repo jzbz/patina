@@ -726,6 +726,13 @@ export component MainMenu inherits ContextMenuArea {
             }
             MenuSeparator { }
             MenuItem {
+                title: "Media Info";
+                enabled: MenuPlayback.has-media;
+                activated => {
+                    Actions.patina("media-info");
+                }
+            }
+            MenuItem {
                 title: "Inspector";
                 activated => {
                     Actions.patina("inspector");

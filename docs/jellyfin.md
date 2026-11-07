@@ -613,6 +613,7 @@ the client's sentences, never the token.
 The token is in the keyring, in memory, and in the header of requests to
 its server. It is not in any URL Patina stores or shows, so not in
 History, Recent, the playlist, Copy URL, MPRIS, the Inspector's `path`,
+the Media Info window's Location,
 the Downloads window, or logs. The server writes it into the URLs it hands
 out (a transcode's, a subtitle's); the models remove it as they read them,
 and a transcode asks for no trickplay rendition in its HLS playlist, whose
