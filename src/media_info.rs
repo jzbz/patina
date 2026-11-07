@@ -707,8 +707,15 @@ mod tests {
 
     #[test]
     fn general_shows_the_tags_whatever_their_case() {
+        // A full path on each system: Windows takes /music/tone.flac to be
+        // on the current drive.
+        let file = if cfg!(windows) {
+            r"C:\music\tone.flac"
+        } else {
+            "/music/tone.flac"
+        };
         let mut values = Values::new();
-        values.insert("path".into(), string("/music/tone.flac"));
+        values.insert("path".into(), string(file));
         values.insert("filename".into(), string("tone.flac"));
         values.insert("media-title".into(), string("Tone"));
         values.insert(
@@ -730,10 +737,7 @@ mod tests {
         assert_eq!(value_of(&rows, "Album"), None);
         assert_eq!(value_of(&rows, "Encoder").as_deref(), Some("Lavf"));
         assert!(rows.iter().all(|row| row.label != "Empty"));
-        assert_eq!(
-            value_of(&rows, "Location").as_deref(),
-            Some("/music/tone.flac")
-        );
+        assert_eq!(value_of(&rows, "Location").as_deref(), Some(file));
 
         // A stream has no tags but its title, and is where it was opened.
         let mut values = Values::new();
