@@ -68,7 +68,8 @@ and its state in Patina.
   mpv property you choose to watch
 - Music mode, IINA's mini player: the cover with the title and artist (an
   album in one file by its chapters), compact controls and the playlist as
-  a drawer below; it comes on for audio files and goes for video
+  a drawer below; it comes on for audio files and goes for video, and
+  audio played out of it has a button back in the controller
 - Resuming where you left off, screenshots, URLs and network streams, A-B
   loops, and a compact always-on-top picture-in-picture window
 - Online video through yt-dlp, with what IINA's Online Media plugin adds:

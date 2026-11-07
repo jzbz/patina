@@ -703,6 +703,7 @@ impl PlayerController {
         });
         ui.set_arrow_action(prefs.arrow_action.clone().into());
         ui.set_toolbar_buttons(string_model(&prefs.toolbar_buttons));
+        ui.set_toolbar_music(prefs.toolbar_buttons.iter().any(|button| button == "music"));
         ui.set_single_click(prefs.single_click.clone().into());
         ui.set_double_click(prefs.double_click.clone().into());
         ui.set_right_click(prefs.right_click.clone().into());
@@ -2529,7 +2530,10 @@ impl PlayerController {
             }
             "open-website" => crate::platform::open_url(crate::WEBSITE),
             "save-playlist" => app.save_playlist_dialog(self),
-            "clear-playlist" => self.player().command(&["playlist-clear"]),
+            // Everything goes, what plays too, which mpv's playlist-clear keeps:
+            // a playlist of one had a Clear that did nothing. Stopping ends it
+            // as its end would, back to where it was opened from.
+            "clear-playlist" => self.player().command(&["stop"]),
             "playlist-select-all" => self.playlist_select_all(),
             "playlist-play-selected" => {
                 if let Some((index, _)) = self.selected_entries().first() {
@@ -4027,6 +4031,9 @@ impl PlayerController {
                 } else {
                     if let Some(section) = &section {
                         apply_section(&mpv, &path, section);
+                    }
+                    if playing::is_youtube(&path) {
+                        stream_in_parts(&mpv);
                     }
                     apply_quality(&mpv, &qualities, resume_at);
                     subtitle_match::load_for_current_file(&mpv, languages.as_deref(), &choices);
@@ -5859,6 +5866,22 @@ fn apply_quality(
     }
 }
 
+/// From the load hook, before mpv's yt-dlp hook, for a YouTube video: its
+/// streams are fetched a part at a time (`playing::REQUEST_SIZE`), which the
+/// yt-dlp hook keeps as it adds its own stream options. A part size in the
+/// user's own stream options wins.
+fn stream_in_parts(mpv: &Mpv) {
+    let mut options = playback::key_values(mpv, "file-local-options/stream-lavf-o");
+    if options.iter().any(|(name, _)| name == "request_size") {
+        return;
+    }
+    options.push(("request_size".into(), playing::REQUEST_SIZE.into()));
+    let options = crate::mpv::Value::Map(options);
+    if let Err(error) = mpv.set_property("file-local-options/stream-lavf-o", options) {
+        log::warn!("{error}");
+    }
+}
+
 /// What the load hook gives entries the YouTube section sent.
 struct SectionLoad {
     /// None when the yt-dlp format preference takes the place of a quality.
@@ -6824,6 +6847,108 @@ mod tests {
                 press_ctrl_q(&window, &keys),
                 "{view}: on the welcome screen"
             );
+        }
+    }
+
+    /// The Patina actions the window is asked for.
+    fn actions_asked(window: &PlayerWindow) -> Rc<RefCell<Vec<String>>> {
+        let actions: Rc<RefCell<Vec<String>>> = Rc::default();
+        let seen = actions.clone();
+        window
+            .global::<Actions>()
+            .on_patina(move |action| seen.borrow_mut().push(action.to_string()));
+        actions
+    }
+
+    /// The pointer at `x`, `y` for long enough that what it brings up has
+    /// faded in.
+    fn hover(window: &PlayerWindow, x: f32, y: f32) {
+        use slint::platform::WindowEvent;
+        let position = slint::LogicalPosition::new(x, y);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(400));
+    }
+
+    /// Audio played out of music mode has a button back into it in the
+    /// controller, after the toolbar's, unless the toolbar has its own. The
+    /// keys work on in music mode and out of it again.
+    #[test]
+    fn audio_out_of_music_mode_has_a_way_back() {
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let actions = actions_asked(&window);
+        let playback = window.global::<Playback>();
+        let prefs = window.global::<Prefs>();
+        show_page(&window, "player", "");
+        // The controller's last button: the controller is 460 wide at the
+        // bottom's middle, 24px up, and its toolbar ends 10px in, 8px down,
+        // in buttons 24px wide and 28px tall.
+        let (x, y) = (
+            (1280.0 - 460.0) / 2.0 + 460.0 - 10.0 - 12.0,
+            800.0 - 24.0 - 74.0 + 8.0 + 14.0,
+        );
+        let last_button = || {
+            hover(&window, x, y);
+            actions.borrow_mut().clear();
+            click(&window, x, y);
+            actions.borrow().clone()
+        };
+        assert_eq!(last_button(), ["toolbar settings"], "a video");
+        playback.set_audio_only(true);
+        assert_eq!(last_button(), ["toolbar music"], "audio");
+        // Only once: the toolbar's own is where the preference put it.
+        prefs.set_toolbar_buttons(ModelRc::new(VecModel::from(vec![
+            SharedString::from("music"),
+            "pip".into(),
+        ])));
+        prefs.set_toolbar_music(true);
+        assert_eq!(last_button(), ["toolbar pip"], "audio, with its own");
+
+        // As the window does with it.
+        window.set_music_mode(true);
+        assert!(press_ctrl_q(&window, &keys), "in music mode");
+        window.set_music_mode(false);
+        assert!(press_ctrl_q(&window, &keys), "out of music mode");
+    }
+
+    /// The playlist's Clear asks for the playlist to go with one entry in it,
+    /// the one playing, and the keys work on where the window goes back to
+    /// once it has stopped, after a row of the playlist had them.
+    #[test]
+    fn the_playlist_clears_with_only_what_plays_in_it() {
+        let window = window_for_keys();
+        let keys = keys_reaching_the_window(&window);
+        let actions = actions_asked(&window);
+        show_page(&window, "player", "");
+        let entry = PlaylistItem {
+            title: "A Song".into(),
+            current: true,
+            progress: -1.0,
+            ..Default::default()
+        };
+        window
+            .global::<Media>()
+            .set_playlist(ModelRc::new(VecModel::from(vec![entry])));
+        window.set_sidebar_tab("playlist".into());
+        window.set_sidebar_open(true);
+        i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        // The row, which gives the playlist's keys the focus: the sidebar is
+        // 340 wide under the title bar, and its list starts under the tabs
+        // and the playlist's own buttons.
+        hover(&window, 1100.0, 140.0);
+        click(&window, 1100.0, 140.0);
+        // Clear, last in the bottom row, 12px in from the corner.
+        actions.borrow_mut().clear();
+        click(&window, 1280.0 - 12.0 - 20.0, 800.0 - 12.0 - 14.0);
+        assert_eq!(*actions.borrow(), ["clear-playlist"]);
+
+        // As the window does once mpv has stopped.
+        window.set_sidebar_open(false);
+        for (view, page) in [("welcome", ""), ("library", "home"), ("youtube", "feed")] {
+            show_page(&window, view, page);
+            assert!(press_ctrl_q(&window, &keys), "{view}");
         }
     }
 
@@ -7937,6 +8062,64 @@ mod tests {
                 press_key(&window, Key::Escape);
                 assert_eq!(window.get_dialog(), "", "{dialog} over {view}");
             }
+        }
+    }
+
+    /// Why Clear stops: mpv's playlist-clear keeps the entry playing.
+    #[test]
+    fn stopping_empties_a_playlist_that_clearing_leaves_one_in() {
+        use crate::mpv::testing::{headless, wait_for};
+        let Some(mpv) = headless() else { return };
+        mpv.command(&["loadfile", "av://lavfi:sine"]).unwrap();
+        wait_for(&mpv, |event| matches!(event, Event::FileLoaded));
+        mpv.command(&["playlist-clear"]).unwrap();
+        assert_eq!(
+            mpv.get_property("playlist-count").unwrap().as_i64(),
+            Some(1)
+        );
+        mpv.command(&["stop"]).unwrap();
+        wait_for(&mpv, |event| matches!(event, Event::EndFile { .. }));
+        assert_eq!(
+            mpv.get_property("playlist-count").unwrap().as_i64(),
+            Some(0)
+        );
+    }
+
+    /// The load hook has a YouTube video's streams fetched in parts, for that
+    /// file only, keeping the user's own stream options and their part size.
+    #[test]
+    fn a_youtube_video_is_streamed_in_parts() {
+        use crate::mpv::testing::{headless, wait_for};
+        let Some(mpv) = headless() else { return };
+        mpv.hook_add(1, "on_load", 0).unwrap();
+        let size = playing::REQUEST_SIZE;
+        for (own, during) in [
+            ("", vec![("request_size", size)]),
+            (
+                "reconnect=1",
+                vec![("reconnect", "1"), ("request_size", size)],
+            ),
+            ("request_size=1048576", vec![("request_size", "1048576")]),
+        ] {
+            mpv.set_property("stream-lavf-o", own).unwrap();
+            let before = playback::key_values(&mpv, "stream-lavf-o");
+            mpv.command(&["loadfile", "av://lavfi:sine"]).unwrap();
+            let Event::Hook { id, .. } =
+                wait_for(&mpv, |event| matches!(event, Event::Hook { .. }))
+            else {
+                unreachable!()
+            };
+            stream_in_parts(&mpv);
+            mpv.hook_continue(id).unwrap();
+            wait_for(&mpv, |event| matches!(event, Event::FileLoaded));
+            let during: Vec<(String, String)> = during
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect();
+            assert_eq!(playback::key_values(&mpv, "stream-lavf-o"), during, "{own}");
+            mpv.command(&["stop"]).unwrap();
+            wait_for(&mpv, |event| matches!(event, Event::EndFile { .. }));
+            assert_eq!(playback::key_values(&mpv, "stream-lavf-o"), before, "{own}");
         }
     }
 

@@ -252,6 +252,9 @@ window (`music-mode` in `PlayerWindow`), as picture-in-picture is:
   alone, and one is music when its only video tracks are covers. A switch
   by hand turns it off for the window until the next one, as IINA's
   override does.
+- Out of the mode, audio (`Playback.audio-only`) has a music button after the
+  controller's toolbar, the way back in as music mode's back button is the way
+  out, unless the toolbar has its own (`Prefs.toolbar-music`).
 - `Playback.has-picture` is false for a file without a picture, which
   hides the video image in either layout: the texture otherwise keeps the
   last frame of whatever played before.
@@ -356,6 +359,15 @@ downloads still read those as they plainly mean. yt-dlp's own config file
 can't be seen from here, and the argument replaces that file's whole `youtube`
 entry, `lang` or `po_token` included, so those belong in Patina's yt-dlp
 options if they are to last.
+For a YouTube address, opened from anywhere, the load hook also has FFmpeg
+fetch the streams 10 MiB at a time (`request_size` in the file's
+`stream-lavf-o`, `youtube::playing::REQUEST_SIZE`), as yt-dlp's downloads do;
+mpv's hook doesn't pass on the part size yt-dlp gives. YouTube's servers sent
+some streams (each AV1 format tried) at little more than their own rate to a
+single open-ended request, which left the cache seconds ahead and playback
+waiting at the first slow moment. A stream sent at full speed to one request
+comes a little slower in parts, still far ahead of playback. A `request_size`
+in the user's own stream options wins.
 mpv says the signed stream address, with the user's IP address in it, when
 one fails to open, so `player/mod.rs` cuts `googlevideo.com` addresses out of
 what it logs.

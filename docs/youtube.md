@@ -407,6 +407,17 @@ that mark, the load hook sets, as file-local options that end with it:
 - a format up to the height of the screen the window is on when the video
   loads.
 
+Any YouTube address, the section's or not, is also streamed in 10 MiB parts
+(architecture.md's Online video says why). Measured on Linux with a 4K video
+of 9.4 Mb/s on a fast connection: mpv's single request came at 2.3 MB/s, the
+cache grew by a third of a second each second and held 8 seconds after a seek;
+in parts it came at over 15 MB/s, and the cache reached its 150 MiB limit,
+over two minutes of that video, within 8 seconds. yt-dlp's clients made no
+difference to that, nor did decoding, which kept far ahead in software alone.
+Not every stream is held back: of others tried, the AV1 ones were, while a
+1080p VP9 one came at full speed in a single request, and a little slower,
+though still far ahead of playback, in parts.
+
 **Quality.** `youtube-quality` in Preferences › Network chooses Up to the
 screen's resolution (the default), Best available, or a height. The screen's
 short side is the limit, as a screen on its side still shows a wide video
@@ -659,5 +670,10 @@ with a handful of requests against public channels. Not yet tried:
 - Reading the screen on Wayland, the quality limit having run on X only.
 - A real video with an ad, a stream failing partway, a real `hq720` picture
   at scale 2.
+- Streaming in parts for a live stream, whose playlist comes from another of
+  YouTube's hosts, through a proxy, or with an FFmpeg too old to have
+  `request_size`, which mpv then only logs as an option it couldn't set (tried
+  with a made-up option on a local file). Measured on one public 4K video,
+  against Patina built without it and mpv alone.
 - Downloads started from File › Download Video and the Retry button, on
   screen, and downloading without ffmpeg, beyond a unit test.

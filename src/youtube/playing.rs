@@ -140,6 +140,33 @@ pub fn play_format(filter: &str) -> String {
     format!("bestvideo{filter}+bestaudio/best{filter}/best")
 }
 
+/// How much of a YouTube stream mpv asks for at a time, as FFmpeg's
+/// `request_size`: 10 MiB, as yt-dlp's own downloads ask for (its
+/// `http_chunk_size`). YouTube's servers sent some streams, each AV1 format
+/// tried, at little more than the stream's own rate to a single open-ended
+/// request: 2.3 MB/s for a 4K video of 9.4 Mb/s, where the same connection
+/// fetched 10 MiB parts at over 15 MB/s, and at times 30. At the single
+/// request's pace the cache grew by a third of a second each second, and after
+/// a seek it held 8 seconds; anything slower for a moment and playback waited.
+/// A stream sent at full speed to one request (a 1080p VP9 one was) comes a
+/// little slower in parts, still far ahead of playback. mpv's yt-dlp hook
+/// doesn't pass the part size yt-dlp gives for each format.
+pub const REQUEST_SIZE: &str = "10485760";
+
+/// Whether `url` is a YouTube page, which mpv's hook opens through yt-dlp and
+/// then streams from YouTube's servers (`REQUEST_SIZE`), wherever it was opened
+/// from. Other sites' servers may not answer a request for part of a file.
+pub fn is_youtube(url: &str) -> bool {
+    let url = url.strip_prefix("ytdl://").unwrap_or(url);
+    let Ok(url) = url::Url::parse(url) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some_and(|host| {
+            host == "youtu.be" || host == "youtube.com" || host.ends_with(".youtube.com")
+        })
+}
+
 /// The format for downloading with that filter. Joining video and audio takes
 /// ffmpeg; without it, the best that comes as one file.
 pub fn download_format(filter: &str, has_ffmpeg: bool) -> String {
@@ -271,6 +298,32 @@ mod tests {
         assert_eq!(video_filter("720", Some((3840, 2160))), "[height<=?720]");
         // A value a later version left behind.
         assert_eq!(video_filter("what", Some((1920, 1080))), "[height<=?1080]");
+    }
+
+    #[test]
+    fn youtube_pages_are_streamed_in_parts() {
+        for url in [
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+            "https://youtube.com/watch?v=aaaaaaaaaaa",
+            "https://m.youtube.com/watch?v=aaaaaaaaaaa",
+            "https://music.youtube.com/watch?v=aaaaaaaaaaa",
+            "https://youtu.be/aaaaaaaaaaa",
+            "http://www.youtube.com/playlist?list=PL",
+            "ytdl://https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        ] {
+            assert!(is_youtube(url), "{url}");
+        }
+        for url in [
+            "https://example.com/watch?v=aaaaaaaaaaa",
+            "https://notyoutube.com/watch?v=aaaaaaaaaaa",
+            "https://youtube.com.example.com/watch",
+            "/home/someone/youtube.com/a.mkv",
+            "file:///youtube.com/a.mkv",
+            "jellyfin://server/item",
+            "",
+        ] {
+            assert!(!is_youtube(url), "{url}");
+        }
     }
 
     #[test]

@@ -158,6 +158,16 @@ export component ControlBar inherits Rectangle {
                 Actions.patina("toolbar " + kind);
             }
         }
+        // The way back into music mode for audio playing out of it, as music
+        // mode has its way out. The toolbar's own music button is a
+        // preference and off by default, which left only the menu and a
+        // shortcut.
+        if Playback.audio-only && !Prefs.toolbar-music: ToolbarButton {
+            kind: "music";
+            clicked => {
+                Actions.patina("toolbar music");
+            }
+        }
     }
 
     // Bottom row: elapsed time, seek bar, duration or remaining time. The

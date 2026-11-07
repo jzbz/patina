@@ -847,7 +847,7 @@ fn writes_log_file(mpv: &Mpv) -> bool {
 }
 
 /// A key-value list option's value as it is now, its entries in order.
-fn key_values(mpv: &Mpv, name: &str) -> Vec<(String, String)> {
+pub fn key_values(mpv: &Mpv, name: &str) -> Vec<(String, String)> {
     match mpv.get_property(name) {
         Ok(crate::mpv::Node::Map(entries)) => entries
             .into_iter()

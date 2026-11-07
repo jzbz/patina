@@ -292,6 +292,8 @@ export global Prefs {
     // "speed", "seek" or "playlist".
     in property <string> arrow-action: "speed";
     in property <[string]> toolbar-buttons: ["pip", "playlist", "settings"];
+    // "music" is among them.
+    in property <bool> toolbar-music;
     // "none", "pause", "fullscreen", "toggle-osc", "context-menu".
     in property <string> single-click: "toggle-osc";
     in property <string> double-click: "fullscreen";
