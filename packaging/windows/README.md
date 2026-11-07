@@ -75,7 +75,10 @@ and it turns off Inno Setup's RedirectionGuard, which the script says why.
   reached through no link or junction, holding nothing but lock and id files
   named as Patina names them, and none of the locks in use by a running
   Patina, this one or a portable copy. Anything else there keeps it, and the
-  uninstall log says why. `%LOCALAPPDATA%\Patina` itself stays.
+  uninstall log says why. `%LOCALAPPDATA%\Patina` itself stays. On a
+  Windows 11 VM it removed a folder holding one idle lock; the branches
+  that keep it, a lock in use or a file Patina would not have made, have
+  run only on the workflow's runner.
 - Never touches `%APPDATA%\Patina`: `config` (settings, key bindings, mpv's
   configuration, scripts and fonts) and `data` (history, the place in each
   file, thumbnails, downloaded subtitles). Nor the OpenSubtitles password in
@@ -148,7 +151,11 @@ directly rather than through the shell, so SmartScreen's prompt, which the
 shell shows, is not expected for them; from a zip unpacked with Explorer
 they do carry the mark. Antivirus programs have flagged PyInstaller-built
 programs such as `yt-dlp.exe` as malware from time to time; a quarantined
-`yt-dlp.exe` shows in Patina as yt-dlp missing.
+`yt-dlp.exe` shows in Patina as yt-dlp missing. On a Windows 11 VM with
+Smart App Control off, Defender found nothing in either, installed or
+unpacked from a marked zip. SmartScreen on a double-click of a marked
+`patina.exe` in Explorer has not been tried, nor Smart App Control
+enforcing.
 
 The folder build, unlike yt-dlp's single-file `yt-dlp.exe`, unpacks
 nothing when it starts: it loads Python from `_internal` where it sits, in
@@ -160,9 +167,15 @@ test machine), and a single-file `yt-dlp.exe` stopped that way left the
 doesn't clear by itself. The folder build leaves nothing when stopped so.
 A single-file `yt-dlp.exe` the user installed, as winget's is, and which
 Patina uses when it is the newer, still leaves one each time it is
-stopped; that is a matter for that copy. The folder build's start, its
-first one in particular while Defender scans its files, and its stopping
-have not yet been tried on a test machine.
+stopped; that is a matter for that copy. On a Windows 11 VM with no GPU and
+no audio device, the folder build started in about 0.4 seconds, against 1.3
+to 1.5 for the single-file one, and in 0.6 the first time after installing.
+A portable copy just unpacked from a marked zip took 6 seconds to start
+once, and 1.4 and 2 seconds on two more copies, one without the mark; why is
+not known. Stopped by Patina, through Cancel in the Downloads window, a new
+search or Back in the YouTube section, or quitting during a download, it
+left no process and no `_MEI` folder in `%TEMP%`. Killing Patina itself while
+yt-dlp runs has not been tried.
 
 ## Building it by hand
 

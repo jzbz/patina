@@ -559,7 +559,9 @@ pinned in `packaging/bundled-tools.env` and found by `platform::bundled`, but
 no JavaScript runtime: yt-dlp then asks YouTube only for its `visionos`
 client, which needs none and which the section asks for first anyway. Tried
 on Linux with `--no-js-runtimes`, on two videos, that gave the same best
-format with no warning, which is all that has been checked. The order is the
+format with no warning. On a macOS and a Windows VM the packages' yt-dlp,
+with no runtime, played and downloaded public videos, up to 1080p on macOS
+and 4K on Windows; that is all that has been checked. The order is the
 yt-dlp the user chose (the path preference, a `ytdl_path` in mpv's
 `script-opts/ytdl_hook.conf`, or a `yt-dlp` in mpv's configuration folder),
 then the newer of the bundled one and a `yt-dlp` the user installed (on the
@@ -672,17 +674,47 @@ local stream.
 
 ## Not yet tried
 
-Checked with real yt-dlp and feeds on Linux only, on a virtual framebuffer,
-with a handful of requests against public channels. Not yet tried:
+Checked with real yt-dlp and feeds on Linux, on a virtual framebuffer, with
+a handful of requests against public channels.
 
-- macOS and Windows at all, beyond building and lints, or the Flatpak; and
-  the bundled yt-dlp and ffmpeg there: signed, notarised and run from
-  Patina.app, run from the installed Windows folder, how long yt-dlp's
-  folder build takes to start there (it unpacks nothing, unlike the
-  single-file build the packages carried before, which took about 10
-  seconds to start on a macOS VM), and the bundled ffmpeg joining a real
-  download's video and audio (its configuration was tried on Linux, through
-  yt-dlp, on media made locally).
+The macOS and Windows packages the release workflow built have been through
+two rounds on virtual machines, with a few requests against public videos
+and no sign-in: an Intel macOS 26 VM with no GPU, running Patina.app ad-hoc
+signed, as the workflow leaves it; and a Windows 11 VM with no GPU and no
+audio device, running the installer and the portable zip. On both,
+yt-dlp's folder build starts in about a third of a second and unpacks
+nothing; the single-file build the packages carried before took about 10
+seconds to start on the macOS VM, and 1.3 to 1.5 on Windows. A first start
+takes longer: about 2 seconds on the macOS VM, and once 6 seconds for a
+portable copy just unpacked on Windows, for a reason not found. Search,
+playback and downloads worked, the bundled ffmpeg joining each download's
+video and audio (from 720p H.264 to 4K AV1), and stopping a search or a
+download left no process and no unpacked `_MEI` folder behind. On Windows
+that was done in the section itself: the yt-dlp version under the bar,
+search, playing from the section and through Open URL, downloading, Cancel
+in the Downloads window, Back during a search, quitting during a download,
+and the installed and portable copies each using its own yt-dlp. The macOS
+VM took no input, so there the section's commands were run as it builds
+them, and a YouTube address given to Patina on the command line played
+through the bundled yt-dlp.
+
+Not yet tried:
+
+- Apple Silicon (the universal app's arm64 half has never run), macOS 11,
+  and the Flatpak.
+- The Developer ID signed, notarised Patina.app: whether its hardened
+  runtime lets yt-dlp.app load Python.framework and its modules, and a
+  quarantined copy, as a browser or Homebrew leaves it.
+- The section on macOS by hand: its version line, search, playing from it,
+  downloads, and Cancel and Back from the app's own buttons.
+- Killing Patina by force while a download runs (on Windows, Patina's own
+  stopping already kills yt-dlp by force, and that left nothing behind);
+  cancelling during ffmpeg's join, which the downloads tried finished too
+  quickly to catch; and a search running out of time.
+- On Windows, the bundled yt-dlp through an upgrade over an older install
+  or a running download, and SmartScreen and Smart App Control
+  (`packaging/windows/README.md`).
+- Sound, and a GPU: both VMs rendered in software, and neither played audio.
 - Choosing the newer of the bundled yt-dlp and one the user installed
   (Homebrew, winget, pip) on a real Mac or Windows machine: the comparison,
   the kept answers and a slow or broken copy were tried on Linux with
@@ -690,8 +722,9 @@ with a handful of requests against public channels. Not yet tried:
   window moving to the installed copy once it has answered not at all.
 - The player refusing to download a live stream with the bundled ffmpeg,
   which needs a live stream playing on macOS or Windows.
-- The import and export dialogs themselves: the test display has no portal.
-  What they call is tested below them, and importing through the view.
+- The import and export dialogs themselves: the test display has no portal,
+  and neither VM opened them. What they call is tested below them, and
+  importing through the view.
 - A real export's rarer forms, and a translated one, whose header fallback
   is a guess.
 - NewPipe importing the file Patina writes, and Patina importing a file a

@@ -161,8 +161,9 @@ well. Neither the
 macOS nor the Windows package bundles a JavaScript runtime such as Deno;
 yt-dlp then asks YouTube only for what plays without one. The bundled
 yt-dlp is yt-dlp's own folder build, which loads Python from beside itself
-rather than unpacking it on every start; its first start can still take a
-while as macOS or Windows checks its files. It is GPL-3.0-or-later as a
+rather than unpacking it on every start, and starts in about a third of a
+second; a first start has taken a few seconds, for a reason not yet found.
+It is GPL-3.0-or-later as a
 whole, for the libraries its build carries,
 though yt-dlp's own code is Unlicense, and the bundled ffmpeg is
 LGPL-2.1-or-later; `THIRD-PARTY.md` in each package lists what it carries
@@ -206,10 +207,12 @@ Wayland and X11 both work.
 ### macOS and Windows
 
 CI builds Patina and runs its tests on both. The self-contained packages
-below play video on a Windows 11 VM and an Intel macOS VM, but most
-features have so far only been tried on Linux. On macOS, Homebrew's `mpv`
-provides libmpv. On Windows, put `libmpv-2.dll` beside `patina.exe`, for
-example from an `mpv-dev`
+below play video, and online video and downloads through the yt-dlp and
+ffmpeg they carry, on a Windows 11 VM and an Intel macOS VM, neither with a
+GPU. Most features have so far only been tried on Linux, and nothing yet on
+Apple Silicon or with the signed and notarised Patina.app. On macOS,
+Homebrew's `mpv` provides libmpv. On Windows, put `libmpv-2.dll` beside
+`patina.exe`, for example from an `mpv-dev`
 archive of [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild/releases)
 or [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake/releases).
 Those builds also need `vulkan-1.dll`, which mpv's own Windows release ships

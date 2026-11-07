@@ -482,7 +482,7 @@ so that ffmpeg can close its file and such a launcher can remove the folder
 it unpacked itself into, which it can't when killed; Windows has no such
 request for a windowless console program, so there it is killed at once.
 The folder builds the packages carry unpack nothing, so stopping them
-leaves nothing behind either way. The same
+leaves nothing behind either way, as a macOS and a Windows VM showed. The same
 window lists files downloaded from Jellyfin servers, which Patina fetches
 itself (`jellyfin/download.rs`, described in [jellyfin.md](jellyfin.md)),
 one at a time from each server, and reports in yt-dlp's terms; those
