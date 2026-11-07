@@ -57,7 +57,8 @@ explains the design.
   `packaging/windows-deps.env`) with its installer
   (`packaging/windows/patina.iss`). Patina.app and the Windows folder also
   carry yt-dlp and ffmpeg, pinned for both in `packaging/bundled-tools.env`
-  (`packaging/macos-tools.sh` and `windows-deps.ps1 -Tools` fetch yt-dlp;
+  (`packaging/macos-tools.sh` and `windows-deps.ps1 -Tools` fetch yt-dlp's
+  folder build, the first laying it out as a helper app, yt-dlp.app;
   `packaging/ffmpeg.sh` builds ffmpeg from FFmpeg's source tarball, and
   `packaging/ffmpeg.sh linux <downloads> <work> <out>` builds the same
   configuration on Linux, outside the tree, to try a change to it). Run

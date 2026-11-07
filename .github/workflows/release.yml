@@ -654,9 +654,9 @@ jobs:
   # the winget manifests point at the installer produced here.
   #
   # Two files come out of it, holding the same folder: patina.exe with the
-  # libmpv-2.dll and vulkan-1.dll it loads from beside itself, the yt-dlp.exe
-  # and ffmpeg.exe it runs for online video and downloads, and the
-  # licences. patina-<tag>-windows-x86_64.zip is that folder, for whoever
+  # libmpv-2.dll and vulkan-1.dll it loads from beside itself, yt-dlp's
+  # folder build in yt-dlp\ and the ffmpeg.exe it runs for online video and
+  # downloads, and the licences. patina-<tag>-windows-x86_64.zip is that folder, for whoever
   # wants to unpack it and run it from anywhere. patina-<tag>-x86_64-setup.exe
   # is the same folder inside a per-user Inno Setup installer
   # (packaging/windows/patina.iss), which is what winget installs: a portable
@@ -733,16 +733,17 @@ jobs:
 
       # patina.exe with libmpv-2.dll beside it, where Patina looks first, and
       # the vulkan-1.dll libmpv imports, which Windows finds in the exe's
-      # folder; yt-dlp.exe from packaging/bundled-tools.env and the ffmpeg.exe
-      # built from FFmpeg's source, beside it too, where Patina looks for
-      # them, ffmpeg.exe checked against the hashes ffmpeg-windows recorded;
-      # then the licences, those two's notices among them. This folder
-      # is the zip's content and what the installer puts in {app}, so it is
-      # checked to hold exactly these twelve files, and each one's hash is
-      # kept as well as printed: Inno Setup's installer, its compiler and the
-      # setup exe all run in this workspace after this, and the last step
-      # checks against these hashes rather than against the files as they
-      # are by then.
+      # folder; yt-dlp's folder build from packaging/bundled-tools.env in a
+      # yt-dlp folder of its own and the ffmpeg.exe built from FFmpeg's
+      # source beside patina.exe, where Patina looks for them, ffmpeg.exe
+      # checked against the hashes ffmpeg-windows recorded; then the
+      # licences, those two's notices among them. This folder is the zip's
+      # content and what the installer puts in {app}, so it is checked to
+      # hold exactly these eleven files and the yt-dlp folder, and every
+      # file's hash, each one in yt-dlp\ included, is kept as well as
+      # printed: Inno Setup's installer, its compiler and the setup exe all
+      # run in this workspace after this, and the last step checks against
+      # these hashes rather than against the files as they are by then.
       - name: Stage the folder
         id: stage
         shell: pwsh
@@ -765,17 +766,31 @@ jobs:
           Copy-Item ui\icons\LICENSE (Join-Path $dir 'LICENSE-lucide.txt')
           Copy-Item ui\fonts\LICENSE (Join-Path $dir 'LICENSE-ibm-plex.txt')
           Copy-Item packaging\THIRD-PARTY.md (Join-Path $dir 'THIRD-PARTY.md')
-          $expected = 'LICENSE-GPLv3.txt', 'LICENSE-ffmpeg.txt', 'LICENSE-ibm-plex.txt', 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY-yt-dlp.txt', 'THIRD-PARTY.md', 'ffmpeg.exe', 'libmpv-2.dll', 'patina.exe', 'vulkan-1.dll', 'yt-dlp.exe'
+          $expected = 'LICENSE-GPLv3.txt', 'LICENSE-ffmpeg.txt', 'LICENSE-ibm-plex.txt', 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY-yt-dlp.txt', 'THIRD-PARTY.md', 'ffmpeg.exe', 'libmpv-2.dll', 'patina.exe', 'vulkan-1.dll', 'yt-dlp'
           $found = @(Get-ChildItem -LiteralPath $dir -Force | ForEach-Object Name)
           if (Compare-Object $expected $found) {
             throw "$dir holds $($found -join ', '), not $($expected -join ', ')"
           }
+          if (-not (Test-Path -LiteralPath (Join-Path $dir 'yt-dlp') -PathType Container)) { throw "$dir\yt-dlp is not a folder" }
+          # Every file, by its path in the folder with / between the names,
+          # as the zip names its entries.
+          $root = (Resolve-Path -LiteralPath $dir).Path
+          $names = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') })
+          [Array]::Sort($names, [StringComparer]::Ordinal)
           $files = [ordered]@{}
-          foreach ($name in $expected) {
-            $files[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dir $name)).Hash
+          foreach ($name in $names) {
+            $files[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $root $name)).Hash
           }
           $files.GetEnumerator() | ForEach-Object { '{0}  {1}' -f $_.Value, $_.Key }
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "files=$($files | ConvertTo-Json -Compress)"
+          "$($files.Count) files"
+          # Later steps get this in their environment, where Windows allows a
+          # variable 32,767 characters; with yt-dlp 2026.10.26's folder, 154
+          # files, it takes about 17,500.
+          $json = $files | ConvertTo-Json -Compress
+          if ($json.Length -gt 30000) {
+            throw "the folder's hashes take $($json.Length) characters, too many for an environment variable; hand them to later steps some other way"
+          }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "files=$json"
 
       # .cargo/config.toml explains the failure; this proves it did not happen
       # to the exe that ships. ci.yml runs the same script on its debug build.
@@ -783,16 +798,18 @@ jobs:
         shell: pwsh
         run: ./packaging/windows-imports.ps1 dist\Patina\patina.exe
 
-      # The digest proves this is the yt-dlp.exe that was pinned; this proves
-      # it is an asset of yt-dlp's own immutable release of that version.
+      # The digest proves this is the yt-dlp_win.zip that was pinned, which
+      # the folder's yt-dlp\ was unpacked from; this proves it is an asset of
+      # yt-dlp's own immutable release of that version.
       - name: Check yt-dlp's release attestation
         timeout-minutes: 5
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release verify-asset $env:YTDLP_VERSION dist\Patina\yt-dlp.exe --repo yt-dlp/yt-dlp
-          if ($LASTEXITCODE -ne 0) { throw "yt-dlp.exe is not an asset of yt-dlp's release $env:YTDLP_VERSION" }
+          $zip = Join-Path $env:RUNNER_TEMP ('downloads\' + [IO.Path]::GetFileName($env:YTDLP_WINDOWS_URL))
+          gh release verify-asset $env:YTDLP_VERSION $zip --repo yt-dlp/yt-dlp
+          if ($LASTEXITCODE -ne 0) { throw "$zip is not an asset of yt-dlp's release $env:YTDLP_VERSION" }
 
       # Run from the folder with nothing else on PATH that could stand in for
       # its DLLs. A GUI-subsystem exe has no console, but it does write to
@@ -810,16 +827,15 @@ jobs:
           $text
           if ($p.ExitCode -ne 0) { throw ('patina --version exited 0x{0:X8}' -f $p.ExitCode) }
           if ($text -notmatch 'Patina\\libmpv-2\.dll') { throw 'Patina did not load the bundled libmpv-2.dll' }
-          # Patina finds the yt-dlp and ffmpeg beside it by itself, and both
+          # Patina finds the yt-dlp and ffmpeg it carries by itself, and both
           # run: yt-dlp is the version pinned, and ffmpeg the FFmpeg release
           # pinned, configured without GPL, nonfree or network parts, so LGPL
-          # 2.1 or later, as THIRD-PARTY.md says. (yt-dlp.exe is
+          # 2.1 or later, as THIRD-PARTY.md says. (yt-dlp's folder build is
           # GPL-3.0-or-later as a whole, for what it carries;
           # LICENSE-GPLv3.txt is its licence.)
-          foreach ($tool in 'yt-dlp', 'ffmpeg') {
-            if ($text -notmatch "(?m)^bundled ${tool}: .*Patina\\${tool}\.exe\s*$") { throw "Patina did not find the bundled $tool.exe" }
-          }
-          $ytdlp = & (Join-Path $PWD 'dist\Patina\yt-dlp.exe') --version
+          if ($text -notmatch '(?m)^bundled yt-dlp: .*Patina\\yt-dlp\\yt-dlp\.exe\s*$') { throw 'Patina did not find the bundled yt-dlp\yt-dlp.exe' }
+          if ($text -notmatch '(?m)^bundled ffmpeg: .*Patina\\ffmpeg\.exe\s*$') { throw 'Patina did not find the bundled ffmpeg.exe' }
+          $ytdlp = & (Join-Path $PWD 'dist\Patina\yt-dlp\yt-dlp.exe') --version
           if ($LASTEXITCODE -ne 0) { throw ('yt-dlp.exe --version exited 0x{0:X8}' -f $LASTEXITCODE) }
           "yt-dlp $ytdlp"
           if ("$ytdlp".Trim() -ne $env:YTDLP_VERSION) { throw "yt-dlp.exe is version $ytdlp, not the pinned $env:YTDLP_VERSION" }
@@ -870,7 +886,7 @@ jobs:
           }
           $json = Join-Path $work 'info.json'
           [IO.File]::WriteAllText($json, ($info | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
-          $out = & dist\Patina\yt-dlp.exe --ignore-config --no-cache-dir --newline --no-playlist --encoding utf-8 `
+          $out = & dist\Patina\yt-dlp\yt-dlp.exe --ignore-config --no-cache-dir --newline --no-playlist --encoding utf-8 `
             --print 'after_move:patina-file %(filepath)s' --paths $work `
             --ffmpeg-location (Join-Path $PWD 'dist\Patina\ffmpeg.exe') --format 1+2 --load-info-json $json
           $code = $LASTEXITCODE
@@ -888,8 +904,9 @@ jobs:
 
       # The folder under a top-level Patina\, so it unpacks into one folder
       # rather than over whatever sits beside the zip. Read back once written:
-      # every entry has to be one of the staged files under Patina/, with the
-      # bytes 'Stage the folder' hashed, and nothing else.
+      # every entry has to be one of the staged files under Patina/, those in
+      # Patina/yt-dlp/ included, with the bytes 'Stage the folder' hashed,
+      # and nothing else.
       - name: Zip
         id: zip
         shell: pwsh
@@ -1075,14 +1092,24 @@ jobs:
       # The files placed in %APPDATA%\Patina and %LOCALAPPDATA%\Patina before
       # the install stand in for Patina's own, and are as much the point of
       # this step as the shortcut is: the first holds the preferences, key
-      # bindings, mpv configuration, history and watch-later positions, the
-      # second the single instance's directory, and an uninstaller that
-      # removed either would take them from every copy of Patina on the
-      # account, the portable one included. One sits at the top of each, and
-      # the rest under the names src/settings.rs gives Patina's files and
-      # folders, so an [UninstallDelete] naming any one of them fails the step
-      # too; a new one belongs in that list. Neither directory is
-      # %LOCALAPPDATA%\Programs\Patina, where the installer puts Patina.
+      # bindings, mpv configuration, history and watch-later positions, and
+      # an uninstaller that removed any of it would take it from every copy
+      # of Patina on the account, the portable one included. One sits at the
+      # top of each, and the rest under the names src/settings.rs gives
+      # Patina's files and folders, so an [UninstallDelete] naming any one of
+      # them fails the step too; a new one belongs in that list. Neither
+      # directory is %LOCALAPPDATA%\Programs\Patina, where the installer puts
+      # Patina.
+      #
+      # The one thing the uninstaller removes outside it is
+      # %LOCALAPPDATA%\Patina\instance, the single instance's lock and id,
+      # and only while it is Patina's own: those files and nothing else, none
+      # of them in use (patina.iss, [Code], says why and how). So the first
+      # uninstall finds it holding a lock and an id, named as
+      # src/instance.rs names them, and has to remove it and nothing beside
+      # it; then the setup installs and uninstalls twice more, and the folder
+      # has to stay, once with a file Patina would not have made beside the
+      # lock, once with the lock held open as a running Patina holds it.
       #
       # Patina registers its file types and patina:// links itself, from
       # Preferences > Utilities, under HKCU\Software, and the uninstaller runs
@@ -1165,13 +1192,21 @@ jobs:
             (Join-Path $roaming 'data\watch-later\sentinel'),
             (Join-Path $roaming 'data\thumbnails\sentinel'),
             (Join-Path $roaming 'data\online-subtitles\sentinel'),
-            (Join-Path $local 'sentinel'),
-            (Join-Path $local 'instance\sentinel')
+            (Join-Path $local 'sentinel')
           )
           $sentinels = foreach ($file in $files) {
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
             Set-Content -LiteralPath $file -Value "stands in for Patina's own files: $([guid]::NewGuid())"
             [pscustomobject]@{ Path = $file; Hash = (Get-FileHash -LiteralPath $file).Hash }
+          }
+
+          # The single instance's folder, as a Patina that has run and quit
+          # leaves it: a lock and an id named for a settings folder's key.
+          $instance = Join-Path $local 'instance'
+          $instanceFiles = (Join-Path $instance '0123456789abcdef.lock'), (Join-Path $instance '0123456789abcdef.id')
+          foreach ($file in $instanceFiles) {
+            New-Item -ItemType Directory -Force -Path $instance | Out-Null
+            Set-Content -LiteralPath $file -Value 'stands in for the single instance'
           }
 
           function Invoke-Bounded([string] $file, [string[]] $arguments) {
@@ -1180,10 +1215,60 @@ jobs:
             if (-not $p.WaitForExit(300000)) { throw "$file was still running after 5 minutes" }
             $p.ExitCode
           }
-
-          try {
+          function Install-Patina {
             $code = Invoke-Bounded $setup @('/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$($logs[0])`"")
             if ($code -ne 0) { throw "the installer exited $code" }
+          }
+          # Inno's uninstaller runs as two processes: the one started here
+          # hands the work to a copy of itself in a temporary folder, and
+          # exits when that copy tells it to. The copy does so once the files,
+          # the registry entries and {app} are gone, but before [Code] sees
+          # usPostUninstall, where RemoveInstanceFolder runs. So neither this
+          # process's exit nor {app}'s going is the end of the uninstall.
+          # Every way through RemoveInstanceFolder logs one closing "Single
+          # instance:" line, and the copy, which alone writes the log, holds
+          # it open for writing until it exits: that line, then the log
+          # coming free, are the end. $expect is the closing line's first
+          # word: removed, leaving, no or could.
+          function Uninstall-Patina([string] $uninstaller, [string] $expect) {
+            # The copy truncates the log only once it starts, so an old one
+            # would answer for it until then.
+            if (Test-Path -LiteralPath $logs[1]) { Remove-Item -LiteralPath $logs[1] -Force }
+            $code = Invoke-Bounded $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$($logs[1])`"")
+            if ($code -ne 0) { throw "the uninstaller exited $code" }
+            # A closing line names the folder itself; the per-file "could not
+            # remove" lines name a file in it, and do not close.
+            $closing = '(?m)Single instance: (no plain folder .*\\instance, so nothing to remove|leaving .*\\instance as it is|removed .*\\instance|could not remove .*\\instance)\r?$'
+            $deadline = (Get-Date).AddMinutes(2)
+            $last = $null
+            $err = $null
+            while (-not $last) {
+              try {
+                # Shared for writing too, since the copy has it open to write.
+                $reader = New-Object IO.StreamReader([IO.File]::Open($logs[1], 'Open', 'Read', 'ReadWrite, Delete'))
+                try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                if ($text -match $closing) { $last = $Matches[1] }
+              } catch { $err = $_ }
+              if (-not $last) {
+                if ((Get-Date) -gt $deadline) { throw "the uninstall logged no closing 'Single instance:' line in 2 minutes (last error: $err)" }
+                Start-Sleep -Milliseconds 250
+              }
+            }
+            "uninstaller: Single instance: $last"
+            if ($last -notmatch "^$expect ") { throw "the uninstall's [Code] ended '$last', where this case expects '$expect'" }
+            # Opening it unshared fails for as long as the copy has it open.
+            $deadline = (Get-Date).AddMinutes(2)
+            while ($true) {
+              try { [IO.File]::Open($logs[1], 'Open', 'Read', 'None').Dispose(); break } catch { $err = $_ }
+              if ((Get-Date) -gt $deadline) { throw "the uninstaller's second process still had its log open 2 minutes after its [Code] ended (last error: $err)" }
+              Start-Sleep -Milliseconds 250
+            }
+            $left = @($app, $lnk, $arp, $appPaths | Where-Object { Test-Path -LiteralPath $_ })
+            if ($left) { throw "the uninstall left behind: $($left -join ', ')" }
+          }
+
+          try {
+            Install-Patina
 
             foreach ($file in $staged.PSObject.Properties) {
               $path = Join-Path $app $file.Name
@@ -1193,9 +1278,9 @@ jobs:
               }
             }
             $names = @($staged.PSObject.Properties | ForEach-Object Name)
-            $extra = @(Get-ChildItem -LiteralPath $app -Force | Where-Object {
-                $_.Name -notin $names -and $_.Name -notmatch '^unins[0-9]{3}\.(dat|exe|msg)$'
-              } | ForEach-Object Name)
+            $extra = @(Get-ChildItem -LiteralPath $app -Recurse -File -Force |
+              ForEach-Object { $_.FullName.Substring($app.Length + 1).Replace('\', '/') } |
+              Where-Object { $_ -notin $names -and $_ -notmatch '^unins[0-9]{3}\.(dat|exe|msg)$' })
             if ($extra) { throw "the install put more in $app than the folder holds: $($extra -join ', ')" }
             if (-not (Test-Path -LiteralPath $lnk)) { throw "no Start Menu shortcut at $lnk" }
             $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
@@ -1222,9 +1307,9 @@ jobs:
             if ($text -notmatch ([regex]::Escape((Join-Path $app 'libmpv-2.dll')))) {
               throw 'the installed Patina did not load the libmpv-2.dll installed beside it'
             }
-            foreach ($tool in 'yt-dlp', 'ffmpeg') {
-              if ($text -notmatch ('(?m)^bundled {0}: {1}\s*$' -f $tool, [regex]::Escape((Join-Path $app "$tool.exe")))) {
-                throw "the installed Patina did not find the $tool.exe installed beside it"
+            foreach ($tool in @{ Name = 'yt-dlp'; Path = 'yt-dlp\yt-dlp.exe' }, @{ Name = 'ffmpeg'; Path = 'ffmpeg.exe' }) {
+              if ($text -notmatch ('(?m)^bundled {0}: {1}\s*$' -f $tool.Name, [regex]::Escape((Join-Path $app $tool.Path)))) {
+                throw "the installed Patina did not find the $($tool.Path) installed with it"
               }
             }
             "installed $($env:PATINA_VERSION): payload, shortcut, App Paths and uninstall entry as expected"
@@ -1251,13 +1336,7 @@ jobs:
 
             $uninstaller = $entry.UninstallString -replace '^"([^"]+)".*$', '$1'
             if ((Split-Path -Parent $uninstaller) -ne $app) { throw "the uninstaller is $uninstaller" }
-            $code = Invoke-Bounded $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$($logs[1])`"")
-            if ($code -ne 0) { throw "the uninstaller exited $code" }
-            $deadline = (Get-Date).AddSeconds(60)
-            while ($left = @($app, $lnk, $arp, $appPaths | Where-Object { Test-Path -LiteralPath $_ })) {
-              if ((Get-Date) -gt $deadline) { throw "the uninstall left behind: $($left -join ', ')" }
-              Start-Sleep -Seconds 1
-            }
+            Uninstall-Patina $uninstaller 'removed'
             $left = @(Get-Registration)
             if ($left) {
               throw "the uninstall left Patina's file types registered, so patina.exe --remove-file-types did not run or did not finish: $($left -join ', ')"
@@ -1267,7 +1346,36 @@ jobs:
                 throw "the uninstall touched $($s.Path)"
               }
             }
-            "uninstalled: the folder, shortcut, App Paths, uninstall entry and file types are gone, and Patina's own files are as they were"
+            if (Test-Path -LiteralPath $instance) { throw "the uninstall left $instance, which held only Patina's lock and id" }
+            "uninstalled: the folder, shortcut, App Paths, uninstall entry, file types and the single instance's folder are gone, and Patina's own files are as they were"
+
+            # Not Patina's own: a file it would not have made, beside the lock.
+            Install-Patina
+            New-Item -ItemType Directory -Force -Path $instance | Out-Null
+            Set-Content -LiteralPath $instanceFiles[0] -Value 'stands in for the single instance'
+            $foreign = Join-Path $instance 'sentinel'
+            Set-Content -LiteralPath $foreign -Value 'not a file Patina makes'
+            Uninstall-Patina $uninstaller 'leaving'
+            foreach ($file in $instanceFiles[0], $foreign) {
+              if (-not (Test-Path -LiteralPath $file)) { throw "the uninstall removed $file from a folder that also held a file Patina would not have made" }
+            }
+            Remove-Item -LiteralPath $instance -Recurse -Force
+
+            # In use: the lock held open, with the sharing a running Patina's
+            # has (Rust's default: read, write and delete).
+            Install-Patina
+            New-Item -ItemType Directory -Force -Path $instance | Out-Null
+            foreach ($file in $instanceFiles) { Set-Content -LiteralPath $file -Value 'stands in for the single instance' }
+            $held = [IO.File]::Open($instanceFiles[0], [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]'ReadWrite, Delete')
+            try {
+              Uninstall-Patina $uninstaller 'leaving'
+            } finally {
+              $held.Dispose()
+            }
+            foreach ($file in $instanceFiles) {
+              if (-not (Test-Path -LiteralPath $file)) { throw "the uninstall removed $file while a running Patina's lock was held" }
+            }
+            "the single instance's folder stays when it holds anything else, or its lock is in use"
           } catch {
             foreach ($log in $logs) {
               if (Test-Path -LiteralPath $log) { "--- $log"; Get-Content -LiteralPath $log }
@@ -1297,7 +1405,7 @@ jobs:
   # of confidence. What it cannot do is reach a user: Gatekeeper refuses an
   # unsigned .app downloaded from the web outright, offering to move it to
   # the Bin and nothing else. So this artifact is an input to
-  # packaging/macos-sign.sh, which signs the yt-dlp and ffmpeg and every
+  # packaging/macos-sign.sh, which signs yt-dlp.app's code, ffmpeg and every
   # library in the bundle and then the bundle with the Developer ID,
   # notarises it and staples the ticket, on
   # the machine holding that key. The key is not here for the same reason no
@@ -1356,10 +1464,10 @@ jobs:
             exit 1
           fi
 
-      # yt-dlp for Contents/Helpers, fetched afresh and checked against
-      # packaging/bundled-tools.env, laid out with the ffmpeg built above;
-      # then yt-dlp checked against its release's attestation, as on
-      # Windows.
+      # yt-dlp's folder build for Contents/Helpers, fetched afresh, checked
+      # against packaging/bundled-tools.env and laid out as yt-dlp.app, with
+      # the ffmpeg built above; then the zip checked against its release's
+      # attestation, as on Windows.
       - name: Download yt-dlp
         timeout-minutes: 10
         env:
@@ -1368,7 +1476,7 @@ jobs:
           set -euo pipefail
           packaging/macos-tools.sh "$RUNNER_TEMP/macos-tools-downloads" "$RUNNER_TEMP/ffmpeg" "$RUNNER_TEMP/macos-tools"
           version=$(sed -n 's/^YTDLP_VERSION=//p' packaging/bundled-tools.env)
-          gh release verify-asset "$version" "$RUNNER_TEMP/macos-tools-downloads/yt-dlp_macos" --repo yt-dlp/yt-dlp
+          gh release verify-asset "$version" "$RUNNER_TEMP/macos-tools-downloads/yt-dlp_macos.zip" --repo yt-dlp/yt-dlp
 
       # Both halves of the universal binary.
       #
@@ -1394,11 +1502,13 @@ jobs:
       # The bundle on its own: a valid plist, both halves of the binary, each
       # demanding the macOS the plist promises, nothing outside it linked but
       # the system, and its libmpv starting a core from Contents/Frameworks.
-      # Then the helpers: both architectures in each, each built for no
-      # newer macOS than Patina's; Patina finding both in Contents/Helpers;
-      # yt-dlp the pinned version; ffmpeg the pinned FFmpeg release, running,
-      # and configured without GPL, nonfree or network parts. (The runner is
-      # arm64; the x86_64 halves run on a test Mac.)
+      # Then the helpers: ffmpeg, and yt-dlp.app's launcher and every library
+      # and extension module in it, both architectures in each, each built
+      # for no newer macOS than Patina's; Patina finding both in
+      # Contents/Helpers; yt-dlp the pinned version, importing its optional
+      # libraries from yt-dlp.app's layout; ffmpeg the pinned FFmpeg release,
+      # running, and configured without GPL, nonfree or network parts. (The
+      # runner is arm64; the x86_64 halves run on a test Mac.)
       - name: Check the bundle
         run: |
           set -euo pipefail
@@ -1416,12 +1526,24 @@ jobs:
               exit 1
             fi
           done
-          if otool -L "$bin" "$app"/Contents/Frameworks/*.dylib "$app"/Contents/Helpers/* \
-              | grep -E '^\s+/' | grep -vE '^\s+/(System|usr/lib)/'; then
+          # Every Mach-O file in yt-dlp.app, one per line.
+          ytdlp="$app/Contents/Helpers/yt-dlp.app"
+          ytcode="$RUNNER_TEMP/ytdlp-code.txt"
+          find "$ytdlp" -type f -exec sh -c 'file -b "$1" | grep -q "^Mach-O"' sh {} \; -print | LC_ALL=C sort > "$ytcode"
+          echo "yt-dlp.app: $(wc -l < "$ytcode" | tr -d ' ') Mach-O files"
+          grep -qxF "$ytdlp/Contents/MacOS/yt-dlp" "$ytcode" || {
+            echo "::error::yt-dlp.app has no launcher at Contents/MacOS/yt-dlp"
+            exit 1
+          }
+          {
+            otool -L "$bin" "$app"/Contents/Frameworks/*.dylib "$app/Contents/Helpers/ffmpeg"
+            tr '\n' '\0' < "$ytcode" | xargs -0 otool -L
+          } > "$RUNNER_TEMP/linked.txt"
+          if grep -E '^\s+/' "$RUNNER_TEMP/linked.txt" | grep -vE '^\s+/(System|usr/lib)/'; then
             echo "::error::the bundle links libraries from outside it"
             exit 1
           fi
-          codesign --verify --strict "$app"
+          codesign --verify --deep --strict "$app"
           out=$("$bin" --version)
           echo "$out"
           grep -qE 'Patina\.app/Contents/(MacOS/\.\./)?Frameworks/libmpv\.2\.dylib' <<< "$out" || {
@@ -1430,7 +1552,7 @@ jobs:
           }
 
           # LC_BUILD_VERSION's minos, or an older LC_VERSION_MIN_MACOSX's
-          # version, which yt-dlp's x86_64 half carries.
+          # version, which some of yt-dlp's x86_64 halves may carry.
           minos() {
             otool -l -arch "$2" "$1" | awk '
               /LC_BUILD_VERSION/ { b = 1 } /LC_VERSION_MIN_MACOSX/ { v = 1 }
@@ -1439,27 +1561,53 @@ jobs:
           }
           not_newer() { awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, "."); exit !(x[1] < y[1] || (x[1] == y[1] && x[2] <= y[2])) }'; }
           limit=11.0
-          for name in yt-dlp ffmpeg; do
+          minimums="$RUNNER_TEMP/helper-minimums.txt"
+          : > "$minimums"
+          while IFS= read -r file; do
+            name=${file#"$app/Contents/Helpers/"}
             for arch in arm64 x86_64; do
-              lipo "$app/Contents/Helpers/$name" -verify_arch "$arch"
-              found=$(minos "$app/Contents/Helpers/$name" "$arch")
-              echo "$name $arch: minimum macOS $found"
+              lipo "$file" -verify_arch "$arch"
+              found=$(minos "$file" "$arch")
               if [ -z "$found" ] || ! not_newer "$found" "$limit"; then
-                echo "::error::the bundled $name's $arch half demands macOS $found, newer than the $limit it is used on"
+                echo "::error::$name's $arch half demands macOS $found, newer than the $limit it is used on"
                 exit 1
               fi
+              echo "${name%%/*} $arch: minimum macOS $found" >> "$minimums"
             done
-            grep -qE "^bundled $name: .*/Patina\.app/Contents/Helpers/$name\$" <<< "$out" || {
-              echo "::error::Patina did not find the bundled $name"
+          done < <(cat "$ytcode"; echo "$app/Contents/Helpers/ffmpeg")
+          sort "$minimums" | uniq -c
+          for want in 'yt-dlp: .*/Patina\.app/Contents/Helpers/yt-dlp\.app/Contents/MacOS/yt-dlp' 'ffmpeg: .*/Patina\.app/Contents/Helpers/ffmpeg'; do
+            grep -qE "^bundled $want\$" <<< "$out" || {
+              echo "::error::Patina did not find the bundled ${want%%:*}"
               exit 1
             }
           done
-          version=$("$app/Contents/Helpers/yt-dlp" --version)
+          version=$("$ytdlp/Contents/MacOS/yt-dlp" --version)
           echo "yt-dlp $version"
           if [ "$version" != "$(sed -n 's/^YTDLP_VERSION=//p' packaging/bundled-tools.env)" ]; then
             echo "::error::the bundled yt-dlp is version $version, not the one pinned"
             exit 1
           fi
+          # yt-dlp passes over a library it can't import without a word, and
+          # --version doesn't care, so it is asked for its debug header
+          # instead, which names those it imported: with nothing to do it
+          # prints that and stops with "You must provide at least one URL".
+          # These load extension modules from each kind of place
+          # macos-tools.sh put them (lib-dynload under its renamed folder,
+          # Cryptodome's folders, the top of Frameworks), and certifi is named
+          # only when its cacert.pem is found through the link to Resources.
+          # A library that failed to load is left out, or for Cryptodome
+          # named with "broken" before its version.
+          debug=$("$ytdlp/Contents/MacOS/yt-dlp" --ignore-config --verbose 2>&1 || true)
+          libraries=$(grep -m1 'Optional libraries:' <<< "$debug" || true)
+          echo "$libraries"
+          for library in 'Cryptodome-[0-9]' 'brotli[-,]' 'certifi[-,]' 'curl_cffi[-,]' 'sqlite3[-,]' 'websockets[-,]' 'yt_dlp_ejs[-,]'; do
+            grep -qE "(: |, )$library" <<< "$libraries," || {
+              echo "$debug"
+              echo "::error::the bundled yt-dlp did not import ${library%%[-[]*}"
+              exit 1
+            }
+          done
           ffmpeg=$("$app/Contents/Helpers/ffmpeg" -hide_banner -version)
           head -n3 <<< "$ffmpeg"
           want="ffmpeg version $(sed -n 's/^FFMPEG_VERSION=//p' packaging/bundled-tools.env) "

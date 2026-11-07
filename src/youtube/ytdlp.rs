@@ -66,7 +66,14 @@ const DETAILS_CLIENT: &str = "youtube:player_client=visionos";
 const SEARCH_LIMIT: Duration = Duration::from_secs(30);
 const RESOLVE_LIMIT: Duration = Duration::from_secs(20);
 const VIDEO_LIMIT: Duration = Duration::from_secs(30);
-const VERSION_LIMIT: Duration = Duration::from_secs(10);
+/// Asking the version touches no network, so the time is all yt-dlp
+/// starting: about 10 s for every start of yt-dlp's single-file build on a
+/// test Mac, while XProtect scanned what it unpacked, and perhaps as long
+/// for the folder builds the packages carry the first time macOS or Windows
+/// scans their files, maybe while `ytdl_versions` starts the same copy. So
+/// several times that; past it the section says yt-dlp was slow to answer
+/// (`Failure::Slow`) rather than that its answer can't be read.
+const VERSION_LIMIT: Duration = Duration::from_secs(45);
 /// A listing's limit: starting yt-dlp, then about a second a channel, doubled
 /// and then some for a bad day.
 const LISTING_BASE: Duration = Duration::from_secs(20);
@@ -172,7 +179,7 @@ impl Ytdlp {
                     break;
                 }
             }
-            // Asked to end first, so that a standalone yt-dlp's launcher
+            // Asked to end first, so that a single-file yt-dlp's launcher
             // removes what it unpacked (`platform::end_group`).
             if cancel.cancelled() {
                 crate::platform::stop_group(&mut child);
@@ -357,11 +364,24 @@ impl Ytdlp {
 
     /// Which yt-dlp this is. It touches no network.
     pub fn version(&self, today: jiff::civil::Date, cancel: &Cancel) -> Result<Version, Error> {
-        let output = self.run(&["--version".to_owned()], VERSION_LIMIT, cancel)?;
+        self.version_within(today, VERSION_LIMIT, cancel)
+    }
+
+    fn version_within(
+        &self,
+        today: jiff::civil::Date,
+        limit: Duration,
+        cancel: &Cancel,
+    ) -> Result<Version, Error> {
+        let output = self.run(&["--version".to_owned()], limit, cancel)?;
         let text = String::from_utf8_lossy(&output.stdout);
         let first = text.lines().next().unwrap_or_default();
         if first.is_empty() {
-            return Err(Error::from(Failure::BadOutput));
+            return Err(Error::from(if output.timed_out {
+                Failure::Slow
+            } else {
+                Failure::BadOutput
+            }));
         }
         Ok(Version::read(first, today))
     }
@@ -1844,6 +1864,25 @@ mod tests {
                 .unwrap();
             assert_eq!(version.text, "2026.10.26");
             assert_eq!(version.age_days, Some(7));
+        }
+
+        /// A yt-dlp that says nothing in time was slow, which a first start
+        /// can be; one that ends saying nothing gave an answer that can't be
+        /// read.
+        #[test]
+        fn a_version_too_slow_to_come_is_told_from_one_that_cant_be_read() {
+            let folder = Folder::new("version-slow");
+            let today = jiff::civil::date(2026, 11, 2);
+            let slow = Fake::new(&folder.0.join("slow"), "exec sleep 30");
+            let error = tool(&slow, None)
+                .version_within(today, Duration::from_millis(100), &Cancel::default())
+                .unwrap_err();
+            assert_eq!(error.kind, Failure::Slow);
+            let silent = Fake::new(&folder.0.join("silent"), "exit 0");
+            let error = tool(&silent, None)
+                .version_within(today, Duration::from_secs(10), &Cancel::default())
+                .unwrap_err();
+            assert_eq!(error.kind, Failure::BadOutput);
         }
     }
 }

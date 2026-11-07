@@ -39,15 +39,20 @@ package.
   <https://github.com/mpv-player/mpv>; FFmpeg's: <https://ffmpeg.org>.
 - **vulkan-1.dll**: the Khronos Vulkan loader, Apache-2.0, as shipped with
   mpv 0.41.0's own Windows release. <https://github.com/KhronosGroup/Vulkan-Loader>
-- **yt-dlp.exe**: yt-dlp's own standalone build, the version named in
-  `packaging/bundled-tools.env`. yt-dlp's own code is Unlicense, but the
-  build carries Python and libraries under other licenses, mutagen
-  (GPL-2.0-or-later) and certifi (MPL-2.0) among them, so yt-dlp.exe as a
-  whole is under the GPL 3.0 or later, whose text is LICENSE-GPLv3.txt. Each
-  library's license and text is in THIRD-PARTY-yt-dlp.txt, yt-dlp's
-  THIRD_PARTY_LICENSES.txt. Its source: yt-dlp's tag of that version in
-  <https://github.com/yt-dlp/yt-dlp>, whose `bundle/requirements/` names the
-  exact version of each library the build carries and whose
+- **yt-dlp\\** (yt-dlp.exe and its `_internal` folder): yt-dlp's own folder
+  build, `yt-dlp_win.zip` of the version named in
+  `packaging/bundled-tools.env`, unpacked unchanged. yt-dlp's own code is
+  Unlicense, but the build carries Python and libraries under other
+  licenses, mutagen (GPL-2.0-or-later) and certifi (MPL-2.0) among them, so
+  the folder as a whole is under the GPL 3.0 or later, as yt-dlp's README
+  says of its PyInstaller builds; its text is LICENSE-GPLv3.txt. It also
+  carries Microsoft's Visual C++ and Universal C runtime DLLs, which
+  Microsoft lets programs built with its tools redistribute. Each library's
+  license and text is in THIRD-PARTY-yt-dlp.txt, yt-dlp's
+  THIRD_PARTY_LICENSES.txt, which the folder also holds as
+  `_internal\THIRD_PARTY_LICENSES.txt`. Its source: yt-dlp's tag of that
+  version in <https://github.com/yt-dlp/yt-dlp>, whose `bundle/requirements/`
+  names the exact version of each library the build carries and whose
   `.github/workflows/build.yml` and `bundle/pyinstaller.py` built it;
   mutagen's source is at <https://github.com/quodlibet/mutagen>, certifi's
   at <https://github.com/certifi/python-certifi>.
@@ -66,14 +71,21 @@ package.
 
 ## macOS (Patina.app/Contents/Helpers)
 
-- **yt-dlp**: yt-dlp's own standalone build for macOS, the version named in
-  `packaging/bundled-tools.env`. yt-dlp's own code is Unlicense, but the
-  build carries Python and libraries under other licenses, mutagen
-  (GPL-2.0-or-later) and certifi (MPL-2.0) among them, so it is as a whole
-  under the GPL 3.0 or later, whose text is
-  Contents/Resources/LICENSE-GPLv3.txt. Each library's license and text is
-  in Contents/Resources/THIRD-PARTY-yt-dlp.txt, yt-dlp's
-  THIRD_PARTY_LICENSES.txt. Its source: yt-dlp's tag of that version in
+- **yt-dlp.app**: yt-dlp's own folder build for macOS, `yt-dlp_macos.zip`
+  of the version named in `packaging/bundled-tools.env`, its files
+  unchanged but moved into a helper app's places, as
+  `packaging/macos-tools.sh` says: the launcher in Contents/MacOS, Python,
+  its framework and every other library and extension module in
+  Contents/Frameworks, the rest in Contents/Resources, and links to put each
+  where Python looks for it; signed with Patina's Developer ID. yt-dlp's own
+  code is Unlicense, but the build carries Python and libraries under other
+  licenses, mutagen (GPL-2.0-or-later) and certifi (MPL-2.0) among them, so
+  it is as a whole under the GPL 3.0 or later, as yt-dlp's README says of
+  its PyInstaller builds; its text is Contents/Resources/LICENSE-GPLv3.txt.
+  Each library's license and text is in
+  Contents/Resources/THIRD-PARTY-yt-dlp.txt, yt-dlp's
+  THIRD_PARTY_LICENSES.txt, which yt-dlp.app also holds in its own
+  Contents/Resources. Its source: yt-dlp's tag of that version in
   <https://github.com/yt-dlp/yt-dlp>, whose `bundle/requirements/` names the
   exact version of each library the build carries and whose
   `.github/workflows/build.yml` and `bundle/pyinstaller.py` built it;

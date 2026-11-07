@@ -34,24 +34,26 @@ pub fn in_own_group(command: &mut Command) -> &mut Command {
 }
 
 /// How long a program `end_group` asked to end is given before `kill_group`.
-/// yt-dlp itself ends at once; this is for the launcher of a standalone yt-dlp
-/// to remove what it unpacked, and for an ffmpeg to close its file.
+/// yt-dlp itself ends at once; this is for an ffmpeg to close its file, and
+/// for the launcher of a single-file yt-dlp a user installed to remove what
+/// it unpacked.
 pub const END_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Asks a program started with `in_own_group`, and whatever it has started, to
 /// end, and gives whether it asked, in which case the caller gives it
 /// `END_GRACE` and then calls `kill_group` if it is still running. On Unix
-/// that is SIGTERM to the group. It matters for the standalone yt-dlp the
-/// macOS package carries: a PyInstaller launcher that unpacks the real
-/// yt-dlp into a folder of its own in $TMPDIR (about 85 MB) on every start.
-/// Its launcher passes a signal it can catch on to that yt-dlp, waits for it
-/// to end and removes the folder; SIGKILL can't be caught, and leaves the
-/// folder behind. On Windows there is nothing known to ask with: taskkill
-/// without /F refuses a console program with no window, which is how Patina
-/// starts yt-dlp, and the launcher's one window, a hidden one, handles only
-/// the session ending; so this kills the group at once and gives false (see
-/// packaging/windows/README.md). Call it, like
-/// `kill_group`, before the program has been waited for.
+/// that is SIGTERM to the group, which lets an ffmpeg joining a download
+/// finish its file rather than be cut off. It matters too for a yt-dlp the
+/// user installed that is one of yt-dlp's single-file builds (yt-dlp_macos,
+/// say), unlike the folder builds the packages carry: a PyInstaller launcher
+/// that unpacks the real yt-dlp into a folder of its own in $TMPDIR on every
+/// start, passes a signal it can catch on to that yt-dlp, waits for it to end
+/// and removes the folder; SIGKILL can't be caught, and leaves the folder
+/// behind. On Windows there is nothing known to ask with: taskkill without
+/// /F refuses a console program with no window, which is how Patina starts
+/// yt-dlp; so this kills the group at once and gives false (see
+/// packaging/windows/README.md). Call it, like `kill_group`, before the
+/// program has been waited for.
 pub fn end_group(child: &mut std::process::Child) -> bool {
     #[cfg(unix)]
     {
@@ -140,9 +142,10 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
 }
 
 /// A program the macOS or Windows package carries for Patina: `yt-dlp` or
-/// `ffmpeg`, in Patina.app/Contents/Helpers or beside patina.exe. None where
-/// it isn't there, or on Linux, where a build plays with the system's
-/// programs and the Flatpak's are on its PATH.
+/// `ffmpeg`, in Patina.app/Contents/Helpers or with patina.exe (yt-dlp in a
+/// folder of its own in both, as `bundled_beside` says). None where it isn't
+/// there, or on Linux, where a build plays with the system's programs and the
+/// Flatpak's are on its PATH.
 ///
 /// On macOS it is found from the executable itself rather than a link to it,
 /// as libmpv is, since the Homebrew cask's `patina` command is a link. On
@@ -164,15 +167,30 @@ pub fn bundled(name: &str) -> Option<PathBuf> {
 }
 
 /// Where the package puts `name`, given Patina's executable: Contents/Helpers
-/// of the bundle (Apple's place for helper tools) on macOS, the executable's
-/// own folder on Windows.
+/// of the bundle (Apple's place for helper apps and tools) on macOS, the
+/// executable's own folder on Windows. yt-dlp is yt-dlp's folder build, a
+/// launcher that loads Python from beside it, which is in a folder of its
+/// own: on macOS a helper app, yt-dlp.app, as packaging/macos-tools.sh lays
+/// it out, and on Windows yt-dlp\, as the zip it comes in has it.
 #[cfg(any(target_os = "macos", windows, test))]
 fn bundled_beside(exe: &Path, name: &str) -> Option<PathBuf> {
     let dir = exe.parent()?;
     if cfg!(windows) {
-        Some(dir.join(format!("{name}.exe")))
+        let exe = format!("{name}.exe");
+        Some(match name {
+            "yt-dlp" => dir.join(name).join(exe),
+            _ => dir.join(exe),
+        })
     } else {
-        Some(dir.parent()?.join("Helpers").join(name))
+        let helpers = dir.parent()?.join("Helpers");
+        Some(match name {
+            "yt-dlp" => helpers
+                .join("yt-dlp.app")
+                .join("Contents")
+                .join("MacOS")
+                .join(name),
+            _ => helpers.join(name),
+        })
     }
 }
 
@@ -481,21 +499,30 @@ pub fn file_uri(path: &Path) -> String {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    /// Contents/Helpers on macOS, beside the exe on Windows; Linux has no
-    /// bundled programs at all.
+    /// Contents/Helpers on macOS, with the exe on Windows, yt-dlp in its own
+    /// folder in both; Linux has no bundled programs at all.
     #[test]
     fn bundled_programs_are_looked_for_where_the_packages_put_them() {
         if cfg!(windows) {
+            let exe = Path::new(r"C:\Apps\Patina\patina.exe");
             assert_eq!(
-                super::bundled_beside(Path::new(r"C:\Apps\Patina\patina.exe"), "yt-dlp"),
-                Some(PathBuf::from(r"C:\Apps\Patina\yt-dlp.exe"))
+                super::bundled_beside(exe, "yt-dlp"),
+                Some(PathBuf::from(r"C:\Apps\Patina\yt-dlp\yt-dlp.exe"))
+            );
+            assert_eq!(
+                super::bundled_beside(exe, "ffmpeg"),
+                Some(PathBuf::from(r"C:\Apps\Patina\ffmpeg.exe"))
             );
         } else {
+            let exe = Path::new("/Applications/Patina.app/Contents/MacOS/patina");
             assert_eq!(
-                super::bundled_beside(
-                    Path::new("/Applications/Patina.app/Contents/MacOS/patina"),
-                    "ffmpeg"
-                ),
+                super::bundled_beside(exe, "yt-dlp"),
+                Some(PathBuf::from(
+                    "/Applications/Patina.app/Contents/Helpers/yt-dlp.app/Contents/MacOS/yt-dlp"
+                ))
+            );
+            assert_eq!(
+                super::bundled_beside(exe, "ffmpeg"),
                 Some(PathBuf::from(
                     "/Applications/Patina.app/Contents/Helpers/ffmpeg"
                 ))
@@ -508,7 +535,7 @@ mod tests {
     }
 
     /// A program asked to end gets to run what it does on SIGTERM, as a
-    /// standalone yt-dlp's launcher removes what it unpacked; one that won't
+    /// single-file yt-dlp's launcher removes what it unpacked; one that won't
     /// end is killed once the grace is up.
     #[cfg(unix)]
     #[test]

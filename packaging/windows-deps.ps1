@@ -8,10 +8,13 @@
 # -Downloads is checked, not fetched again, so a cache of that folder
 # outlives the pinned assets being deleted upstream. -Lib receives
 # libmpv-2.dll and the vulkan-1.dll it imports; -Ffmpeg receives the tests'
-# ffmpeg.exe, a full build. -Tools receives the yt-dlp.exe the Patina folder
-# carries for online video, and its notices as THIRD-PARTY-yt-dlp.txt and
-# LICENSE-GPLv3.txt, its licence; those are fetched only when it is given.
-# The folder's own ffmpeg.exe is not fetched but built, by
+# ffmpeg.exe, a full build. -Tools receives the yt-dlp the Patina folder
+# carries for online video: yt-dlp_win.zip unpacked as it is into a yt-dlp
+# folder, yt-dlp.exe and the _internal folder it loads Python and its
+# libraries from, where Patina looks for it (src/platform.rs, `bundled`);
+# with the notices from that _internal as THIRD-PARTY-yt-dlp.txt, and
+# LICENSE-GPLv3.txt, its licence, beside the folder. Those are fetched only
+# when it is given. The folder's own ffmpeg.exe is not fetched but built, by
 # packaging/ffmpeg.sh in release.yml's ffmpeg-windows job.
 
 param(
@@ -74,11 +77,19 @@ if ($Lib) {
 }
 if ($Tools) {
     $ytdlp = Get-Pinned 'YTDLP_WINDOWS'
-    $notices = Get-Pinned 'YTDLP_LICENSES'
     $gplv3 = Get-Pinned 'GPLV3_LICENSE'
-    New-Item -ItemType Directory -Force -Path $Tools | Out-Null
-    Copy-Item -LiteralPath $ytdlp -Destination (Join-Path $Tools 'yt-dlp.exe')
-    Copy-Item -LiteralPath $notices -Destination (Join-Path $Tools 'THIRD-PARTY-yt-dlp.txt')
+    # Into a folder that holds nothing yet, so that what it holds afterwards
+    # is the zip and nothing else; the zip's digest is the pin on all of it.
+    $folder = Join-Path $Tools 'yt-dlp'
+    if (Test-Path -LiteralPath $folder) { throw "$folder is there already; -Tools unpacks yt-dlp into a folder of its own" }
+    New-Item -ItemType Directory -Force -Path $folder | Out-Null
+    7z x -y -bso0 -bsp0 "-o$folder" $ytdlp
+    if ($LASTEXITCODE -ne 0) { throw "7z could not extract $ytdlp" }
+    $found = @(Get-ChildItem -LiteralPath $folder -Force | ForEach-Object Name)
+    if (Compare-Object @('yt-dlp.exe', '_internal') $found) {
+        throw "$ytdlp holds $($found -join ', '), not yt-dlp.exe and _internal; see packaging/bundled-tools.env"
+    }
+    Copy-Item -LiteralPath (Join-Path $folder '_internal\THIRD_PARTY_LICENSES.txt') -Destination (Join-Path $Tools 'THIRD-PARTY-yt-dlp.txt')
     Copy-Item -LiteralPath $gplv3 -Destination (Join-Path $Tools 'LICENSE-GPLv3.txt')
 }
 if ($Ffmpeg) {

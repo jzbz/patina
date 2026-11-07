@@ -467,6 +467,10 @@ pub enum Failure {
     /// A live stream or premiere that hasn't begun.
     NotStarted,
     Timeout,
+    /// yt-dlp didn't answer in time where only its starting takes any, as
+    /// when asked its version: slow to start, as it can be the first time a
+    /// machine's malware scan sees it.
+    Slow,
     /// yt-dlp answered with something Patina can't read.
     BadOutput,
     Cancelled,
@@ -496,6 +500,10 @@ impl Failure {
             Self::Removed => "This video has been removed.",
             Self::NotStarted => "This video hasn't started yet.",
             Self::Timeout => "YouTube took too long to answer.",
+            Self::Slow => {
+                "yt-dlp was slow to answer, as it can be the first time it starts. \
+                 Opening the section again asks again."
+            }
             Self::BadOutput => "yt-dlp gave an answer Patina can't read. It may be out of date.",
             Self::Cancelled => "Stopped.",
             Self::Failed => "yt-dlp could not do that.",

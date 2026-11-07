@@ -31,11 +31,14 @@ chmod +x "$app/Contents/MacOS/patina"
 # (<executable>/../Frameworks) and where the executable's rpath points.
 cp "$libs"/*.dylib "$app/Contents/Frameworks/"
 
-# yt-dlp and ffmpeg, by name rather than with a wildcard, in Contents/Helpers:
-# Apple's place for helper tools, a code location that codesign seals as
-# code. Patina finds them there by itself (src/platform.rs, `bundled`).
-cp "$tools/yt-dlp" "$tools/ffmpeg" "$app/Contents/Helpers/"
-chmod +x "$app/Contents/Helpers/yt-dlp" "$app/Contents/Helpers/ffmpeg"
+# yt-dlp.app and ffmpeg, by name rather than with a wildcard, in
+# Contents/Helpers: Apple's place for helper apps and tools, a code location
+# that codesign seals as code. Patina finds them there by itself
+# (src/platform.rs, `bundled`). ditto, as yt-dlp.app holds links that have
+# to stay links (packaging/macos-tools.sh says why).
+ditto "$tools/yt-dlp.app" "$app/Contents/Helpers/yt-dlp.app"
+cp "$tools/ffmpeg" "$app/Contents/Helpers/"
+chmod +x "$app/Contents/Helpers/ffmpeg"
 
 # The .icns, from the sizes packaging/icons.sh renders out of the SVG. The
 # names are Apple's: iconutil refuses any it doesn't know, and a size serves
@@ -132,16 +135,24 @@ $(document_types)
 </plist>
 PLIST
 
-# The libraries and helpers first: signing the bundle checks what is nested
-# in it. Signing them ad hoc replaces IINA's and yt-dlp's own signatures,
+# Inside out, as macos-sign.sh signs it: signing a bundle checks what is
+# nested in it. Signing ad hoc replaces IINA's and yt-dlp's own signatures,
 # which a bundle signed by someone else could not keep anyway, and the
-# linker's ad hoc one on ffmpeg's arm64 half. The helpers have no bundle ID to be known by, so each gets one
-# under the app's, as macos-sign.sh gives them.
+# linker's ad hoc one on ffmpeg's arm64 half. In yt-dlp.app every library
+# and extension module in its Frameworks comes first, then Python.framework,
+# then the app, which takes its identifier from its Info.plist; ffmpeg has
+# no bundle ID to be known by, so it gets one under the app's.
+ytdlp="$app/Contents/Helpers/yt-dlp.app"
+while IFS= read -r -d '' file; do
+    case $(file -b "$file") in
+        Mach-O*) codesign --force --sign - "$file" ;;
+    esac
+done < <(find "$ytdlp/Contents/Frameworks" -type f ! -path '*/Python.framework/*' -print0)
+codesign --force --sign - "$ytdlp/Contents/Frameworks/Python.framework"
+codesign --force --sign - "$ytdlp"
+codesign --force --sign - --identifier video.patina.Patina.ffmpeg "$app/Contents/Helpers/ffmpeg"
 codesign --force --sign - "$app/Contents/Frameworks/"*.dylib
-for tool in yt-dlp ffmpeg; do
-    codesign --force --sign - --identifier "video.patina.Patina.$tool" "$app/Contents/Helpers/$tool"
-done
 codesign --force --sign - "$app"
-codesign --verify --strict "$app"
+codesign --verify --deep --strict "$app"
 
 echo "built $app"

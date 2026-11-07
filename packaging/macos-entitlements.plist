@@ -50,10 +50,10 @@
     mpv C plugins, Lua C modules, libbluray's libaacs. Patina carries its own
     libmpv and finds it even when started through a link, such as the
     Homebrew cask's patina command (src/mpv/ffi.rs resolves the link first),
-    so it needs none of those. The yt-dlp in Contents/Helpers does need it,
-    as a process of its own: it has its own entitlements file,
-    packaging/macos-yt-dlp-entitlements.plist (macos-sign.sh says why), and
-    an entitlement of a program Patina starts is not Patina's.
+    so it needs none of those. Nor does yt-dlp.app in Contents/Helpers, a
+    process of its own whose Python and extension modules macos-sign.sh
+    signs with the same Developer ID (it says why that is enough); an
+    entitlement of a program Patina starts would not be Patina's anyway.
 
     com.apple.security.cs.allow-dyld-environment-variables: nothing relies on
     DYLD_ variables.

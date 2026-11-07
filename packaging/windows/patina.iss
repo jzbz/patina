@@ -1,6 +1,6 @@
 ; Patina's Windows installer: a per-user Inno Setup script around the Patina
 ; folder every release already ships as its portable zip: patina.exe, the
-; libmpv-2.dll and vulkan-1.dll it needs beside it, the yt-dlp.exe and
+; libmpv-2.dll and vulkan-1.dll it needs beside it, the yt-dlp folder and
 ; ffmpeg.exe it runs for online video and downloads, and the license files.
 ;
 ; The windows job of .github/workflows/release.yml compiles it with the Inno
@@ -82,8 +82,8 @@ PrivilegesRequired=lowest
 ; made (mklink /J, Scoop's "current", winget's Links).
 RedirectionGuard=no
 ; %LOCALAPPDATA%\Programs\Patina. Not %LOCALAPPDATA%\Patina, which is
-; Patina's own (its single-instance files live there) and no installer's
-; business. The same folder for every version, upgraded in place: the file
+; Patina's own (its single-instance folder lives there) and not the
+; installer's to fill. The same folder for every version, upgraded in place: the file
 ; types Patina registers name patina.exe by its full path, and keep working
 ; across an upgrade only if that path stays put.
 DefaultDirName={autopf}\Patina
@@ -114,9 +114,10 @@ OutputBaseFilename=patina-v{#AppVersion}-x86_64-setup
 ; close the Patina holding them first. Restart Manager finds it by those open
 ; files, which the default CloseApplicationsFilter (*.exe,*.dll,*.chm)
 ; covers. It covers a yt-dlp.exe or ffmpeg.exe still running for Patina
-; too, as each holds its own exe open while it runs; those are console
-; programs started with no window, and whether Restart Manager can close
-; one is untried. Patina creates no named mutex, so AppMutex would have
+; too, as each holds its own exe open while it runs, and yt-dlp.exe the
+; python314.dll and the rest it loaded from yt-dlp\_internal; those are
+; console programs started with no window, and whether Restart Manager can
+; close one is untried. Patina creates no named mutex, so AppMutex would have
 ; nothing to wait on and is not set. A Patina run from a portable folder
 ; elsewhere holds none of these files and is left alone.
 ;
@@ -153,10 +154,17 @@ CloseApplications=yes
 ; entry then, or an upgrade leaves the old copy in {app} until Patina is
 ; uninstalled. The two DLLs stay beside patina.exe: that is where Patina
 ; looks for libmpv, and where Windows finds the vulkan-1.dll libmpv imports.
-; So do yt-dlp.exe and ffmpeg.exe, which is where Patina looks for them
-; (src/platform.rs, `bundled`); THIRD-PARTY-yt-dlp.txt, LICENSE-GPLv3.txt
-; (yt-dlp.exe's licence) and LICENSE-ffmpeg.txt (ffmpeg.exe's LGPL 2.1) are
-; their notices.
+; So does ffmpeg.exe, which is where Patina looks for it, and yt-dlp's folder
+; build is in yt-dlp\, where Patina looks for yt-dlp.exe (src/platform.rs,
+; `bundled`); THIRD-PARTY-yt-dlp.txt, LICENSE-GPLv3.txt (yt-dlp's licence)
+; and LICENSE-ffmpeg.txt (ffmpeg.exe's LGPL 2.1) are their notices.
+;
+; The one wildcard is yt-dlp\_internal, Python and the libraries yt-dlp.exe
+; loads from it: what it holds is yt-dlp_win.zip's, pinned by its digest in
+; packaging/bundled-tools.env, changes with every yt-dlp release, and runs to
+; 142 files. release.yml checks that the folder holds the zip's files and no
+; others, and that the install holds the folder's. yt-dlp.exe is named, so a
+; folder without it stops the compile like any other missing file.
 ;
 ; ignoreversion: an upgrade, a reinstall and a winget downgrade all replace
 ; each file whatever version it carries; the DLLs' own versions, where they
@@ -166,7 +174,8 @@ CloseApplications=yes
 Source: "{#SourceDir}\patina.exe"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\vulkan-1.dll"; DestDir: "{app}"; Flags: ignoreversion notimestamp
-Source: "{#SourceDir}\yt-dlp.exe"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\yt-dlp\yt-dlp.exe"; DestDir: "{app}\yt-dlp"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\yt-dlp\_internal\*"; DestDir: "{app}\yt-dlp\_internal"; Flags: ignoreversion notimestamp recursesubdirs createallsubdirs
 Source: "{#SourceDir}\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-lucide.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
@@ -175,6 +184,15 @@ Source: "{#SourceDir}\THIRD-PARTY.md"; DestDir: "{app}"; Flags: ignoreversion no
 Source: "{#SourceDir}\THIRD-PARTY-yt-dlp.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-GPLv3.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-ffmpeg.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+
+[InstallDelete]
+; The yt-dlp\_internal an earlier version installed, before this version's
+; goes in, so that a file the new yt-dlp no longer carries doesn't stay for
+; Python to find among the new ones. It is all the installer's own.
+Type: filesandordirs; Name: "{app}\yt-dlp\_internal"
+; Where installers built before yt-dlp came as a folder put it, beside
+; patina.exe (none of them was released).
+Type: files; Name: "{app}\yt-dlp.exe"
 
 [Icons]
 ; The Start Menu entry, and the reason this installer exists. No desktop
@@ -223,15 +241,138 @@ Filename: "{app}\patina.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgr
 Filename: "{app}\patina.exe"; Parameters: "--remove-file-types"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFileTypes"
 
 ; No [UninstallDelete] section, and there must never be one. The uninstaller
-; removes what this script installed, then the folder if it is empty, and
-; asks Patina to remove its file types as above; nothing else. Patina's own
-; files live in %APPDATA%\Patina: config (settings.json, key bindings, mpv's
+; removes what this script installed, then the folder if it is empty, asks
+; Patina to remove its file types as above, and removes the single
+; instance's folder as [Code] below says; nothing else. Patina's own files
+; live in %APPDATA%\Patina: config (settings.json, key bindings, mpv's
 ; configuration, scripts and fonts) and data (history, the place in each
-; file, thumbnails, downloaded subtitles). %LOCALAPPDATA%\Patina holds its
-; single-instance files. All are written by the app and all outside {app}.
-; Any other copy of Patina the same account runs, the portable zip's
-; included, reads the same folders, and removing this one is not a request
-; to delete them, nor the OpenSubtitles password in Credential Manager or the
-; screenshots in Pictures\Patina. The release workflow installs and
-; uninstalls this on its runner and fails if a file placed in
-; %APPDATA%\Patina or %LOCALAPPDATA%\Patina beforehand is gone.
+; file, thumbnails, downloaded subtitles). All are written by the app and
+; all outside {app}. Any other copy of Patina the same account runs, the
+; portable zip's included, reads the same folders, and removing this one is
+; not a request to delete them, nor the OpenSubtitles password in Credential
+; Manager or the screenshots in Pictures\Patina. The release workflow
+; installs and uninstalls this on its runner and fails if a file placed in
+; %APPDATA%\Patina or %LOCALAPPDATA%\Patina beforehand is gone, the
+; single instance's folder alone excepted.
+
+[Code]
+// %LOCALAPPDATA%\Patina\instance, where Patina keeps the lock that makes it
+// one Patina at a time and the id of the copy holding it (src/instance.rs,
+// private_dir). The system releases the lock when Patina ends, but the files
+// stay, and once Patina is uninstalled they are clutter nothing will use.
+// They are not settings or data, and any copy of Patina makes them again
+// when it starts, so removing them takes nothing from a portable copy. So
+// the uninstaller removes that folder, and only that one: not
+// %LOCALAPPDATA%\Patina around it, and only when the folder is plainly
+// Patina's own and idle. It has to be a folder reached through no link or
+// junction, as must %LOCALAPPDATA%\Patina, so that nothing elsewhere is
+// touched through one; it has to hold nothing but files named as
+// src/instance.rs names them, a settings folder's key in sixteen lowercase
+// hex digits and then .lock or .id; and no lock may be in use. A running
+// Patina, this one or a portable copy, keeps its lock file open, and opening
+// it then with no sharing fails, which leaves everything as it was. Any
+// doubt keeps the folder, and says why in the uninstall log.
+
+function IsLowerHex(const S: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := Length(S) > 0;
+  for I := 1 to Length(S) do
+    if Pos(Copy(S, I, 1), '0123456789abcdef') = 0 then
+      Result := False;
+end;
+
+function IsInstanceFileName(const Name: String): Boolean;
+var
+  Extension: String;
+begin
+  Extension := Copy(Name, 17, Length(Name) - 16);
+  Result := (Length(Name) > 16) and IsLowerHex(Copy(Name, 1, 16))
+    and ((Extension = '.lock') or (Extension = '.id'));
+end;
+
+function IsPlainFolder(const Path: String): Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := False;
+  if FindFirst(Path, FindRec) then
+  begin
+    Result := ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0)
+      and ((FindRec.Attributes and FILE_ATTRIBUTE_REPARSE_POINT) = 0);
+    FindClose(FindRec);
+  end;
+end;
+
+procedure RemoveInstanceFolder;
+var
+  Dir: String;
+  FindRec: TFindRec;
+  Names: TArrayOfString;
+  Count, I: Integer;
+  Ours: Boolean;
+  Stream: TFileStream;
+begin
+  Dir := ExpandConstant('{localappdata}\Patina\instance');
+  if not IsPlainFolder(ExpandConstant('{localappdata}\Patina')) or not IsPlainFolder(Dir) then
+  begin
+    Log('Single instance: no plain folder ' + Dir + ', so nothing to remove');
+    Exit;
+  end;
+  Ours := True;
+  Count := 0;
+  if FindFirst(Dir + '\*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          if ((FindRec.Attributes and (FILE_ATTRIBUTE_DIRECTORY or FILE_ATTRIBUTE_REPARSE_POINT)) <> 0)
+            or not IsInstanceFileName(FindRec.Name) then
+          begin
+            Log('Single instance: ' + Dir + ' holds ' + FindRec.Name + ', which Patina does not make there');
+            Ours := False;
+          end
+          else
+          begin
+            SetArrayLength(Names, Count + 1);
+            Names[Count] := FindRec.Name;
+            Count := Count + 1;
+          end;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+  for I := 0 to Count - 1 do
+    if Ours and (Copy(Names[I], 17, 5) = '.lock') then
+      try
+        Stream := TFileStream.Create(Dir + '\' + Names[I], fmOpenReadWrite or fmShareExclusive);
+        Stream.Free;
+      except
+        Log('Single instance: ' + Names[I] + ' is in use, so a Patina is running');
+        Ours := False;
+      end;
+  if not Ours then
+  begin
+    Log('Single instance: leaving ' + Dir + ' as it is');
+    Exit;
+  end;
+  for I := 0 to Count - 1 do
+    if not DeleteFile(Dir + '\' + Names[I]) then
+      Log('Single instance: could not remove ' + Dir + '\' + Names[I]);
+  if RemoveDir(Dir) then
+    Log('Single instance: removed ' + Dir)
+  else
+    Log('Single instance: could not remove ' + Dir);
+end;
+
+// After the files are gone, so that a failure here leaves Patina
+// uninstalled all the same.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RemoveInstanceFolder;
+end;

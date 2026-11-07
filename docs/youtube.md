@@ -472,14 +472,15 @@ process with the network and the user's files.
 With no yt-dlp, the section says so plainly and still shows the saved lists.
 Every package carries one. The Flatpak carries yt-dlp, Deno and yt-dlp-ejs,
 and uses the runtime's ffmpeg. Patina.app and the Windows folder carry
-yt-dlp's own standalone build and an ffmpeg built from FFmpeg's source for
-joining video and audio alone (`packaging/ffmpeg.sh`), pinned in
-`packaging/bundled-tools.env` and found by `platform::bundled`, but no
-JavaScript runtime: yt-dlp then asks YouTube only for its `visionos` client,
-which needs none and which the section asks for first anyway. Tried on Linux
-with `--no-js-runtimes`, on two videos, that gave the same best format with
-no warning, which is all that has been checked. The order is the yt-dlp
-the user chose (the path preference, a `ytdl_path` in mpv's
+yt-dlp's own folder build (`Contents/Helpers/yt-dlp.app` in Patina.app, a
+`yt-dlp` folder beside `patina.exe` on Windows) and an ffmpeg built from
+FFmpeg's source for joining video and audio alone (`packaging/ffmpeg.sh`),
+pinned in `packaging/bundled-tools.env` and found by `platform::bundled`, but
+no JavaScript runtime: yt-dlp then asks YouTube only for its `visionos`
+client, which needs none and which the section asks for first anyway. Tried
+on Linux with `--no-js-runtimes`, on two videos, that gave the same best
+format with no warning, which is all that has been checked. The order is the
+yt-dlp the user chose (the path preference, a `ytdl_path` in mpv's
 `script-opts/ytdl_hook.conf`, or a `yt-dlp` in mpv's configuration folder),
 then the newer of the bundled one and a `yt-dlp` the user installed (on the
 `PATH`, and on macOS in Homebrew's folders too), then the `PATH`; a
@@ -584,14 +585,12 @@ with a handful of requests against public channels. Not yet tried:
 
 - macOS and Windows at all, beyond building and lints, or the Flatpak; and
   the bundled yt-dlp and ffmpeg there: signed, notarised and run from
-  Patina.app, run from the installed Windows folder, how long the
-  standalone yt-dlp takes to start (it unpacks itself each time), the
-  bundled ffmpeg joining a real download's video and audio (its
-  configuration was tried on Linux, through yt-dlp, on media made locally),
-  and
-  whether a stopped one leaves its unpacked folder behind: on macOS a
-  cancelled or timed-out search is asked to end first, so it shouldn't; on
-  Windows it is killed, so it may.
+  Patina.app, run from the installed Windows folder, how long yt-dlp's
+  folder build takes to start there (it unpacks nothing, unlike the
+  single-file build the packages carried before, which took about 10
+  seconds to start on a macOS VM), and the bundled ffmpeg joining a real
+  download's video and audio (its configuration was tried on Linux, through
+  yt-dlp, on media made locally).
 - Choosing the newer of the bundled yt-dlp and one the user installed
   (Homebrew, winget, pip) on a real Mac or Windows machine: the comparison,
   the kept answers and a slow or broken copy were tried on Linux with

@@ -14,8 +14,8 @@
 #
 # Takes the unsigned zip CI produced (the macos-universal workflow artifact;
 # `gh run download` unwraps the artifact and leaves this zip) or an unpacked
-# Patina.app. Signs the helpers and every library in the bundle and then the
-# bundle, notarises
+# Patina.app. Signs the helpers, yt-dlp.app's code among them, and every
+# library in the bundle and then the bundle, notarises
 # and staples it, zips it again, and checks that new zip the way a stranger's
 # Mac will check it. The new zip goes beside the input under the input's name
 # without -unsigned, patina-v0.1.2-macos-universal.zip: the name the draft
@@ -25,8 +25,7 @@
 # replaced in place under the same rule; a Patina.app gives Patina.zip beside
 # it.
 #
-# The entitlements are packaging/macos-entitlements.plist for Patina and
-# packaging/macos-yt-dlp-entitlements.plist for the yt-dlp it carries, both
+# The entitlements are packaging/macos-entitlements.plist, for Patina alone,
 # from the checkout this script runs from, so run it from the release's tag.
 #
 # One-time setup on this machine — see the block printed by --setup.
@@ -34,7 +33,6 @@ set -eu
 
 PROFILE="${PATINA_NOTARY_PROFILE:-patina-notary}"
 ENTITLEMENTS="$(cd "$(dirname "$0")" && pwd)/macos-entitlements.plist"
-YTDLP_ENTITLEMENTS="$(cd "$(dirname "$0")" && pwd)/macos-yt-dlp-entitlements.plist"
 
 die() { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -251,10 +249,6 @@ echo "             SHA-1 $IDENTITY"
 LINT=$(plutil -lint "$ENTITLEMENTS" 2>&1) \
     || die "$ENTITLEMENTS is not a valid property list: $LINT"
 echo "  entitlements: $ENTITLEMENTS"
-[ -f "$YTDLP_ENTITLEMENTS" ] || die "no $YTDLP_ENTITLEMENTS; run this from a checkout of the repository"
-LINT=$(plutil -lint "$YTDLP_ENTITLEMENTS" 2>&1) \
-    || die "$YTDLP_ENTITLEMENTS is not a valid property list: $LINT"
-echo "                $YTDLP_ENTITLEMENTS"
 
 # The login keychain unlocks with the password at console login and stays locked
 # in an SSH session, so this is the normal state when signing remotely. Checked
@@ -311,6 +305,7 @@ case "$INPUT" in
     *) die "expected a .zip or a .app, got: $INPUT" ;;
 esac
 EXE="$APP/Contents/MacOS/patina"
+YTDLP="$APP/Contents/Helpers/yt-dlp.app"
 [ -f "$EXE" ] || die "$(basename "$APP") has no Contents/MacOS/patina; this is for Patina.app"
 echo "  bundle:    $(basename "$APP")"
 echo "  arches:    $(lipo -archs "$EXE" 2>/dev/null || echo '?')"
@@ -321,21 +316,42 @@ xattr -cr "$APP"
 # ----------------------------------------------------------------- contents
 # The code in a Patina.app is its executable, the libraries in
 # Contents/Frameworks (libmpv and everything it links, from macos-libmpv.txt),
-# and yt-dlp and ffmpeg in Contents/Helpers (yt-dlp pinned in
-# bundled-tools.env, ffmpeg built by ffmpeg.sh), which is all
-# macos-bundle.sh puts there and all this signs. Anything else
-# that is code would go out unsigned and come back from the notary as a
-# rejection, ten minutes later, so it stops the run here; so does anything in a
-# directory under Frameworks, since a nested framework or bundle is signed as a
-# bundle, which this does not do.
+# and in Contents/Helpers ffmpeg (built by ffmpeg.sh) and yt-dlp.app (yt-dlp's
+# folder build, pinned in bundled-tools.env and laid out by macos-tools.sh):
+# its launcher, and the libraries and extension modules in its Frameworks,
+# Python.framework's among them. That is all macos-bundle.sh puts there and
+# all this signs. Anything else that is code would go out unsigned and come
+# back from the notary as a rejection, ten minutes later, so it stops the
+# run here; so does anything in a directory under Patina's own Frameworks,
+# since a nested framework or bundle is signed as a bundle, which this does
+# only for yt-dlp.app's, and anything in yt-dlp.app's Frameworks that is not
+# code, which codesign would sign into extended attributes.
 step "Checking what the bundle holds"
 find "$APP/Contents" -type f >"$WORK/files"
 LIBS=0
+YTCODE=0
 STRAY=
 while IFS= read -r f; do
     case "$f" in
         "$EXE") ;;
-        "$APP/Contents/Helpers/yt-dlp" | "$APP/Contents/Helpers/ffmpeg") ;;
+        "$APP/Contents/Helpers/ffmpeg") ;;
+        "$YTDLP/Contents/Info.plist" | "$YTDLP/Contents/MacOS/yt-dlp" \
+            | "$YTDLP/Contents/_CodeSignature/"* \
+            | "$YTDLP/Contents/Frameworks/Python.framework/Versions/"*/Resources/Info.plist \
+            | "$YTDLP/Contents/Frameworks/Python.framework/Versions/"*/_CodeSignature/*) ;;
+        "$YTDLP/Contents/Frameworks/"*)
+            case $(file -b "$f") in
+                Mach-O*) YTCODE=$((YTCODE + 1)) ;;
+                *) STRAY="$STRAY
+    ${f#"$APP"/}" ;;
+            esac
+            ;;
+        "$YTDLP/Contents/Resources/"*)
+            case $(file -b "$f") in
+                *Mach-O*) STRAY="$STRAY
+    ${f#"$APP"/}" ;;
+            esac
+            ;;
         "$APP/Contents/Helpers/"*) STRAY="$STRAY
     ${f#"$APP"/}" ;;
         "$APP/Contents/Frameworks/"*/*) STRAY="$STRAY
@@ -349,20 +365,21 @@ while IFS= read -r f; do
             ;;
     esac
 done <"$WORK/files"
-[ -z "$STRAY" ] || die "the bundle holds code this does not know how to sign:$STRAY
+[ -z "$STRAY" ] || die "the bundle holds code this does not know how to sign, or data where code goes:$STRAY
   It signs Contents/MacOS/patina, the libraries directly in
-  Contents/Frameworks and yt-dlp and ffmpeg in Contents/Helpers, which is
-  everything macos-bundle.sh puts in a bundle.
+  Contents/Frameworks, and ffmpeg and yt-dlp.app in Contents/Helpers, with
+  the code in yt-dlp.app's Frameworks, which is everything macos-bundle.sh
+  puts in a bundle.
   Anything else has to be taught to it first; left unsigned, it fails
   notarisation."
 [ -f "$APP/Contents/Frameworks/libmpv.2.dylib" ] \
     || die "no Contents/Frameworks/libmpv.2.dylib, the libmpv Patina loads from the bundle"
 echo "  libraries: $LIBS in Contents/Frameworks"
-for tool in yt-dlp ffmpeg; do
+for tool in ffmpeg yt-dlp.app/Contents/MacOS/yt-dlp yt-dlp.app/Contents/Frameworks/Python.framework/Python; do
     [ -f "$APP/Contents/Helpers/$tool" ] \
         || die "no Contents/Helpers/$tool, which Patina runs for online video and downloads"
 done
-echo "  helpers:   yt-dlp and ffmpeg in Contents/Helpers"
+echo "  helpers:   ffmpeg, and yt-dlp.app with $YTCODE Mach-O files in its Frameworks"
 
 # The one entitlement depends on how the bundled LuaJIT was built; the comment
 # in packaging/macos-entitlements.plist has the whole story. A LuaJIT that calls
@@ -402,36 +419,44 @@ done
 # process, are read from its main executable, and mean nothing on a library.
 #
 # The helpers are programs of their own, so each is a main executable with
-# its own hardened runtime and its own entitlements, and is signed with an
-# identifier under the app's, since a lone executable has no bundle ID for
-# codesign to take one from (Apple's "Creating distribution-signed code for
-# the Mac" asks for both).
+# its own hardened runtime and entitlements of its own, here none. ffmpeg
+# is signed with an identifier under the app's, since a lone executable has
+# no bundle ID for codesign to take one from (Apple's "Creating
+# distribution-signed code for the Mac" asks for both); yt-dlp.app takes
+# its own, video.patina.Patina.yt-dlp, from its Info.plist.
 #
-# yt-dlp gets one entitlement, packaging/macos-yt-dlp-entitlements.plist,
-# which Patina's own process does without. It is a PyInstaller program: on
-# every start it unpacks Python, its framework and its extension modules
-# into a new folder in $TMPDIR (_MEIxxxxxx, made 0700), forks and execs
-# itself, and the child loads them from there. Those libraries were signed
-# ad hoc by yt-dlp's build and sit compressed inside the executable, where
-# this cannot reach them without rebuilding yt-dlp; the hardened runtime's
-# library validation refuses any library signed by neither Apple nor the
-# process's own team, so without com.apple.security.cs.disable-library-
-# validation yt-dlp could not start. Nothing else: PyInstaller sets no DYLD_
-# variables on macOS (it rewrites the libraries' paths when it builds), its
-# Python runs isolated so PYTHON_JIT cannot turn on the JIT, and the ctypes
-# and cffi closures go through the system's /usr/lib/libffi.dylib, which
-# needs no writable executable memory. The files it unpacks get no
-# quarantine attribute: macOS quarantines the files an app creates when the
-# app asks for that (LSFileQuarantineEnabled in its Info.plist), and neither
-# Patina nor yt-dlp, which has no Info.plist, does. The plist carries no
-# comments because Apple asks for none in an entitlements file.
+# yt-dlp.app is a bundle, signed as one and inside out: each library and
+# extension module in its Frameworks, then Python.framework as a framework,
+# then the app, whose seal records them all. With every one of them signed
+# by the same Developer ID as its launcher, the hardened runtime's library
+# validation, which refuses a library signed by neither Apple nor the
+# process's own team, lets the launcher load Python and Python load its
+# extension modules: both with dlopen() (PyInstaller's launcher loads the
+# library _internal names Python; CPython's Python/dynload_shlib.c, and
+# ctypes and cffi for pycryptodomex's modules), which library validation
+# covers like any other load, and nothing loads from elsewhere but the
+# system's libraries in /usr/lib and /System. So yt-dlp.app needs no
+# com.apple.security.cs.disable-library-validation, which the single-file
+# build did, since it unpacked libraries signed by yt-dlp's build alone into
+# $TMPDIR on every start. Nor anything else: PyInstaller sets no DYLD_
+# variables on macOS (yt-dlp's libraries name each other by @rpath and
+# @loader_path), its Python runs isolated, so PYTHON_JIT cannot turn on the
+# JIT, and writes no bytecode, so the bundle stays as signed, and the
+# ctypes and cffi closures go through the system's /usr/lib/libffi.dylib,
+# which needs no writable executable memory.
 #
 # ffmpeg needs none: packaging/ffmpeg.sh builds it statically against
 # FFmpeg's own libraries, linking only the system's, and it copies
 # streams, which generates no code.
 step "Signing"
-sign "Helpers/yt-dlp" --identifier video.patina.Patina.yt-dlp \
-    --entitlements "$YTDLP_ENTITLEMENTS" "$APP/Contents/Helpers/yt-dlp"
+find "$YTDLP/Contents/Frameworks" -type f ! -path '*/Python.framework/*' >"$WORK/ytdlp-files"
+while IFS= read -r f; do
+    case $(file -b "$f") in
+        Mach-O*) sign "yt-dlp.app/${f#"$YTDLP"/}" "$f" ;;
+    esac
+done <"$WORK/ytdlp-files"
+sign "yt-dlp.app/Contents/Frameworks/Python.framework" "$YTDLP/Contents/Frameworks/Python.framework"
+sign "Helpers/yt-dlp.app" "$YTDLP"
 sign "Helpers/ffmpeg" --identifier video.patina.Patina.ffmpeg "$APP/Contents/Helpers/ffmpeg"
 for lib in "$APP"/Contents/Frameworks/*.dylib; do
     if [ ! -f "$lib" ] || [ -L "$lib" ]; then continue; fi
@@ -538,23 +563,15 @@ EXPECTED=$(grep -o '<key>[^<]*</key>' "$ENTITLEMENTS" | sort)
   $ENTITLEMENTS
   and no others. What codesign read is above.
   $KEPT"
-echo "  --- helper entitlements (yt-dlp's file's alone, ffmpeg none?) ---"
-run codesign -d --entitlements - --xml "$SHIP/Contents/Helpers/yt-dlp" \
-    || die "could not read the entitlements of the yt-dlp that would ship.
+echo "  --- helper entitlements (none for yt-dlp.app or ffmpeg?) ---"
+for helper in yt-dlp.app ffmpeg; do
+    run codesign -d --entitlements - --xml "$SHIP/Contents/Helpers/$helper" \
+        || die "could not read the entitlements of the $helper that would ship.
   $KEPT"
-GOT=$(printf '%s\n' "$_out" | grep -o '<key>[^<]*</key>' | sort)
-EXPECTED=$(grep -o '<key>[^<]*</key>' "$YTDLP_ENTITLEMENTS" | sort)
-[ "$GOT" = "$EXPECTED" ] \
-    || die "the yt-dlp that would ship does not carry the entitlements in
-  $YTDLP_ENTITLEMENTS
-  and no others. What codesign read is above.
+    ! printf '%s\n' "$_out" | grep -q '<key>' \
+        || die "the $helper that would ship carries entitlements, and should carry none.
   $KEPT"
-run codesign -d --entitlements - --xml "$SHIP/Contents/Helpers/ffmpeg" \
-    || die "could not read the entitlements of the ffmpeg that would ship.
-  $KEPT"
-! printf '%s\n' "$_out" | grep -q '<key>' \
-    || die "the ffmpeg that would ship carries entitlements, and should carry none.
-  $KEPT"
+done
 echo "  --- spctl (what Gatekeeper decides) ---"
 run spctl -a -vvv -t exec "$SHIP" \
     || die "Gatekeeper rejects the bundle — do not ship this.
@@ -585,9 +602,9 @@ printf '\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
     "Patina once a script runs hot enough to be compiled. Search in the YouTube" \
     "section, play a result and download it too: the bundled yt-dlp and ffmpeg" \
     "run under their own signatures, and a library yt-dlp may not load shows" \
-    "only when it starts. On an Intel Mac and on Apple silicon: yt-dlp's" \
-    "Python sits in the arm64 half of its file, and each half runs on its own" \
-    "kind of Mac only."
+    "only when it loads it. On an Intel Mac and on Apple silicon: each half of" \
+    "yt-dlp.app's launcher and libraries runs on its own kind of Mac only, and" \
+    "library validation checks what each half loads."
 
 # The tag is in the name, for a release build; a build named by its commit is
 # not for a release.

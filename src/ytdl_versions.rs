@@ -8,9 +8,10 @@
 //! Each is asked with `--version`, which touches no network, and the answer is
 //! kept until the file changes: by path, size and modification time, in memory
 //! and in a small file beside the history, so a copy is asked once, not once a
-//! run. The standalone builds take a second or more to start, so the asking is
-//! done on a thread of its own and never by the interface thread: until both
-//! have answered, the package's copy is the one used. Whenever the choice
+//! run. yt-dlp takes a second or more to start, and many more the first time a
+//! machine's malware scan sees it, so the asking is done on a thread of its own
+//! and never by the interface thread: until both have answered, the package's
+//! copy is the one used. Whenever the choice
 //! handed out changes, as when the user's turns out newer once both have
 //! answered, or theirs is removed or replaced by an older one, `settled` tells
 //! the app, which hands the new choice to mpv's hook, the YouTube section and
@@ -25,11 +26,15 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-/// How long a copy has to say its version. A standalone build unpacks itself
-/// on every start, which takes a second or two, longer the first time while
-/// macOS checks its signature or Windows' antivirus scans it; one that takes
-/// longer than this is passed over for the run.
-const ASK_LIMIT: Duration = Duration::from_secs(8);
+/// How long a copy has to say its version; one that takes longer is passed
+/// over for the run, which for the package's copy means the user's wins
+/// even when it is the older. Starting is what takes the time: yt-dlp's
+/// single-file builds took about 10 s for every start on a test Mac, while
+/// XProtect scanned what each one unpacked, and the folder builds the
+/// packages carry, which unpack nothing, can still take as long the first
+/// time macOS or Windows scans their files, perhaps while the YouTube
+/// section starts another. So this leaves several times that.
+const ASK_LIMIT: Duration = Duration::from_secs(45);
 
 /// More than any version line; garbage beyond it is garbage anyway.
 const OUTPUT_LIMIT: u64 = 4096;
@@ -487,7 +492,7 @@ fn ask(program: &Path, limit: Duration) -> Result<Release, String> {
         .stderr(Stdio::null());
     crate::platform::no_console(&mut command);
     // So that one that doesn't answer is stopped with whatever it started,
-    // as a standalone build's launcher starts the real yt-dlp.
+    // as a single-file build's launcher starts the real yt-dlp.
     crate::platform::in_own_group(&mut command);
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let Some(mut stdout) = child.stdout.take() else {
@@ -520,11 +525,14 @@ fn ask(program: &Path, limit: Duration) -> Result<Release, String> {
             }
         }
         if Instant::now() >= until {
-            // Asked to end first, so that a standalone build's launcher
+            // Asked to end first, so that a single-file build's launcher
             // removes what it unpacked (`platform::end_group`).
             crate::platform::stop_group(&mut child);
             let _ = child.wait();
-            return Err(format!("no answer within {} s", limit.as_secs_f32()));
+            return Err(format!(
+                "slow to answer: nothing within {} s",
+                limit.as_secs_f32()
+            ));
         }
         std::thread::sleep(Duration::from_millis(20));
     };

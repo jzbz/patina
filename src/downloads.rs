@@ -553,16 +553,17 @@ impl Task {
     }
 }
 
-/// Stops a download's yt-dlp with everything it started. yt-dlp's standalone
-/// builds, which the macOS and Windows packages carry, are a launcher whose
-/// real yt-dlp is a process of its own: stopping the launcher alone would
-/// leave that one downloading, holding the output open, so the download would
-/// go on to its end. And ffmpeg may be joining the files. The group is asked
-/// to end first, so that the launcher removes the folder it unpacked
-/// (`platform::end_group`), and killed on a thread of its own if it is still
-/// running after `platform::END_GRACE`, so that the window doesn't wait. One
-/// that has ended already is left alone, as its id may since be someone
-/// else's; the thread that follows the download waits for it.
+/// Stops a download's yt-dlp with everything it started: ffmpeg may be
+/// joining the files, and a yt-dlp the user installed may be one of yt-dlp's
+/// single-file builds, a launcher whose real yt-dlp is a process of its own,
+/// which stopping the launcher alone would leave downloading, holding the
+/// output open, so the download would go on to its end. The group is asked
+/// to end first, so that ffmpeg can close its file and such a launcher can
+/// remove the folder it unpacked (`platform::end_group`), and killed on a
+/// thread of its own if it is still running after `platform::END_GRACE`, so
+/// that the window doesn't wait. One that has ended already is left alone,
+/// as its id may since be someone else's; the thread that follows the
+/// download waits for it.
 fn stop_ytdl(child: &Arc<Mutex<Child>>) {
     let asked = match child.lock() {
         Ok(mut child) => {
@@ -1849,7 +1850,8 @@ mod tests {
     #[test]
     fn yt_dlp_is_looked_for_in_the_users_places_then_the_package_then_the_path() {
         let config = Folder::new("ytdl-config");
-        let bundled = PathBuf::from("/Patina.app/Contents/Helpers/yt-dlp");
+        let bundled =
+            PathBuf::from("/Patina.app/Contents/Helpers/yt-dlp.app/Contents/MacOS/yt-dlp");
         let on_path = |name: &str| Some(PathBuf::from(format!("/usr/bin/{name}")));
         let nowhere = |_: &str| None;
         let none = Preferences::default();
@@ -1908,7 +1910,11 @@ mod tests {
             compared(youtube_dl_only, true),
             (Some(bundled.clone()), None)
         );
-        let itself = |_: &str| Some(PathBuf::from("/Patina.app/Contents/Helpers/yt-dlp"));
+        let itself = |_: &str| {
+            Some(PathBuf::from(
+                "/Patina.app/Contents/Helpers/yt-dlp.app/Contents/MacOS/yt-dlp",
+            ))
+        };
         assert_eq!(compared(itself, true), (Some(bundled.clone()), None));
 
         // youtube-dl in mpv's folder can't stand in for the package's yt-dlp,
@@ -2190,9 +2196,9 @@ mod tests {
         }
     }
 
-    /// Stopping a download stops what its yt-dlp started too, as a standalone
-    /// yt-dlp's real worker, or ffmpeg, would go on otherwise; and it asks
-    /// first, so that a launcher that catches the request (as a standalone
+    /// Stopping a download stops what its yt-dlp started too, as ffmpeg, or a
+    /// single-file yt-dlp's real worker, would go on otherwise; and it asks
+    /// first, so that a launcher that catches the request (as a single-file
     /// yt-dlp's does, to remove what it unpacked) gets to tidy up.
     #[cfg(unix)]
     #[test]

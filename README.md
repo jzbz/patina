@@ -153,7 +153,10 @@ other than YouTube serves in several parts, which takes its ffprobe as
 well. Neither the
 macOS nor the Windows package bundles a JavaScript runtime such as Deno;
 yt-dlp then asks YouTube only for what plays without one. The bundled
-yt-dlp is GPL-3.0-or-later as a whole, for the libraries its build carries,
+yt-dlp is yt-dlp's own folder build, which loads Python from beside itself
+rather than unpacking it on every start; its first start can still take a
+while as macOS or Windows checks its files. It is GPL-3.0-or-later as a
+whole, for the libraries its build carries,
 though yt-dlp's own code is Unlicense, and the bundled ffmpeg is
 LGPL-2.1-or-later; `THIRD-PARTY.md` in each package lists what it carries
 and where its source is.

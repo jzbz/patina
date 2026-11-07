@@ -388,8 +388,9 @@ Which yt-dlp runs is decided in one place, `downloads::find_ytdl`, for the
 hook, downloads and the section alike: the path preference, else a
 `ytdl_path` in the hook's own `script-opts/ytdl_hook.conf` (when mpv is given
 its configuration folder), else a `yt-dlp` in that folder, all the user's
-choice; then the copy the package carries (`platform::bundled`:
-Patina.app/Contents/Helpers on macOS, beside patina.exe on Windows), or a
+choice; then the copy the package carries (`platform::bundled`: yt-dlp's
+folder build, as Patina.app/Contents/Helpers/yt-dlp.app on macOS and in a
+yt-dlp folder beside patina.exe on Windows), or a
 `yt-dlp` the user installed instead when that is newer; then the `PATH`. The
 installed one is looked for on the `PATH` and, on macOS, in
 /opt/homebrew/bin and /usr/local/bin, which an app opened from the Finder
@@ -400,8 +401,9 @@ tie goes to the package's), and keeps the answer by path, size and
 modification time, in memory and in `yt-dlp-versions.json` in the data
 folder, so each copy is asked once. For a Scoop shim, which `scoop update`
 leaves the same file, the size and time are those of the program its
-`.shim` names. One that doesn't answer within 8
-seconds, or answers something that isn't a version, is passed over for the
+`.shim` names. One that doesn't answer within 45
+seconds, which leaves room for a first start while macOS or Windows scans
+its files, or answers something that isn't a version, is passed over for the
 run. The choice never waits: until both have answered the package's copy is
 used. Whenever the choice changes, as when the installed one turns out newer,
 or is removed or replaced by an older one,
@@ -436,13 +438,14 @@ progress, post-processing and the final file printed in templates of
 Patina's, so nothing depends on the wording of yt-dlp's own output.
 Running downloads are stopped when Patina quits; yt-dlp picks up their
 partial files the next time. A yt-dlp is stopped as a process group, as
-the standalone builds are a launcher and a worker and may have started
-ffmpeg. On Unix the group is asked to end first (SIGTERM) and killed only if
-it is still running 1.5 seconds later (`platform::end_group`), as the macOS
-package's launcher removes the folder it unpacked itself into when asked,
-and can't when killed; Windows has no such request for a windowless console
-program, so there it is killed at once, and can leave that folder in
-`%TEMP%`. The same
+it may have started ffmpeg, and a single-file build the user installed is a
+launcher and a worker. On Unix the group is asked to end first (SIGTERM) and
+killed only if it is still running 1.5 seconds later (`platform::end_group`),
+so that ffmpeg can close its file and such a launcher can remove the folder
+it unpacked itself into, which it can't when killed; Windows has no such
+request for a windowless console program, so there it is killed at once.
+The folder builds the packages carry unpack nothing, so stopping them
+leaves nothing behind either way. The same
 window lists files downloaded from Jellyfin servers, which Patina fetches
 itself (`jellyfin/download.rs`, described in [jellyfin.md](jellyfin.md)),
 one at a time from each server, and reports in yt-dlp's terms; those
