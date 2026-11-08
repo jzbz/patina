@@ -10,10 +10,12 @@
 //! `store.rs` keeps the lists, `feed.rs` builds and saves the feed from `rss.rs`
 //! and `ytdlp.rs`, `takeout.rs` reads and writes the files Google's export uses,
 //! `session.rs` is the app-wide state windows follow, `view.rs` shows it in one
-//! window, and `playing.rs` holds what goes with playing a video from it.
+//! window (`lines.rs` holds its list's lines), and `playing.rs` holds what goes
+//! with playing a video from it.
 
 pub mod client;
 pub mod feed;
+pub mod lines;
 pub mod newpipe;
 pub mod playing;
 pub mod rss;

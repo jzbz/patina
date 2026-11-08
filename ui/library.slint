@@ -325,9 +325,10 @@ component HomePage inherits VerticalLayout {
             // many rows: a ListView places itself from the average height
             // of the rows it has made, so with rows of different heights
             // (shelves of posters and of thumbnails) each place it was put
-            // could move it on to another, on every frame (see LineList's
-            // follow() in youtube.slint). Then it stays near the place,
-            // until more rows come, a resize, or the user scrolls.
+            // could move it on to another, on every frame (see the
+            // library's lists in docs/architecture.md). Then it stays near
+            // the place, until more rows come, a resize, or the user
+            // scrolls.
             function follow() {
                 if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
                     self.check-place();
@@ -612,9 +613,10 @@ component GridPage inherits VerticalLayout {
             // many rows: a ListView places itself from the average height
             // of the rows it has made, so with rows of different heights
             // (shelves of posters and of thumbnails) each place it was put
-            // could move it on to another, on every frame (see LineList's
-            // follow() in youtube.slint). Then it stays near the place,
-            // until more rows come, a resize, or the user scrolls.
+            // could move it on to another, on every frame (see the
+            // library's lists in docs/architecture.md). Then it stays near
+            // the place, until more rows come, a resize, or the user
+            // scrolls.
             function follow() {
                 if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
                     self.check-place();
@@ -831,9 +833,10 @@ component SearchPage inherits VerticalLayout {
             // many rows: a ListView places itself from the average height
             // of the rows it has made, so with rows of different heights
             // (shelves of posters and of thumbnails) each place it was put
-            // could move it on to another, on every frame (see LineList's
-            // follow() in youtube.slint). Then it stays near the place,
-            // until more rows come, a resize, or the user scrolls.
+            // could move it on to another, on every frame (see the
+            // library's lists in docs/architecture.md). Then it stays near
+            // the place, until more rows come, a resize, or the user
+            // scrolls.
             function follow() {
                 if LibraryUi.placed(self.content-y, self.content-height, self.visible-height) {
                     self.check-place();

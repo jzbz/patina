@@ -228,23 +228,60 @@ none; a player's state changes all the time (tracks and chapters as a file
 plays), which left submenus empty where Slint draws the menus itself, as on
 Linux. The copies don't change while the menu is open.
 
-The library's and the YouTube section's lists are ListViews, which make only
-the rows in sight, and go back to where a page was scrolled to
-(`Library.scroll-offset`, `YouTube.scroll-offset`) as the page shows again
-and its rows arrive. A ListView doesn't know its rows' heights, and places
-itself from the average height of those it has made: with rows of different
-heights (a search's headings, channels and lines of videos; Home's shelves
-of posters and of thumbnails) each set of rows has another average, so a
-list put at a place moves itself elsewhere, and its content-y is an
-estimate. A list is therefore put back only a few times after it has moved
-itself (`follow()` in each), and then left near the place. Put back every
-time, as before, it moved on every frame: Slint gave up after ten rounds of
-change handlers, logging "long callback/instantiation chain detected" each
-time, the rows and their cards were made anew under the pointer, so that a
-card's … button lost its click and its menu went with the card it came from
-(on Windows, a native menu stayed open, and its Download did nothing), and
-the settle timer, restarted each time, never ended the restoring.
-`backend::testing::count_long_chains` counts that message in tests.
+The library's lists are ListViews, which make only the rows in sight, and go
+back to where a page was scrolled to (`Library.scroll-offset`) as the page
+shows again and its rows arrive. A ListView doesn't know its rows' heights,
+and places itself from the average height of those it has made: with rows of
+different heights (Home's shelves of posters and of thumbnails) each set of
+rows has another average, so a list put at a place moves itself elsewhere,
+and its content-y is an estimate. A list is therefore put back only a few
+times after it has moved itself (`follow()` in each), and then left near the
+place. Put back every time, as before, it moved on every frame: Slint gave up
+after ten rounds of change handlers, logging "long callback/instantiation
+chain detected" each time, the rows and their cards were made anew under the
+pointer, so that a card's … button lost its click and its menu went with the
+card it came from (on Windows, a native menu stayed open, and its Download
+did nothing), and the settle timer, restarted each time, never ended the
+restoring. `backend::testing::count_long_chains` counts that message in
+tests.
+
+The YouTube section's list (`LineList`) is a ScrollView instead, as its
+estimate also told the controller of lines far from those on screen, which
+then took their pictures away. Each line says how many headings, channels
+and lines of videos are above it (`YouTubeLine.above`, from
+`youtube::lines::place_lines`), and the view places it from those and their
+heights, so the list's height, its content-y and `YouTube.scroll-offset` are
+the lines' own, and a list put at a place stays there. The controller keeps
+the page's lines in one model with two faces (`youtube::lines::PageLines`):
+`YouTube.lines`, all of them, which says how tall the list is and whether
+the page has any, and `YouTube.near-lines`, the lines from a screen above
+those in sight to a screen below, which are all the view makes. That window
+moves half a screen at a time, keeping the lines it shares so that a card
+under the pointer isn't made anew, and always lies within the lines that
+have their pictures.
+
+As lines above the screen are made, Tab would go first to one of them. So
+while the keyboard is not on a card or channel of the list, only the lines in
+sight take it (`tab-stop` on each line, half of which, or half of what the
+list shows beside a heading, must show: a heading takes no Tab, and in the
+shortest window the line under one showed less than half the list), and Tab
+into the list lands on screen; once it is on one, every line made does, for
+Tab and Shift+Tab to go on card by card. Only Tab goes by `tab-stop`: a
+card's menu closing, or the window coming back, gives the keyboard back to
+the card however little of it shows. Whether it is on one
+(`YouTubeUi.keys-on-lines`) is read only after Tab has moved it, as Tab takes
+it off one card before it looks for the next. A card gone with the
+keyboard on it (made again for other columns, taken out of the list) says
+nothing, so the view, taking the keyboard back (`keep_keyboard` in
+`src/window.rs`), clears it too. Slint 1.18 scrolls whatever takes the focus
+in a Flickable into sight by itself, after the control's `focus-gained` has
+said where it was; the list only adds a margin, as scrolling again by where
+the card had been sent the list as far again past it. A card taller than
+the list shows, in a short window, Slint scrolls nowhere, and the list puts
+its top in sight. Nor does Slint scroll for the window coming back, which
+gives the card the keyboard back where it is: the control passes on why it
+has the keyboard (`LibraryUi.focus-reason`), and for that reason the list
+scrolls the card the whole way into sight.
 
 ## Music mode
 

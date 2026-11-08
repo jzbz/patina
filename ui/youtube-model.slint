@@ -54,6 +54,14 @@ export struct YouTubeSight {
     channel: length,
 }
 
+// How many lines of each kind are above a line of a page's list. The view
+// has their heights, and places the line from these.
+export struct YouTubeAbove {
+    headings: int,
+    channels: int,
+    videos: int,
+}
+
 // A line of a page's list. Every page's list is made of these.
 export struct YouTubeLine {
     id: string,
@@ -64,6 +72,7 @@ export struct YouTubeLine {
     channel: YouTubeChannel,
     // As many videos as a line holds.
     cards: [YouTubeCard],
+    above: YouTubeAbove,
 }
 
 export global YouTube {
@@ -88,15 +97,19 @@ export global YouTube {
     in property <bool> banner-dismissable;
 
     in property <[YouTubeLine]> lines;
+    // Those of the lines near the part of the list in sight, which are all
+    // the view makes.
+    in property <[YouTubeLine]> near-lines;
     // What the page says when its list is empty, and whether that is a page
     // that offers adding channels or importing.
     in property <string> empty-text;
     in property <bool> empty-offers-channels;
     in property <bool> empty-offers-import;
 
-    // How far the page on show is scrolled, as Library.scroll-offset is: the
-    // view sets it as the user scrolls, and a page goes where it says as its
-    // content arrives. The controller keeps it with each page it stacks.
+    // How far the page on show is scrolled, from the top of its list, as
+    // Library.scroll-offset is: the view sets it as the user scrolls, and a
+    // page goes where it says as its content arrives. The controller keeps it
+    // with each page it stacks.
     in-out property <length> scroll-offset;
     // Counts the times a page was shown or loaded again. Each time, its list
     // stops recording where it is until it has gone where scroll-offset says.

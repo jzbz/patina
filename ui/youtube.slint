@@ -7,15 +7,15 @@
 // The view has a bar under Patina's title bar (Back and the pages), a message
 // under that when there is one, and below it the page YouTube.page names.
 
-import { ListView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton, TextButton, Spinner } from "widgets.slint";
-import { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeSight } from "youtube-model.slint";
+import { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeAbove, YouTubeSight } from "youtube-model.slint";
 import { LibraryUi, Avatar, Chip, KeyButton, KeyFocus, Notice, PageField } from "library-parts.slint";
 import { DropOverlay } from "library.slint";
 import { VideoCard, ChannelRow, SubscribeButton, YouTubeUi } from "youtube-card.slint";
 
-export { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeSight }
+export { YouTube, YouTubeCard, YouTubeChannel, YouTubeLine, YouTubeAbove, YouTubeSight }
 
 // An entry in the bar.
 component NavEntry inherits Rectangle {
@@ -212,9 +212,14 @@ component Banner inherits Rectangle {
 }
 
 // A page's list of lines: videos in as many columns as fit, channels and
-// headings. It is a ListView, so that only the lines in sight exist, made anew
-// for each page, as a ListView hidden while its model was emptied and filled
-// again kept its old layout. What it holds goes under it, for an empty list.
+// headings. Each line is placed where the lines above it end, from their
+// counts and heights, so that the list's height and where it is scrolled to
+// are the lines' own. A ListView has neither, only what the average height of
+// the rows it has made says, and on a page of lines of different heights (a
+// search's headings, channels and lines of videos) that told the controller of
+// lines far from those on screen, which took their pictures away. Only the
+// lines near those in sight are made (YouTube.near-lines). It is made anew for
+// each page. What it holds goes under it, for an empty list.
 component LineList inherits VerticalLayout {
     property <length> available: root.width - 2 * LibraryUi.inset;
     // Rounded, so that cards stay within about an eighth of their size.
@@ -226,10 +231,26 @@ component LineList inherits VerticalLayout {
     // user scrolls, it records where it is.
     property <int> settled: -1;
     property <bool> in-place;
-    // The times the list was put back where scroll-offset says and moved
-    // away again by itself, while it had undone-for lines (see follow()).
-    property <int> undone;
-    property <int> undone-for: -1;
+    // Whether the keyboard is on a card or channel of this list, as it was
+    // when it last moved. While it is, Tab goes on to the lines next to it,
+    // in sight or not, and the list follows. While it isn't, only the lines
+    // in sight take it, so that Tab into the list lands on one on screen and
+    // not on the first line made, a screen above it. Tab takes the keyboard
+    // off a card before it looks for the next, so this follows it only once
+    // Tab is done.
+    property <bool> keys-here;
+    property <int> keys-moves: YouTubeUi.keys-moves;
+    changed keys-moves => {
+        root.keys-here = YouTubeUi.keys-on-lines;
+    }
+
+    pure function height-of(kind: string) -> length {
+        return kind == "heading" ? YouTubeUi.heading-height : kind == "channel" ? YouTubeUi.channel-height : root.line-height;
+    }
+    // Where a line starts, from the top of the list.
+    pure function top-of(line: YouTubeLine) -> length {
+        return line.above.headings * YouTubeUi.heading-height + line.above.channels * YouTubeUi.channel-height + line.above.videos * root.line-height;
+    }
 
     init => {
         if root.width > 0 {
@@ -260,10 +281,17 @@ component LineList inherits VerticalLayout {
 
     Rectangle {
         vertical-stretch: 1;
-        if YouTube.lines.length > 0: ListView {
+        if YouTube.lines.length > 0: lines := ScrollView {
             property <int> loads: YouTube.loads;
             property <length> line-height: root.line-height;
             property <int> reveal: LibraryUi.focus-serial;
+            property <YouTubeLine> last: YouTube.lines[YouTube.lines.length - 1];
+            accessible-role: list;
+            accessible-orientation: Orientation.vertical;
+            // As tall as its lines, and as wide as it shows: a line is as
+            // wide as the list, and the list never scrolls sideways.
+            content-height: root.top-of(self.last) + root.height-of(self.last.kind);
+            content-width: self.visible-width;
             function restore() {
                 self.content-y = YouTubeUi.place(self.content-height, self.visible-height);
                 self.check-place();
@@ -275,40 +303,30 @@ component LineList inherits VerticalLayout {
                     settle-timer.running = true;
                 }
             }
-            // Follows the list as its height or place changes while it goes
-            // where scroll-offset says. Moved away by itself (its rows were
-            // replaced), it is put back, but only a few times for as many
-            // lines: a ListView places itself from the average height of the
-            // rows it has made, and as a search's headings, channels and
-            // lines of videos differ in height, a different set of rows has
-            // another average, and each place it was put moved it on to
-            // another. Put back each time, it moved on every frame, made its
-            // cards anew under the pointer, so that their menus took no
-            // clicks, and restarted the settle-timer before it could fire.
-            // Then it stays near the place, until more lines come, a resize,
-            // or the user scrolls.
+            // Follows the list as its height changes, or as it is moved,
+            // while it goes where scroll-offset says. Where that is depends
+            // only on scroll-offset and the list's own height, which doesn't
+            // change with the lines it makes, so putting it there moves it
+            // nowhere else.
             function follow() {
                 if YouTubeUi.placed(self.content-y, self.content-height, self.visible-height) {
                     self.check-place();
                 } else {
-                    if root.undone-for != YouTube.lines.length {
-                        root.undone-for = YouTube.lines.length;
-                        root.undone = 0;
-                    }
-                    if root.undone < 3 {
-                        root.undone += 1;
-                        self.restore();
-                    } else {
-                        root.in-place = false;
-                    }
+                    self.restore();
                 }
             }
-            // Tells the controller what of the list is in sight, so that the
-            // lines far from it give up their images. It has the heights of
-            // the lines below, which it needs to tell which are there: on the
-            // Channels page, every line is a channel's, a third as tall as a
-            // line of videos, and counting them as videos had pictures stop a
-            // third of the way down.
+            // Keeps the list within its lines once it has settled, as it
+            // gets shorter, wider or taller: left past its end, it would
+            // show nothing.
+            function keep-in() {
+                self.content-y = max(min(0px, self.visible-height - self.content-height), min(0px, self.content-y));
+            }
+            // Tells the controller what of the list is in sight, so that only
+            // the lines near it are made and have their images. It has the
+            // heights of the lines below, which it needs to tell which are
+            // there: on the Channels page, every line is a channel's, a third
+            // as tall as a line of videos, and counting them as videos had
+            // pictures stop a third of the way down.
             function report-lines() {
                 if root.line-height > 0 {
                     YouTube.lines-shown({
@@ -325,18 +343,21 @@ component LineList inherits VerticalLayout {
                 self.report-lines();
             }
             changed loads => {
-                root.undone-for = -1;
                 self.restore();
             }
             changed content-height => {
                 if root.settled != YouTube.loads {
                     self.follow();
+                } else {
+                    self.keep-in();
                 }
                 self.report-lines();
             }
             changed visible-height => {
                 if root.settled != YouTube.loads {
                     self.restore();
+                } else {
+                    self.keep-in();
                 }
                 self.report-lines();
             }
@@ -354,20 +375,48 @@ component LineList inherits VerticalLayout {
             scrolled => {
                 root.settled = YouTube.loads;
             }
-            // Scrolls what the keyboard moved to into sight.
+            // Leaves a margin past the card or channel the keyboard moved
+            // to. Slint has already scrolled it just into sight, as it does
+            // whatever takes the focus in a Flickable, after the card said
+            // where it was: focus-top and focus-bottom are where it was before
+            // that, and say only which way it came in. Scrolled by them again,
+            // the list went as far again past it, the card out of sight. A
+            // card taller than the list shows Slint scrolls nowhere, so the
+            // list puts its top in sight: left out of it, the card lost the
+            // keyboard with the next key. The window coming back gives the
+            // card the keyboard back where it is, which Slint scrolls nowhere,
+            // so the list scrolls it the whole way in. What is above the list
+            // (a channel's Subscribe) moves it not at all.
             changed reveal => {
                 let top = LibraryUi.focus-top - self.absolute-position.y;
                 let bottom = LibraryUi.focus-bottom - self.absolute-position.y;
+                let scrolled = LibraryUi.focus-reason != FocusReason.window-activation;
                 root.settled = YouTube.loads;
-                if top < 0 {
-                    self.content-y = min(0px, self.content-y - top + 8px);
+                if !YouTubeUi.keys-on-lines {
+                    return;
+                }
+                if bottom - top > self.visible-height {
+                    self.content-y = max(min(0px, self.visible-height - self.content-height), min(0px, self.content-y - top + 8px));
+                } else if top < 0 {
+                    self.content-y = min(0px, self.content-y - (scrolled ? 0px : top) + 8px);
                 } else if bottom > self.visible-height {
-                    self.content-y = max(min(0px, self.visible-height - self.content-height), self.content-y - (bottom - self.visible-height) - 8px);
+                    self.content-y = max(min(0px, self.visible-height - self.content-height), self.content-y - (scrolled ? 0px : bottom - self.visible-height) - 8px);
                 }
             }
 
-            for line in YouTube.lines: Rectangle {
-                height: line.kind == "heading" ? YouTubeUi.heading-height : line.kind == "channel" ? YouTubeUi.channel-height : root.line-height;
+            for line in YouTube.near-lines: row := Rectangle {
+                // Whether Tab stops on its cards (see keys-here): in sight is
+                // at least half of it showing, or half of what the list shows
+                // beside a heading, so that Tab doesn't land on a line of
+                // which only the space under its cards shows. A heading takes
+                // no Tab, and in a list so short that it showed only a heading
+                // and some of the lines next to it, none had half of the list,
+                // and the keyboard went round the bar without it.
+                property <length> showing: min(self.y + self.height, -lines.content-y + lines.visible-height) - max(self.y, -lines.content-y);
+                property <bool> tab-stop: root.keys-here || self.showing >= min(self.height, lines.visible-height - YouTubeUi.heading-height) / 2;
+                y: root.top-of(line);
+                width: parent.width;
+                height: root.height-of(line.kind);
 
                 if line.kind == "heading": Text {
                     x: LibraryUi.inset;
@@ -386,6 +435,7 @@ component LineList inherits VerticalLayout {
                     y: 3px;
                     width: root.available + 16px;
                     channel: line.channel;
+                    tab-stop: row.tab-stop;
                 }
                 if line.kind == "videos": Rectangle {
                     for card[index] in line.cards: VideoCard {
@@ -393,6 +443,7 @@ component LineList inherits VerticalLayout {
                         y: 4px;
                         width: root.card-width;
                         card: card;
+                        tab-stop: row.tab-stop;
                     }
                 }
             }
@@ -929,9 +980,13 @@ export component YouTubeView inherits Rectangle {
     property <bool> field-waits: YouTube.page == "channels" && YouTube.adding && LibraryUi.typing;
 
     // Asked to take the keyboard back (LibraryUi.focus-back): the page's field
-    // takes it if it was being typed in, or when it can again.
+    // takes it if it was being typed in, or when it can again. It is on no
+    // card of the list then (YouTubeUi.keys-on-lines): it may have been on
+    // one that is gone, made again for other columns or taken out of the
+    // list, and that says nothing of it.
     property <int> focus-back: LibraryUi.focus-back;
     changed focus-back => {
+        YouTubeUi.keys-off-line();
         if !LibraryUi.typing {
             root.take-focus();
         } else if root.field-waits && !root.covered {

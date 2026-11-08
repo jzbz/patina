@@ -645,11 +645,15 @@ Each page keeps its scroll when left. Lines are made afresh only when a page
 is shown; what comes later changes them in place, so a list being read
 doesn't jump. Pictures are held only near the screen, as a decoded image for
 each of thousands of videos would run to gigabytes. The view says what of a
-list is in sight, in pixels, with the height of each kind of line
+list is in sight, in pixels from its top, with the height of each kind of line
 (`YouTubeSight`), and the controller counts the lines from those: a channel's
 line is a third as tall as a line of videos, and a count that took every line
 for one of those left most of a long Channels page without pictures until the
-window was made larger.
+window was made larger. The view places each line from the count of each kind
+above it, so those pixels are the lines' own; a ListView, which went by the
+average height of the rows it had made, told of lines far from those on a
+search's page, and the cards on screen lost their pictures. Only the lines near
+those in sight are made (`YouTube.near-lines`, see architecture.md).
 
 ## Tests
 

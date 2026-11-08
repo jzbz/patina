@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 /// scrolled off a page, along with the key that finds it there. That is only
 /// looked for ahead of a key (`key_coming`): a list scrolling to what Tab just
 /// reached has it out of sight for a moment.
-fn keep_keyboard(window: &PlayerWindow, key_coming: bool) {
+pub(crate) fn keep_keyboard(window: &PlayerWindow, key_coming: bool) {
     let inner = i_slint_core::window::WindowInner::from_pub(window.window());
     // A menu has the keyboard while it is open.
     if !inner.active_popups().is_empty() {
@@ -6679,7 +6679,7 @@ mod tests {
             }
         };
         let lines = Rc::new(VecModel::from(vec![line()]));
-        youtube.set_lines(lines.clone().into());
+        set_youtube_lines(&youtube, lines.clone().into());
         // As the controller does, the lines are made again for other columns.
         let remade = lines.clone();
         youtube.on_layout(move |_, _| remade.set_vec(vec![line()]));
@@ -7370,7 +7370,7 @@ mod tests {
         assert_eq!(cleared.get(), 1);
         // As the controller does: the page has nothing left, and the button
         // that had the keyboard has gone.
-        youtube.set_lines(youtube_lines(0));
+        set_youtube_lines(&youtube, youtube_lines(0));
         youtube.set_loads(youtube.get_loads() + 1);
         i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
         assert!(press_ctrl_q(&window, &keys), "once cleared");
@@ -7430,7 +7430,9 @@ mod tests {
             kind: "channel".into(),
             ..Default::default()
         };
-        youtube.set_lines(ModelRc::new(VecModel::from(vec![channel; 60])));
+        let mut channels = vec![channel; 60];
+        crate::youtube::lines::place_lines(&mut channels);
+        set_youtube_lines(&youtube, ModelRc::new(VecModel::from(channels)));
         youtube.set_page("channels".into());
         youtube.set_loads(youtube.get_loads() + 1);
         youtube.set_shown(true);
@@ -7556,7 +7558,16 @@ mod tests {
             cards: ModelRc::new(VecModel::from(vec![card; 3])),
             ..Default::default()
         };
-        ModelRc::new(VecModel::from(vec![line; count]))
+        let mut lines = vec![line; count];
+        crate::youtube::lines::place_lines(&mut lines);
+        ModelRc::new(VecModel::from(lines))
+    }
+
+    /// Gives the YouTube section these lines, every one of them made, which
+    /// the controller does only for those near the sight.
+    fn set_youtube_lines(youtube: &YouTube, lines: ModelRc<crate::YouTubeLine>) {
+        youtube.set_near_lines(lines.clone());
+        youtube.set_lines(lines);
     }
 
     /// A page of the library or of the YouTube section, or what shows without
@@ -7577,7 +7588,7 @@ mod tests {
                 library.set_shown(true);
             }
             "youtube" => {
-                youtube.set_lines(youtube_lines(40));
+                set_youtube_lines(&youtube, youtube_lines(40));
                 youtube.set_page(page.into());
                 youtube.set_loads(youtube.get_loads() + 1);
                 youtube.set_shown(true);
@@ -8272,7 +8283,7 @@ mod tests {
             let youtube = window.global::<YouTube>();
             counted.set(counted.get() + 1);
             youtube.set_show_shorts(show);
-            youtube.set_lines(youtube_lines(if show { 40 } else { 2 }));
+            set_youtube_lines(&youtube, youtube_lines(if show { 40 } else { 2 }));
             youtube.set_loads(youtube.get_loads() + 1);
         });
         let counted = toggles.clone();

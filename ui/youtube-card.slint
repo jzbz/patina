@@ -39,6 +39,23 @@ export global YouTubeUi {
     public pure function reached(content-y: length, content-height: length, visible-height: length) -> bool {
         return self.placed(content-y, content-height, visible-height) && -content-y >= YouTube.scroll-offset - 1px;
     }
+
+    // Whether the keyboard is on a card or channel of the page's list, and
+    // how many times it went on to one or off one. Tab takes it off one and
+    // then puts it on the next, so the list reads this only once that is
+    // over (see LineList).
+    out property <bool> keys-on-lines;
+    out property <int> keys-moves;
+
+    public function keys-on-line() {
+        self.keys-on-lines = true;
+        self.keys-moves += 1;
+    }
+
+    public function keys-off-line() {
+        self.keys-on-lines = false;
+        self.keys-moves += 1;
+    }
 }
 
 // A small plate over a card's image, for a word or a length.
@@ -97,6 +114,11 @@ component ImageAction inherits Rectangle {
 // Menu key opens its menu.
 export component VideoCard inherits Rectangle {
     in property <YouTubeCard> card;
+    // Whether Tab stops on it (see LineList). Only Tab: its menu closing, or
+    // the window coming back, gives it the keyboard back however little of
+    // it shows. Disabled instead, it refused it, and the keyboard went on to
+    // the bar.
+    in property <bool> tab-stop: true;
     property <length> image-height: root.width * 9 / 16;
     // Marked as hovered while the pointer is on it, and while its menu is
     // open, so that a menu drawn over the next card is seen to be this one's.
@@ -134,6 +156,7 @@ export component VideoCard inherits Rectangle {
     keys := FocusScope {
         width: parent.width;
         height: parent.height;
+        focus-on-tab-navigation: root.tab-stop;
         focus-on-click: false;
         key-pressed(event) => {
             if LibraryUi.presses(event) {
@@ -146,8 +169,12 @@ export component VideoCard inherits Rectangle {
             }
             reject
         }
-        focus-gained => {
-            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height);
+        focus-gained(reason) => {
+            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height, reason);
+            YouTubeUi.keys-on-line();
+        }
+        focus-lost => {
+            YouTubeUi.keys-off-line();
         }
     }
 
@@ -409,13 +436,24 @@ export component VideoCard inherits Rectangle {
 export component SubscribeButton inherits Rectangle {
     in property <string> id;
     in property <bool> subscribed;
+    // Whether Tab stops on it (see LineList).
+    in property <bool> tab-stop: true;
+    callback focused;
+    callback unfocused;
     height: 28px;
     width: button.min-width;
     accessible-role: none;
 
     KeyFocus {
+        focus-on-tab-navigation: root.tab-stop;
         activated => {
             YouTube.set-subscribed(root.id, !root.subscribed);
+        }
+        focused => {
+            root.focused();
+        }
+        unfocused => {
+            root.unfocused();
         }
     }
     button := TextButton {
@@ -432,6 +470,8 @@ export component SubscribeButton inherits Rectangle {
 // subscribe or stop. A click opens its page.
 export component ChannelRow inherits Rectangle {
     in property <YouTubeChannel> channel;
+    // Whether Tab stops on it and its button (see LineList).
+    in property <bool> tab-stop: true;
     height: YouTubeUi.channel-height - 6px;
     border-radius: Theme.control-radius;
     background: touch.has-hover ? Theme.hover : transparent;
@@ -443,8 +483,15 @@ export component ChannelRow inherits Rectangle {
     }
 
     KeyFocus {
+        focus-on-tab-navigation: root.tab-stop;
         activated => {
             YouTubeUi.open-channel(root.channel.id);
+        }
+        focused => {
+            YouTubeUi.keys-on-line();
+        }
+        unfocused => {
+            YouTubeUi.keys-off-line();
         }
     }
 
@@ -501,6 +548,13 @@ export component ChannelRow inherits Rectangle {
             SubscribeButton {
                 id: root.channel.id;
                 subscribed: root.channel.subscribed;
+                tab-stop: root.tab-stop;
+                focused => {
+                    YouTubeUi.keys-on-line();
+                }
+                unfocused => {
+                    YouTubeUi.keys-off-line();
+                }
             }
         }
     }

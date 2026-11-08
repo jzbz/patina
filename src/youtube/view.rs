@@ -7,6 +7,7 @@
 //! so that a list being read doesn't jump.
 
 use super::feed::ChannelState;
+use super::lines::{PageLines, place_lines};
 use super::playing;
 use super::session::{Change, ExportFile, ImportReport, ListKind, Listener, Session, ToolState};
 use super::store::Channel;
@@ -227,7 +228,8 @@ pub struct YouTubeController {
     /// enough for the small one. It only grows, as nothing is gained by asking
     /// for smaller ones again.
     large: Cell<u32>,
-    lines: Rc<VecModel<YouTubeLine>>,
+    /// The page's lines, and those of them the view makes.
+    lines: Rc<PageLines>,
     /// What of the list is in sight, as the view last said.
     sight: Cell<Sight>,
     /// Where each video and channel on the page is: `(line, column)`.
@@ -381,7 +383,7 @@ impl YouTubeController {
             pages: RefCell::new(Pages::default()),
             columns: Cell::new(1),
             large: Cell::new(0),
-            lines: Rc::new(VecModel::default()),
+            lines: PageLines::new(),
             sight: Cell::new(Sight::default()),
             places: RefCell::new(HashMap::new()),
             asked: RefCell::new(HashSet::new()),
@@ -397,9 +399,8 @@ impl YouTubeController {
             notes: RefCell::new(Vec::new()),
             update_timer: Timer::default(),
         });
-        controller
-            .global()
-            .set_lines(ModelRc::from(controller.lines.clone()));
+        controller.global().set_lines(controller.lines.all());
+        controller.global().set_near_lines(controller.lines.near());
         controller.wire();
         let listener: Weak<dyn Listener> = Rc::downgrade(&controller) as Weak<dyn Listener>;
         session.add_listener(listener);
@@ -1131,7 +1132,8 @@ impl YouTubeController {
 
     /// Puts the page's lines in the view, and whatever else it shows.
     fn fill(&self, fill: Fill) {
-        let new = self.build_lines();
+        let mut new = self.build_lines();
+        place_lines(&mut new);
         self.update_page();
         self.update_channel_header();
         if fill == Fill::Page {
@@ -1192,7 +1194,13 @@ impl YouTubeController {
             match self.lines.row_data(index) {
                 None => self.lines.push(line),
                 Some(old) if same_shape(&old, &line) => {
-                    if old.channel != line.channel || old.title != line.title {
+                    // Should a line above ever change kind in place, this
+                    // one moves (today's pages never do it: the same ids at
+                    // the same places have the same lines above).
+                    if old.channel != line.channel
+                        || old.title != line.title
+                        || old.above != line.above
+                    {
                         self.lines.set_row_data(index, line);
                     } else {
                         for column in 0..line.cards.row_count() {
@@ -1299,11 +1307,11 @@ impl YouTubeController {
     }
 
     /// Gives the lines near those in sight their pictures, and takes them from
-    /// those further away.
+    /// those further away. The view makes only lines among those with them.
     fn update_images(&self) {
         let (first, last) = self.shown();
-        let margin = (last - first + 1) * IMAGE_SCREENS;
-        let wanted = first.saturating_sub(margin)..last + margin + 1;
+        let wanted = pictured(first, last);
+        self.lines.draw_around(first, last, wanted.clone());
         let mut asks: Vec<(String, Option<String>)> = Vec::new();
         for (index, line) in self.lines.iter().enumerate() {
             let near = wanted.contains(&index);
@@ -2043,6 +2051,13 @@ fn seen_now(videos: &mut [Video]) {
     for video in videos.iter_mut().filter(|video| video.live.is_some()) {
         video.live_seen = Some(now);
     }
+}
+
+/// The lines that have their pictures while these are in sight: as many
+/// screens of them as IMAGE_SCREENS each way.
+fn pictured(first: usize, last: usize) -> std::ops::Range<usize> {
+    let margin = (last - first + 1) * IMAGE_SCREENS;
+    first.saturating_sub(margin)..last + margin + 1
 }
 
 /// Lines the view can change in place, rather than make again.
@@ -3292,15 +3307,38 @@ mod tests {
         assert_eq!(titles(&controller), ["From Elsewhere"]);
     }
 
+    /// Gives the view these lines as the controller does: each placed under
+    /// those above it, and only those near what the view says is in sight
+    /// made. What it says goes in `sights`.
+    fn show_lines(
+        youtube: &YouTube,
+        mut lines: Vec<YouTubeLine>,
+        sights: &Rc<RefCell<Vec<YouTubeSight>>>,
+    ) -> Rc<PageLines> {
+        place_lines(&mut lines);
+        let kinds: Vec<SharedString> = lines.iter().map(|line| line.kind.clone()).collect();
+        let model = PageLines::new();
+        model.set_vec(lines);
+        youtube.set_lines(model.all());
+        youtube.set_near_lines(model.near());
+        let (drawing, seen) = (model.clone(), sights.clone());
+        youtube.on_lines_shown(move |sight| {
+            let (first, last) = Sight::of(&sight).lines(kinds.iter().map(SharedString::as_str));
+            drawing.draw_around(first, last, pictured(first, last));
+            seen.borrow_mut().push(sight);
+        });
+        model
+    }
+
     /// Back to a page of lines of different heights (a search's headings,
-    /// channels and lines of videos), scrolled down, the list goes near where
-    /// it was and then stays still. A ListView with rows of different heights
-    /// places itself from their average, which changes with the rows it makes:
+    /// channels and lines of videos), scrolled down, the list goes where it
+    /// was and then stays still. A ListView with rows of different heights
+    /// placed itself from their average, which changed with the rows it made:
     /// put back each time it moved itself, it moved again, on every frame, so
     /// Slint logged "long callback/instantiation chain" and every card was made
     /// anew under the pointer, whose menus then took no clicks. At rest, a
     /// frame changes nothing, and the list tells nothing more of what is in
-    /// sight. Lines of one height still go exactly where they were.
+    /// sight.
     #[test]
     fn a_list_of_mixed_lines_comes_to_rest_where_it_was() {
         use crate::backend::testing::{count_long_chains, frame};
@@ -3311,8 +3349,6 @@ mod tests {
         window.window().set_size(LogicalSize::new(1280.0, 752.0));
         let youtube = window.global::<YouTube>();
         let sights = Rc::new(RefCell::new(Vec::new()));
-        let seen = sights.clone();
-        youtube.on_lines_shown(move |sight| seen.borrow_mut().push(sight));
         let heading = |title: &str| YouTubeLine {
             id: title.into(),
             kind: "heading".into(),
@@ -3353,7 +3389,8 @@ mod tests {
         for (page, lines) in [("search", search), ("saved", saved)] {
             youtube.set_page(page.into());
             youtube.set_nav_current(page.into());
-            youtube.set_lines(ModelRc::new(VecModel::from(lines)));
+            let kinds: Vec<SharedString> = lines.iter().map(|line| line.kind.clone()).collect();
+            let _lines = show_lines(&youtube, lines, &sights);
             let mut moving = Vec::new();
             let mut misplaced = Vec::new();
             for step in 0..=40 {
@@ -3376,8 +3413,10 @@ mod tests {
                     moving.push((offset, long_chains.get(), sights.borrow().len()));
                 }
                 // As far as the lines reach: the last screenful.
-                let place = offset.min(8.0 * rest.videos - (rest.bottom - rest.top));
-                if page == "saved" && (rest.top - place).abs() > 1.0 {
+                let sight = Sight::of(&rest);
+                let height: f32 = kinds.iter().map(|kind| sight.height(kind)).sum();
+                let place = offset.min(height - (rest.bottom - rest.top));
+                if (rest.top - place).abs() > 1.0 {
                     misplaced.push((offset, rest.top));
                 }
             }
@@ -3388,6 +3427,1389 @@ mod tests {
             );
             assert!(misplaced.is_empty(), "{page}: not put back: {misplaced:?}");
         }
+        window.hide().unwrap();
+    }
+
+    /// Something the window has made with an accessible label: where it is in
+    /// the window, and where the list it is in shows, if it is in one.
+    struct Made {
+        label: String,
+        rect: i_slint_core::lengths::LogicalRect,
+        list: Option<i_slint_core::lengths::LogicalRect>,
+    }
+
+    impl Made {
+        /// Whether any of it is where its list shows.
+        fn on_screen(&self) -> bool {
+            self.list.is_some_and(|list| {
+                self.rect
+                    .intersection(&list)
+                    .is_some_and(|both| both.height() > 0.5 && both.width() > 0.5)
+            })
+        }
+    }
+
+    /// Everything the window has made with an accessible label, as far as
+    /// Slint has made it: what a screen reader would find. Only what is in
+    /// the page's list (see `page_list`) is in a list: the bar scrolls too,
+    /// and its Channels has the name of a search's first heading.
+    fn made(window: &PlayerWindow) -> Vec<Made> {
+        use i_slint_core::accessibility::AccessibleStringProperty;
+        use i_slint_core::item_tree::ItemRc;
+        use i_slint_core::lengths::LogicalRect;
+        use i_slint_core::window::WindowInner;
+        let page = page_list(window);
+        let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+        let mut items: Vec<(ItemRc, Option<LogicalRect>)> = vec![(root, None)];
+        let mut made = Vec::new();
+        while let Some((item, list)) = items.pop() {
+            let geometry = item.geometry();
+            let rect = LogicalRect::new(item.map_to_window(geometry.origin), geometry.size);
+            let list = if page.as_ref() == Some(&item) {
+                Some(rect)
+            } else {
+                list
+            };
+            if let Some(label) = item.accessible_string_property(AccessibleStringProperty::Label)
+                && !label.is_empty()
+            {
+                made.push(Made {
+                    label: label.to_string(),
+                    rect,
+                    list,
+                });
+            }
+            let mut child = item.first_child();
+            while let Some(next) = child {
+                child = next.next_sibling();
+                items.push((next, list));
+            }
+        }
+        made
+    }
+
+    /// The page's list: what scrolls further than anything else that
+    /// scrolls (the bar, a field's text).
+    fn page_list(window: &PlayerWindow) -> Option<i_slint_core::item_tree::ItemRc> {
+        use i_slint_core::item_tree::ItemRc;
+        use i_slint_core::items::Flickable;
+        use i_slint_core::window::WindowInner;
+        let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+        let mut items = vec![root];
+        let mut list: Option<(ItemRc, f32)> = None;
+        while let Some(item) = items.pop() {
+            if let Some(flickable) = item.downcast::<Flickable>() {
+                let height = flickable.as_pin_ref().content_height().get();
+                if list.as_ref().is_none_or(|(_, tallest)| height > *tallest) {
+                    list = Some((item.clone(), height));
+                }
+            }
+            let mut child = item.first_child();
+            while let Some(next) = child {
+                child = next.next_sibling();
+                items.push(next);
+            }
+        }
+        list.map(|(item, _)| item)
+    }
+
+    /// The page's list: where it is in the window, and how wide and tall what
+    /// it scrolls is.
+    fn scroller(window: &PlayerWindow) -> (i_slint_core::lengths::LogicalRect, f32, f32) {
+        use i_slint_core::items::Flickable;
+        use i_slint_core::lengths::LogicalRect;
+        let item = page_list(window).expect("no list");
+        let flickable = item.downcast::<Flickable>().unwrap();
+        let flickable = flickable.as_pin_ref();
+        let geometry = item.geometry();
+        (
+            LogicalRect::new(item.map_to_window(geometry.origin), geometry.size),
+            flickable.content_width().get(),
+            flickable.content_height().get(),
+        )
+    }
+
+    /// A search's page, in a window 1280 wide and 752 tall: five channels
+    /// under a heading, then as many videos as asked for under another, in as
+    /// many lines as they take. Its cards are called "Video 0" on, and its
+    /// channels "Channel 0" to "Channel 4".
+    fn searched(folder: &Folder, videos: usize) -> (PlayerWindow, Rc<YouTubeController>) {
+        use crate::backend::testing::frame;
+        let (window, _session, controller) = section(folder);
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1280.0, 752.0));
+        controller.open();
+        controller.search.borrow_mut().query = "words".to_owned();
+        controller.search.borrow_mut().results = Some(SearchResults {
+            videos: (0..videos)
+                .map(|n| video(&format!("v{n:010}"), &format!("Video {n}")))
+                .collect(),
+            channels: (0..5)
+                .map(|n| {
+                    let mut info =
+                        ChannelInfo::new(ChannelId::parse(&format!("UC{n:022}")).unwrap());
+                    info.title = format!("Channel {n}");
+                    info.avatar = Some(format!("https://yt3.ggpht.com/picture-{n}"));
+                    info
+                })
+                .collect(),
+        });
+        controller.navigate("search");
+        window.show().unwrap();
+        frame(window.window());
+        (window, controller)
+    }
+
+    /// Every picture asked for arrives, as it would from the network.
+    fn pictures_arrive(controller: &YouTubeController) {
+        let picture = Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1));
+        let asked: Vec<String> = controller.asked.borrow().iter().cloned().collect();
+        for id in asked {
+            controller.set_card_image(&id, picture.clone());
+            controller.avatar_arrived(&id, picture.clone());
+        }
+    }
+
+    /// What is wrong with the pictures of the page as it is drawn: a card or
+    /// channel on screen without its picture, or a line far from those on
+    /// screen that kept its own. Nothing on screen at all is wrong too.
+    fn pictures_wrong(window: &PlayerWindow, controller: &YouTubeController) -> Vec<String> {
+        let on_screen: HashSet<String> = made(window)
+            .into_iter()
+            .filter(Made::on_screen)
+            .map(|made| made.label)
+            .collect();
+        let mut wrong = Vec::new();
+        let mut shown = Vec::new();
+        let mut kept = Vec::new();
+        for (index, line) in controller.lines.iter().enumerate() {
+            let mut has = false;
+            if line.kind == "heading" && on_screen.contains(line.title.as_str()) {
+                shown.push(index);
+            }
+            if line.kind == "channel" {
+                has = line.channel.image.size().width > 0;
+                if on_screen.contains(line.channel.title.as_str()) {
+                    shown.push(index);
+                    if !has {
+                        wrong.push(format!("{} has no picture", line.channel.title));
+                    }
+                }
+            }
+            for card in line.cards.iter() {
+                let picture = card.image.size().width > 0;
+                has |= picture;
+                if on_screen.contains(card.title.as_str()) {
+                    shown.push(index);
+                    if !picture {
+                        wrong.push(format!("{} (line {index}) has no picture", card.title));
+                    }
+                }
+            }
+            if has {
+                kept.push(index);
+            }
+        }
+        let (Some(&first), Some(&last)) = (shown.iter().min(), shown.iter().max()) else {
+            return vec!["nothing on screen".to_owned()];
+        };
+        // As far as a line more on screen each way would reach, for a line
+        // the view counts in sight with less than a pixel of it showing.
+        let reach = pictured(first.saturating_sub(1), last + 1);
+        for index in kept {
+            if !reach.contains(&index) {
+                wrong.push(format!(
+                    "line {index} kept its pictures, with lines {first} to {last} on screen"
+                ));
+            }
+        }
+        wrong
+    }
+
+    /// Every card and channel on screen has its picture, on a page of lines
+    /// of different heights, at each turn of the wheel and when the list
+    /// comes back after playing, and the lines far from the screen give theirs
+    /// up. A ListView knew where it was only from the average height of the
+    /// lines it had made, so the controller was told of lines far from those
+    /// on screen, and took their pictures away: on a search's page of 32
+    /// videos, those at the top of the screen, from a few turns of the wheel
+    /// down.
+    #[test]
+    fn every_card_on_screen_has_its_picture() {
+        use crate::backend::testing::{count_long_chains, frame};
+        use slint::platform::WindowEvent;
+        let folder = Folder::new("on-screen");
+        let (window, controller) = searched(&folder, 32);
+        let long_chains = count_long_chains();
+        let youtube = window.global::<YouTube>();
+        let mut wrong = Vec::new();
+        let mut check = |what: String| {
+            pictures_arrive(&controller);
+            frame(window.window());
+            for said in pictures_wrong(&window, &controller) {
+                wrong.push(format!("{what}: {said}"));
+            }
+        };
+        check("at the top".to_owned());
+        let position = slint::LogicalPosition::new(600.0, 500.0);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        for notch in 1..=20 {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: -120.0,
+                });
+            frame(window.window());
+            check(format!("notch {notch}"));
+        }
+        // Back up again.
+        for notch in 1..=20 {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: 120.0,
+                });
+            frame(window.window());
+            check(format!("notch {notch} back up"));
+        }
+        // Playing takes the section away, and it is made again when
+        // playback stops, where it was scrolled to.
+        let playback = window.global::<crate::Playback>();
+        for step in 0..=20 {
+            let offset = step as f32 * 100.0;
+            playback.set_has_media(true);
+            frame(window.window());
+            youtube.set_scroll_offset(offset);
+            playback.set_has_media(false);
+            controller.shown_again();
+            for _ in 0..4 {
+                frame(window.window());
+            }
+            check(format!("back from playing at {offset}"));
+        }
+        assert_eq!(long_chains.get(), 0, "long chains");
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// Where each line of the page is drawn, from the top of the list, by its
+    /// first card, heading or channel; None for one not made. The first
+    /// card's title is 4 pixels down its line, a channel's row 3, and a
+    /// heading's words 8.
+    fn drawn_lines(window: &PlayerWindow, controller: &YouTubeController) -> Vec<Option<f32>> {
+        let (list, _, _) = scroller(window);
+        let mut tops: HashMap<String, f32> = HashMap::new();
+        for made in made(window) {
+            if made.list.is_some() {
+                let top = tops.entry(made.label).or_insert(f32::MAX);
+                *top = top.min(made.rect.min_y() - list.min_y());
+            }
+        }
+        controller
+            .lines
+            .iter()
+            .map(|line| {
+                let (label, down) = match line.kind.as_str() {
+                    "heading" => (line.title.to_string(), 8.0),
+                    "channel" => (line.channel.title.to_string(), 3.0),
+                    _ => (line.cards.row_data(0)?.title.to_string(), 4.0),
+                };
+                tops.get(&label).map(|top| top - down)
+            })
+            .collect()
+    }
+
+    /// What is wrong with where the lines are drawn, against what the view
+    /// last said is in sight: each line in sight is drawn where the lines
+    /// above it end, the list is as tall as its lines and no wider than it
+    /// shows, and the lines made are those near the sight, within those with
+    /// pictures.
+    fn placing_wrong(window: &PlayerWindow, controller: &YouTubeController) -> Vec<String> {
+        let sight = controller.sight.get();
+        let kinds: Vec<SharedString> = controller.lines.iter().map(|line| line.kind).collect();
+        let (first, last) = sight.lines(kinds.iter().map(SharedString::as_str));
+        let drawn = drawn_lines(window, controller);
+        let mut wrong = Vec::new();
+        let mut y = -sight.top;
+        let mut found = 0;
+        for (index, kind) in kinds.iter().enumerate() {
+            if (first..=last).contains(&index) {
+                match drawn[index] {
+                    Some(place) if (place - y).abs() < 0.5 => found += 1,
+                    Some(place) => wrong.push(format!("line {index} drawn at {place}, not {y}")),
+                    None => wrong.push(format!("line {index}, in sight, wasn't made")),
+                }
+            }
+            y += sight.height(kind);
+        }
+        if found < 2 {
+            wrong.push(format!("{found} lines found in sight, {first} to {last}"));
+        }
+        let (list, width, height) = scroller(window);
+        let all: f32 = kinds.iter().map(|kind| sight.height(kind)).sum();
+        if (height - all).abs() > 0.5 {
+            wrong.push(format!("the list is {height} tall, its lines {all}"));
+        }
+        if (width - list.width()).abs() > 0.5 {
+            wrong.push(format!(
+                "the list is {width} wide, and shows {}",
+                list.width()
+            ));
+        }
+        if (sight.bottom - sight.top - list.height()).abs() > 0.5 {
+            wrong.push(format!("{sight:?} in a list {} tall", list.height()));
+        }
+        let index_of: HashMap<SharedString, usize> = controller
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| (line.id, index))
+            .collect();
+        let near: Vec<usize> = controller
+            .global()
+            .get_near_lines()
+            .iter()
+            .map(|line| index_of[&line.id])
+            .collect();
+        let made = near.first().copied().unwrap_or(0)..near.last().map_or(0, |last| last + 1);
+        let images = pictured(first, last);
+        let next = (last + 1).min(kinds.len() - 1);
+        if !(made.start <= first && next < made.end) {
+            wrong.push(format!("lines {made:?} made, {first} to {last} in sight"));
+        }
+        if made.start < images.start || made.end > images.end {
+            wrong.push(format!("lines {made:?} made, {images:?} with pictures"));
+        }
+        wrong
+    }
+
+    /// Each line in sight is drawn where the lines above it end, at each turn
+    /// of the wheel down a long page, after the window is made narrower and
+    /// wider, and when the list comes back after playing; and where the list
+    /// is scrolled to is kept exactly as the wheel moved it. Every card on
+    /// screen has its picture, and the lines far above give theirs up.
+    #[test]
+    fn the_lines_are_drawn_where_the_sight_says() {
+        use crate::backend::testing::{count_long_chains, frame};
+        use slint::platform::WindowEvent;
+        let folder = Folder::new("drawn");
+        let (window, controller) = searched(&folder, 160);
+        let long_chains = count_long_chains();
+        let youtube = window.global::<YouTube>();
+        let mut wrong = Vec::new();
+        let position = slint::LogicalPosition::new(600.0, 500.0);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        for notch in 1..=40 {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: -90.0,
+                });
+            frame(window.window());
+            pictures_arrive(&controller);
+            frame(window.window());
+            for said in placing_wrong(&window, &controller) {
+                wrong.push(format!("notch {notch}: {said}"));
+            }
+            for said in pictures_wrong(&window, &controller) {
+                wrong.push(format!("notch {notch}: {said}"));
+            }
+            let offset = youtube.get_scroll_offset();
+            if offset != notch as f32 * 90.0 {
+                wrong.push(format!("notch {notch}: scroll-offset {offset}"));
+            }
+        }
+        // A line far above the screen that kept its pictures is seen to.
+        let kinds: Vec<SharedString> = controller.lines.iter().map(|line| line.kind).collect();
+        let (first, last) = controller
+            .sight
+            .get()
+            .lines(kinds.iter().map(SharedString::as_str));
+        let reach = pictured(first.saturating_sub(1), last + 1);
+        let far = (0..reach.start)
+            .find(|&index| kinds[index] == "videos")
+            .expect("no line far above");
+        let line = controller.lines.row_data(far).unwrap();
+        let card = line.cards.row_data(0).unwrap();
+        controller.set_card_image(
+            &card.id,
+            Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1)),
+        );
+        if !pictures_wrong(&window, &controller)
+            .iter()
+            .any(|said| said.starts_with(&format!("line {far} kept")))
+        {
+            wrong.push(format!("line {far}, far above, kept its pictures unseen"));
+        }
+        controller.set_card_image(&card.id, Image::default());
+        // Back from playing, the same line is at the same place.
+        let before = (controller.sight.get(), drawn_lines(&window, &controller));
+        let playback = window.global::<crate::Playback>();
+        playback.set_has_media(true);
+        frame(window.window());
+        playback.set_has_media(false);
+        controller.shown_again();
+        for _ in 0..4 {
+            frame(window.window());
+        }
+        let after = (controller.sight.get(), drawn_lines(&window, &controller));
+        if after.0.top != before.0.top {
+            wrong.push(format!(
+                "back from playing: {:?}, was {:?}",
+                after.0, before.0
+            ));
+        }
+        let kinds: Vec<SharedString> = controller.lines.iter().map(|line| line.kind).collect();
+        let (first, last) = after.0.lines(kinds.iter().map(SharedString::as_str));
+        for line in first..=last {
+            if after.1[line] != before.1[line] {
+                wrong.push(format!(
+                    "back from playing: line {line} at {:?}, was at {:?}",
+                    after.1[line], before.1[line]
+                ));
+            }
+        }
+        for said in placing_wrong(&window, &controller) {
+            wrong.push(format!("back from playing: {said}"));
+        }
+        // Other widths, with other columns and lines of other heights.
+        for (width, height) in [(900.0, 700.0), (1600.0, 900.0), (1280.0, 752.0)] {
+            let columns = controller.columns.get();
+            window
+                .window()
+                .set_size(slint::LogicalSize::new(width, height));
+            for _ in 0..3 {
+                frame(window.window());
+            }
+            if controller.columns.get() == columns {
+                wrong.push(format!("{width} wide: still {columns} columns"));
+            }
+            for said in placing_wrong(&window, &controller) {
+                wrong.push(format!("{width} wide: {said}"));
+            }
+            for said in pictures_wrong(&window, &controller) {
+                if said.contains("kept") {
+                    wrong.push(format!("{width} wide: {said}"));
+                }
+            }
+        }
+        // Back up to the top, where the first heading is.
+        for _ in 0..80 {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: 120.0,
+                });
+            frame(window.window());
+        }
+        for said in placing_wrong(&window, &controller) {
+            wrong.push(format!("back at the top: {said}"));
+        }
+        assert_eq!(long_chains.get(), 0, "long chains");
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// Each card's title, with the line it is on.
+    fn card_lines(controller: &YouTubeController) -> HashMap<String, usize> {
+        controller
+            .lines
+            .iter()
+            .enumerate()
+            .flat_map(|(index, line)| {
+                line.cards
+                    .iter()
+                    .map(move |card| (card.title.to_string(), index))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// The card the keyboard is on, if it is on one.
+    fn focused_card(window: &PlayerWindow, titles: &HashMap<String, usize>) -> Option<String> {
+        use i_slint_core::accessibility::AccessibleStringProperty;
+        use i_slint_core::item_tree::ParentItemTraversalMode;
+        use i_slint_core::window::WindowInner;
+        let mut item = WindowInner::from_pub(window.window())
+            .focus_item
+            .borrow()
+            .upgrade();
+        while let Some(focused) = item {
+            if let Some(label) = focused.accessible_string_property(AccessibleStringProperty::Label)
+                && titles.contains_key(label.as_str())
+            {
+                return Some(label.to_string());
+            }
+            item = focused.parent_item(ParentItemTraversalMode::StopAtPopups);
+        }
+        None
+    }
+
+    /// Whether the keyboard is on anything in the page's list.
+    fn focus_in_list(window: &PlayerWindow) -> bool {
+        use i_slint_core::item_tree::ParentItemTraversalMode;
+        use i_slint_core::window::WindowInner;
+        let list = page_list(window);
+        let mut item = WindowInner::from_pub(window.window())
+            .focus_item
+            .borrow()
+            .upgrade();
+        while let Some(focused) = item {
+            if list.as_ref() == Some(&focused) {
+                return true;
+            }
+            item = focused.parent_item(ParentItemTraversalMode::StopAtPopups);
+        }
+        false
+    }
+
+    /// Whether all of a card is where the page's list shows.
+    fn wholly_in_sight(window: &PlayerWindow, card: &str) -> bool {
+        made(window).into_iter().any(|made| {
+            made.label == card
+                && made.list.is_some_and(|list| {
+                    made.rect.min_y() >= list.min_y() - 0.5
+                        && made.rect.max_y() <= list.max_y() + 0.5
+                })
+        })
+    }
+
+    /// What is wrong with where the list put a card the keyboard moved to,
+    /// as the list moved `by` (down the page, or up if less than nothing):
+    /// a card scrolled to is 8 pixels in from the edge it came in at.
+    fn margin_wrong(window: &PlayerWindow, card: &str, by: f32) -> Option<String> {
+        let made = made(window).into_iter().find(|made| made.label == card)?;
+        let list = made.list?;
+        let margin = if by > 0.5 {
+            list.max_y() - made.rect.max_y()
+        } else if by < -0.5 {
+            made.rect.min_y() - list.min_y()
+        } else {
+            return None;
+        };
+        ((margin - 8.0).abs() > 1.0)
+            .then(|| format!("{card} is {margin} in from the edge, the list moved {by}"))
+    }
+
+    /// Presses a key, Shift held or not, and lets a frame go by. Each event
+    /// reaches Slint after keep_keyboard, as winit's do.
+    fn press(window: &PlayerWindow, key: slint::platform::Key, shift: bool) {
+        use crate::backend::testing::frame;
+        use slint::platform::{Key, WindowEvent};
+        let send = |event: fn(SharedString) -> WindowEvent, key: Key| {
+            crate::window::keep_keyboard(window, true);
+            window.window().dispatch_event(event(key.into()));
+        };
+        let pressed = |text| WindowEvent::KeyPressed { text };
+        let released = |text| WindowEvent::KeyReleased { text };
+        if shift {
+            send(pressed, Key::Shift);
+        }
+        send(pressed, key);
+        send(released, key);
+        if shift {
+            send(released, Key::Shift);
+        }
+        frame(window.window());
+    }
+
+    /// Tab goes from card to card down a long page: each is scrolled into
+    /// sight, its line is among those the controller is told are in sight,
+    /// and the line after it has been made, for Tab to go on to.
+    #[test]
+    fn tab_goes_down_the_page_card_by_card() {
+        use crate::backend::testing::count_long_chains;
+        use slint::platform::Key;
+        let folder = Folder::new("tab");
+        let (window, controller) = searched(&folder, 160);
+        let long_chains = count_long_chains();
+        let titles = card_lines(&controller);
+        let last_line = controller.lines.row_count() - 1;
+        let mut wrong = Vec::new();
+        let mut reached = 0;
+        let (list, _, height) = scroller(&window);
+        let end = height - list.height();
+        for tab in 0..600 {
+            let top = controller.sight.get().top;
+            press(&window, Key::Tab, false);
+            let Some(card) = focused_card(&window, &titles) else {
+                continue;
+            };
+            let line = titles[&card];
+            reached = reached.max(line);
+            if !wholly_in_sight(&window, &card) {
+                wrong.push(format!("tab {tab}: {card} isn't in sight"));
+            }
+            let moved = controller.sight.get().top;
+            if moved < end - 0.5
+                && let Some(said) = margin_wrong(&window, &card, moved - top)
+            {
+                wrong.push(format!("tab {tab}: {said}"));
+            }
+            let kinds: Vec<SharedString> = controller.lines.iter().map(|line| line.kind).collect();
+            let (first, last) = controller
+                .sight
+                .get()
+                .lines(kinds.iter().map(SharedString::as_str));
+            if !(first..=last).contains(&line) {
+                wrong.push(format!(
+                    "tab {tab}: {card}, on line {line}, with {first} to {last} in sight"
+                ));
+            }
+            let next = (line + 1).min(last_line);
+            let near: Vec<SharedString> = controller
+                .global()
+                .get_near_lines()
+                .iter()
+                .map(|line| line.id)
+                .collect();
+            let next_id = controller.lines.row_data(next).unwrap().id;
+            if !near.contains(&next_id) {
+                wrong.push(format!(
+                    "tab {tab}: line {next}, after {card}'s, isn't made"
+                ));
+            }
+            if line >= 20 {
+                break;
+            }
+        }
+        assert!(reached >= 20, "Tab went only as far as line {reached}");
+        assert_eq!(long_chains.get(), 0, "long chains");
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// Scrolled down with the wheel, Tab into the list lands on a card on
+    /// screen, not on a line of which only the space under its cards shows,
+    /// and the card keeps the keyboard; Tab goes on from there, and Shift+Tab
+    /// then goes back up past where it came in, card by card. The lines made
+    /// start a screen above those in sight, and Tab went to the first of
+    /// them; the list was scrolled there twice, once by Slint and once by the
+    /// list, which left the card out of sight and the keyboard on nothing.
+    #[test]
+    fn tab_into_a_scrolled_list_lands_on_screen() {
+        use crate::backend::testing::{count_long_chains, frame};
+        use slint::platform::{Key, WindowEvent};
+        let folder = Folder::new("tab-in");
+        let (window, controller) = searched(&folder, 160);
+        let long_chains = count_long_chains();
+        let titles = card_lines(&controller);
+        let kinds: Vec<SharedString> = controller.lines.iter().map(|line| line.kind).collect();
+        let in_sight = || {
+            controller
+                .sight
+                .get()
+                .lines(kinds.iter().map(SharedString::as_str))
+        };
+        let position = slint::LogicalPosition::new(600.0, 500.0);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        let scroll_to = |place: f32| {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: controller.sight.get().top - place,
+                });
+            frame(window.window());
+        };
+        let mut wrong = Vec::new();
+        // Tab into the list, from what is above it: the card it lands on,
+        // and what is wrong with it. It moves the list at most half a line
+        // of videos, and the margin, as Tab stops on a line only once half
+        // of it shows.
+        let enter = |wrong: &mut Vec<String>| -> String {
+            let top = controller.sight.get().top;
+            let (first, last) = in_sight();
+            let mut card = None;
+            for _ in 0..40 {
+                press(&window, Key::Tab, false);
+                if let Some(found) = focused_card(&window, &titles) {
+                    card = Some(found);
+                    break;
+                }
+            }
+            let Some(card) = card else {
+                panic!("Tab never reached a card, with lines {first} to {last} in sight");
+            };
+            let what = format!("at {top}");
+            let line = titles[&card];
+            if !(first..=last).contains(&line) {
+                wrong.push(format!(
+                    "{what}: {card}, on line {line}, with {first} to {last} in sight"
+                ));
+            }
+            let moved = (controller.sight.get().top - top).abs();
+            let half = controller.sight.get().height("videos") / 2.0 + 8.0;
+            if moved > half {
+                wrong.push(format!("{what}: the list moved {moved}, more than {half}"));
+            }
+            card
+        };
+        // With a sliver of a line of videos showing at the top: the space
+        // under its cards.
+        let videos = controller.sight.get().height("videos");
+        let above: f32 = kinds
+            .iter()
+            .take_while(|kind| *kind != "videos")
+            .map(|kind| controller.sight.get().height(kind))
+            .sum();
+        for lines in [3.0, 6.0, 11.0] {
+            scroll_to(above + lines * videos - 10.0);
+            enter(&mut wrong);
+            // Back out of the list, up the page.
+            for _ in 0..80 {
+                press(&window, Key::Tab, true);
+                if !focus_in_list(&window) {
+                    break;
+                }
+            }
+            assert!(!focus_in_list(&window), "Shift+Tab never left the list");
+        }
+        scroll_to(3600.0);
+        let screen = controller.sight.get().bottom - controller.sight.get().top;
+        let (first, _) = in_sight();
+        let card = enter(&mut wrong);
+        let line = titles[&card];
+        for _ in 0..3 {
+            frame(window.window());
+        }
+        if focused_card(&window, &titles).as_deref() != Some(card.as_str()) {
+            wrong.push(format!("{card} lost the keyboard"));
+        }
+        if !wholly_in_sight(&window, &card) {
+            wrong.push(format!("{card} isn't in sight"));
+        }
+        // On down, then back up past where it came in.
+        let mut lowest = line;
+        for (shift, presses) in [(false, 12), (true, 40)] {
+            let mut previous = titles[&focused_card(&window, &titles).unwrap()];
+            for step in 0..presses {
+                let top = controller.sight.get().top;
+                press(&window, Key::Tab, shift);
+                let what = format!("{} {step}", if shift { "shift+tab" } else { "tab" });
+                let Some(card) = focused_card(&window, &titles) else {
+                    wrong.push(format!("{what}: on no card"));
+                    break;
+                };
+                let line = titles[&card];
+                lowest = lowest.min(line);
+                if !wholly_in_sight(&window, &card) {
+                    wrong.push(format!("{what}: {card} isn't in sight"));
+                }
+                let moved = controller.sight.get().top;
+                if moved > 0.5
+                    && let Some(said) = margin_wrong(&window, &card, moved - top)
+                {
+                    wrong.push(format!("{what}: {said}"));
+                }
+                if (shift && line > previous) || (!shift && line < previous) {
+                    wrong.push(format!(
+                        "{what}: {card}, on line {line}, after line {previous}"
+                    ));
+                }
+                previous = line;
+            }
+        }
+        if lowest >= first {
+            wrong.push(format!(
+                "Shift+Tab went up only to line {lowest}, with {first} in sight at first"
+            ));
+        }
+        // Scrolled on far enough that the card with the keyboard is no longer
+        // made: Tab comes back into the list at most a line from those in
+        // sight.
+        for _ in 0..30 {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: -120.0,
+                });
+            frame(window.window());
+        }
+        let top = controller.sight.get().top;
+        let (first, last) = in_sight();
+        let mut card = None;
+        for tab in 0..40 {
+            press(&window, Key::Tab, false);
+            if let Some(found) = focused_card(&window, &titles) {
+                card = Some((tab, found));
+                break;
+            }
+        }
+        match card {
+            None => wrong.push(format!(
+                "scrolled on: Tab never reached a card, with lines {first} to {last} in sight"
+            )),
+            Some((tab, card)) => {
+                let line = titles[&card];
+                if line + 1 < first || line > last + 1 {
+                    wrong.push(format!(
+                        "scrolled on, tab {tab}: {card}, on line {line}, with {first} to \
+                         {last} in sight before"
+                    ));
+                }
+                let moved = (controller.sight.get().top - top).abs();
+                if moved > screen {
+                    wrong.push(format!(
+                        "scrolled on, tab {tab}: the list moved {moved}, a screen is {screen}"
+                    ));
+                }
+                if !wholly_in_sight(&window, &card) {
+                    wrong.push(format!("scrolled on, tab {tab}: {card} isn't in sight"));
+                }
+            }
+        }
+        assert_eq!(long_chains.get(), 0, "long chains");
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// Scrolled to the end of a list in a narrow window, which is then made
+    /// wide, so that more cards go in a line and the list gets shorter: the
+    /// list stays within its lines, with its last ones on screen and their
+    /// pictures. Left where it was, past its new end, it showed nothing.
+    #[test]
+    fn widened_at_the_end_the_list_shows_its_last_lines() {
+        use crate::backend::testing::{count_long_chains, frame};
+        use slint::platform::WindowEvent;
+        let folder = Folder::new("widened");
+        let (window, controller) = searched(&folder, 32);
+        let long_chains = count_long_chains();
+        let mut wrong = Vec::new();
+        for (narrow, wide) in [
+            ((650.0, 900.0), (1800.0, 1000.0)),
+            ((900.0, 700.0), (1600.0, 700.0)),
+        ] {
+            window
+                .window()
+                .set_size(slint::LogicalSize::new(narrow.0, narrow.1));
+            for _ in 0..3 {
+                frame(window.window());
+            }
+            let position = slint::LogicalPosition::new(narrow.0 / 2.0, narrow.1 / 2.0);
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerMoved { position });
+            for _ in 0..60 {
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::PointerScrolled {
+                        position,
+                        delta_x: 0.0,
+                        delta_y: -120.0,
+                    });
+                frame(window.window());
+            }
+            let columns = controller.columns.get();
+            window
+                .window()
+                .set_size(slint::LogicalSize::new(wide.0, wide.1));
+            for _ in 0..3 {
+                frame(window.window());
+            }
+            pictures_arrive(&controller);
+            frame(window.window());
+            let what = format!("{} to {} wide", narrow.0, wide.0);
+            if controller.columns.get() <= columns {
+                wrong.push(format!("{what}: still {columns} columns"));
+            }
+            let kinds: Vec<SharedString> = controller.lines.iter().map(|line| line.kind).collect();
+            let (_, last) = controller
+                .sight
+                .get()
+                .lines(kinds.iter().map(SharedString::as_str));
+            if last != kinds.len() - 1 {
+                wrong.push(format!(
+                    "{what}: line {last} last in sight, of {}",
+                    kinds.len()
+                ));
+            }
+            for said in placing_wrong(&window, &controller) {
+                wrong.push(format!("{what}: {said}"));
+            }
+            for said in pictures_wrong(&window, &controller) {
+                wrong.push(format!("{what}: {said}"));
+            }
+        }
+        assert_eq!(long_chains.get(), 0, "long chains");
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// How much of something the window has made shows where its list does,
+    /// from nothing to all of it.
+    fn showing(window: &PlayerWindow, label: &str) -> f32 {
+        made(window)
+            .into_iter()
+            .find(|made| made.label == label && made.list.is_some())
+            .map_or(0.0, |made| {
+                let list = made.list.unwrap();
+                let shows =
+                    made.rect.max_y().min(list.max_y()) - made.rect.min_y().max(list.min_y());
+                (shows.max(0.0) / made.rect.height()).min(1.0)
+            })
+    }
+
+    /// Whether what has the keyboard knows it, and shows its ring.
+    fn keyboard_shows(window: &PlayerWindow) -> bool {
+        use i_slint_core::items::FocusScope;
+        use i_slint_core::window::WindowInner;
+        WindowInner::from_pub(window.window())
+            .focus_item
+            .borrow()
+            .upgrade()
+            .and_then(|item| {
+                item.downcast::<FocusScope>()
+                    .map(|scope| scope.as_pin_ref().has_focus())
+            })
+            .unwrap_or(false)
+    }
+
+    /// In a window so short that a card is taller than the list shows, Tab
+    /// goes on from the channels to the cards, and from card to card, each
+    /// with some of it on screen. Slint scrolls nothing to an item taller
+    /// than a Flickable shows, and the list only left a margin: the card
+    /// stayed out of sight and lost the keyboard with the next key.
+    #[test]
+    fn tab_in_a_short_window_goes_on_to_the_cards() {
+        use crate::backend::testing::frame;
+        use slint::platform::{Key, WindowEvent};
+        let folder = Folder::new("tab-short");
+        let (window, controller) = searched(&folder, 40);
+        let titles = card_lines(&controller);
+        let position = slint::LogicalPosition::new(600.0, 200.0);
+        let mut wrong = Vec::new();
+        for height in [300.0, 380.0] {
+            window
+                .window()
+                .set_size(slint::LogicalSize::new(1280.0, height));
+            frame(window.window());
+            // From the top of the list.
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerMoved { position });
+            for _ in 0..60 {
+                window
+                    .window()
+                    .dispatch_event(WindowEvent::PointerScrolled {
+                        position,
+                        delta_x: 0.0,
+                        delta_y: 120.0,
+                    });
+                frame(window.window());
+            }
+            let mut cards: Vec<String> = Vec::new();
+            for tab in 0..80 {
+                press(&window, Key::Tab, false);
+                match focused_card(&window, &titles) {
+                    Some(card) => {
+                        if showing(&window, &card) < 0.1 {
+                            wrong.push(format!("{height} tall, tab {tab}: {card} isn't on screen"));
+                        }
+                        cards.push(card);
+                    }
+                    None if !cards.is_empty() => {
+                        wrong.push(format!(
+                            "{height} tall, tab {tab}: the keyboard left the cards after {}",
+                            cards[cards.len() - 1]
+                        ));
+                        break;
+                    }
+                    None => {}
+                }
+                if cards.len() == 40 {
+                    break;
+                }
+            }
+            let expected: Vec<String> = (0..40).map(|n| format!("Video {n}")).collect();
+            if cards != expected {
+                wrong.push(format!("{height} tall: Tab went to {cards:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// In a window as short as it goes, Tab and Shift+Tab go round from the
+    /// bar into a search's list, to its channels. The heading over them
+    /// takes no Tab, and the first channel showed less than the half of the
+    /// list it had to: nothing in the list took Tab, and the keyboard went
+    /// round the bar alone.
+    #[test]
+    fn tab_in_the_shortest_window_goes_into_the_list() {
+        use crate::backend::testing::frame;
+        use slint::platform::Key;
+        let folder = Folder::new("tab-shortest");
+        let (window, controller) = searched(&folder, 40);
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1280.0, 220.0));
+        frame(window.window());
+        let channels: HashMap<String, usize> = controller
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.kind == "channel")
+            .map(|(index, line)| (line.channel.title.to_string(), index))
+            .collect();
+        let mut wrong = Vec::new();
+        for shift in [false, true] {
+            let mut left = false;
+            let mut reached = false;
+            for _ in 0..40 {
+                press(&window, Key::Tab, shift);
+                let on = focused_card(&window, &channels).is_some();
+                if on && left {
+                    reached = true;
+                    break;
+                }
+                left |= !on;
+            }
+            if !reached {
+                wrong.push(format!("Shift held {shift}: no channel took the keyboard"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// Scrolled with the wheel until less than half of the card with the
+    /// keyboard shows, the card has the keyboard back once its menu closes
+    /// and once the window is active again, wholly in sight, from either
+    /// edge of the list, and Tab goes on to the next. Only lines at least
+    /// half in sight take Tab while the keyboard isn't on one, and the
+    /// card's focus scope was disabled for it: its menu opening took the
+    /// keyboard off it, which it then refused back, so it went to the bar.
+    /// Slint scrolls nothing for the window coming back, and the list,
+    /// taking it to have, moved 8 pixels and left the card out of sight.
+    #[test]
+    fn a_card_mostly_out_of_sight_has_the_keyboard_back() {
+        use crate::backend::testing::frame;
+        use slint::platform::{Key, WindowEvent};
+        let folder = Folder::new("keys-back");
+        let (window, controller) = searched(&folder, 160);
+        let titles = card_lines(&controller);
+        let position = slint::LogicalPosition::new(600.0, 500.0);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        let wheel = |delta_y: f32| {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y,
+                });
+            frame(window.window());
+        };
+        for _ in 0..20 {
+            wheel(-120.0);
+        }
+        let mut card = None;
+        for _ in 0..40 {
+            press(&window, Key::Tab, false);
+            card = focused_card(&window, &titles);
+            if card.is_some() {
+                break;
+            }
+        }
+        let card = card.expect("Tab never reached a card");
+        let next = format!(
+            "Video {}",
+            card["Video ".len()..].parse::<usize>().unwrap() + 1
+        );
+        // Less than half of it showing, at the bottom of the list as the
+        // wheel goes up the page, or at the top as it goes down.
+        let mostly_out = |delta_y: f32| {
+            for _ in 0..40 {
+                if showing(&window, &card) < 0.5 {
+                    break;
+                }
+                wheel(delta_y);
+            }
+            let shows = showing(&window, &card);
+            assert!(shows > 0.0 && shows < 0.5, "{card} shows {shows}");
+        };
+        let mut wrong = Vec::new();
+        let mut keys_back = |when: &str| {
+            let after = focused_card(&window, &titles);
+            if after.as_deref() != Some(card.as_str()) || !keyboard_shows(&window) {
+                wrong.push(format!(
+                    "{when}: the keyboard is on {after:?}, shown {}",
+                    keyboard_shows(&window)
+                ));
+            } else if !wholly_in_sight(&window, &card) {
+                wrong.push(format!("{when}: {card} shows {}", showing(&window, &card)));
+            }
+        };
+        mostly_out(30.0);
+        press(&window, Key::Menu, false);
+        press(&window, Key::Escape, false);
+        keys_back("its menu closed");
+        for (delta_y, edge) in [(30.0, "bottom"), (-30.0, "top")] {
+            mostly_out(delta_y);
+            window
+                .window()
+                .dispatch_event(WindowEvent::WindowActiveChanged(false));
+            frame(window.window());
+            window
+                .window()
+                .dispatch_event(WindowEvent::WindowActiveChanged(true));
+            frame(window.window());
+            keys_back(&format!("the window active again, from the {edge}"));
+        }
+        press(&window, Key::Tab, false);
+        let after = focused_card(&window, &titles);
+        if after.as_deref() != Some(next.as_str()) {
+            wrong.push(format!(
+                "then Tab: the keyboard is on {after:?}, not {next}"
+            ));
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// The card with the keyboard made again for more columns, Tab comes
+    /// back into the list on screen. Slint says nothing when the item with
+    /// its focus goes, so the list went on taking the keyboard to be on one
+    /// of its cards, every line made took Tab, and Tab went to the first of
+    /// them, a screen above those in sight.
+    #[test]
+    fn tab_after_the_card_with_the_keyboard_is_gone_lands_on_screen() {
+        use crate::backend::testing::frame;
+        use i_slint_core::window::WindowInner;
+        use slint::platform::{Key, WindowEvent};
+        let folder = Folder::new("keys-gone");
+        let (window, controller) = searched(&folder, 160);
+        let position = slint::LogicalPosition::new(600.0, 500.0);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        for _ in 0..20 {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: -120.0,
+                });
+            frame(window.window());
+        }
+        let titles = card_lines(&controller);
+        for _ in 0..40 {
+            press(&window, Key::Tab, false);
+            if focused_card(&window, &titles).is_some() {
+                break;
+            }
+        }
+        assert!(
+            focused_card(&window, &titles).is_some(),
+            "Tab reached no card"
+        );
+        let columns = controller.columns.get();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1700.0, 752.0));
+        for _ in 0..3 {
+            frame(window.window());
+        }
+        assert!(
+            controller.columns.get() > columns,
+            "still {columns} columns"
+        );
+        let gone = WindowInner::from_pub(window.window())
+            .focus_item
+            .borrow()
+            .upgrade()
+            .is_none();
+        assert!(gone, "the card with the keyboard is still there");
+        let titles = card_lines(&controller);
+        let kinds: Vec<SharedString> = controller.lines.iter().map(|line| line.kind).collect();
+        let (first, last) = controller
+            .sight
+            .get()
+            .lines(kinds.iter().map(SharedString::as_str));
+        let top = controller.sight.get().top;
+        let screen = controller.sight.get().bottom - top;
+        let mut card = None;
+        for _ in 0..40 {
+            press(&window, Key::Tab, false);
+            card = focused_card(&window, &titles);
+            if card.is_some() {
+                break;
+            }
+        }
+        let card = card.expect("Tab never reached a card");
+        let line = titles[&card];
+        let moved = (controller.sight.get().top - top).abs();
+        assert!(
+            line + 1 >= first && line <= last + 1 && moved <= screen,
+            "{card}, on line {line}, with {first} to {last} in sight before; the list \
+             moved {moved}, a screen is {screen}"
+        );
+        window.hide().unwrap();
+    }
+
+    /// Tab goes down a Channels page row by row, to each channel and then
+    /// its Subscribe, each wholly in sight, past those on screen at first.
+    /// Each Subscribe says that the keyboard is on the list as its row does:
+    /// without it, the next row, less than half in sight, didn't take Tab,
+    /// and the keyboard left the list.
+    #[test]
+    fn tab_goes_down_the_channels_page_row_by_row() {
+        use crate::backend::testing::frame;
+        use slint::platform::Key;
+        let folder = Folder::new("tab-channels");
+        let (window, session, controller) = section(&folder);
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1280.0, 752.0));
+        let prefs = Preferences {
+            ytdl_path: folder.0.join("no-such-yt-dlp").display().to_string(),
+            ..Default::default()
+        };
+        for n in 0..40 {
+            let mut info = ChannelInfo::new(ChannelId::parse(&format!("UC{n:022}")).unwrap());
+            info.title = format!("Channel {n:02}");
+            session.subscribe(&prefs, info);
+        }
+        controller.open();
+        controller.navigate("channels");
+        window.show().unwrap();
+        frame(window.window());
+        let titles: HashMap<String, usize> = controller
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| (line.channel.title.to_string(), index))
+            .collect();
+        let mut stops: Vec<usize> = Vec::new();
+        let mut wrong = Vec::new();
+        for tab in 0..200 {
+            press(&window, Key::Tab, false);
+            let Some(channel) = focused_card(&window, &titles) else {
+                if !stops.is_empty() {
+                    wrong.push(format!("tab {tab}: the keyboard left the list"));
+                    break;
+                }
+                continue;
+            };
+            if !wholly_in_sight(&window, &channel) {
+                wrong.push(format!("tab {tab}: {channel} isn't wholly in sight"));
+            }
+            stops.push(titles[&channel]);
+            if stops.len() == 60 {
+                break;
+            }
+        }
+        let expected: Vec<usize> = (0..30).flat_map(|line| [line, line]).collect();
+        if stops != expected {
+            wrong.push(format!("Tab stopped on the lines {stops:?}"));
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        window.hide().unwrap();
+    }
+
+    /// On a channel's page scrolled down, Tab and Shift+Tab among what is
+    /// above the list (its Subscribe and the like) leave the list where it
+    /// is: they take the keyboard as a card does, and the list moved 8
+    /// pixels for each.
+    #[test]
+    fn what_is_above_the_list_moves_it_not() {
+        use crate::backend::testing::frame;
+        use slint::platform::{Key, WindowEvent};
+        let folder = Folder::new("above-list");
+        let (window, _session, controller) = section(&folder);
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1280.0, 752.0));
+        controller.open();
+        controller.open_channel(A);
+        let id = ChannelId::parse(A).unwrap();
+        let mut info = ChannelInfo::new(id.clone());
+        info.title = "Channel".to_owned();
+        controller.channel_arrived(
+            &id,
+            Ok(super::super::Listing {
+                channel: Some(info),
+                videos: (0..80)
+                    .map(|n| video(&format!("v{n:010}"), &format!("Video {n}")))
+                    .collect(),
+            }),
+        );
+        window.show().unwrap();
+        frame(window.window());
+        let titles = card_lines(&controller);
+        let position = slint::LogicalPosition::new(600.0, 500.0);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        for _ in 0..8 {
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: -120.0,
+                });
+            frame(window.window());
+        }
+        // Presses Tab or Shift+Tab, and says whether the keyboard is then in
+        // the list, and how far the list moved.
+        let tab = |shift: bool| {
+            let top = controller.sight.get().top;
+            press(&window, Key::Tab, shift);
+            (focus_in_list(&window), controller.sight.get().top - top)
+        };
+        let mut moves = Vec::new();
+        // Into the list from the top, back out of it and on up, and back in.
+        for (shift, most, until_in) in [
+            (false, 60, Some(true)),
+            (true, 60, Some(false)),
+            (true, 2, None),
+            (false, 60, Some(true)),
+        ] {
+            for _ in 0..most {
+                let (in_list, moved) = tab(shift);
+                if !in_list {
+                    moves.push(moved);
+                }
+                if until_in == Some(in_list) {
+                    break;
+                }
+            }
+        }
+        assert!(
+            focused_card(&window, &titles).is_some(),
+            "Tab reached no card"
+        );
+        assert!(
+            moves.len() > 4,
+            "the keyboard was out of the list only {moves:?}"
+        );
+        assert!(
+            moves.iter().all(|moved| moved.abs() < 0.5),
+            "the keyboard out of the list moved it {moves:?}"
+        );
         window.hide().unwrap();
     }
 }

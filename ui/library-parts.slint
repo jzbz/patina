@@ -114,9 +114,11 @@ export global LibraryUi {
 
     // Where the control the keyboard just moved to is, in the window, for
     // the page's list to scroll it into sight (focus-serial counts the
-    // moves).
+    // moves), and why it moved there: Slint scrolls it into sight itself
+    // for every reason but the window coming back.
     out property <length> focus-top;
     out property <length> focus-bottom;
+    out property <FocusReason> focus-reason;
     out property <int> focus-serial;
 
     // The item whose card's menu is open (see Card).
@@ -132,9 +134,10 @@ export global LibraryUi {
     // PlayerWindow's take-keyboard and the views' covered).
     in-out property <int> focus-back;
 
-    public function reveal(top: length, bottom: length) {
+    public function reveal(top: length, bottom: length, reason: FocusReason) {
         self.focus-top = top;
         self.focus-bottom = bottom;
+        self.focus-reason = reason;
         self.focus-serial += 1;
     }
 
@@ -198,8 +201,10 @@ export component KeyFocus inherits FocusScope {
     in property <bool> space-alternates;
     callback activated;
     callback alternate;
-    // The keyboard reached it, after the page scrolled it into sight.
+    // The keyboard reached it, after the page scrolled it into sight, and
+    // left it.
     callback focused;
+    callback unfocused;
     width: 100%;
     height: 100%;
     focus-on-click: false;
@@ -215,11 +220,14 @@ export component KeyFocus inherits FocusScope {
         }
         reject
     }
-    focus-gained => {
+    focus-gained(reason) => {
         if root.reveals {
-            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height);
+            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height, reason);
         }
         root.focused();
+    }
+    focus-lost => {
+        root.unfocused();
     }
 
     if root.has-focus: Rectangle {
@@ -453,8 +461,8 @@ export component Card inherits Rectangle {
             }
             reject
         }
-        focus-gained => {
-            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height);
+        focus-gained(reason) => {
+            LibraryUi.reveal(self.absolute-position.y, self.absolute-position.y + self.height, reason);
             root.focused();
         }
     }
