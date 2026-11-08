@@ -66,8 +66,9 @@ jobs:
         # 24.04 to 26.04 until 2026-11-19, and 24.04's libmpv (mpv 0.37) is
         # older than Patina supports, so the floating label would test a
         # different mpv from one run to the next. 26.04 ships mpv 0.41, so
-        # the tests meet 0.41 there and 0.42 on macOS (Homebrew's) and
-        # Windows (mpv's own build).
+        # the tests meet 0.41 there, whichever mpv the runner image's
+        # Homebrew has on macOS (0.41 as of November 2026, as it isn't
+        # updated here), and mpv's own 0.42 build on Windows.
         os: [ubuntu-26.04, macos-latest, windows-latest]
 
     steps:

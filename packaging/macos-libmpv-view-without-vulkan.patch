@@ -1,0 +1,29 @@
+mpv 0.42.0 fails to compile for macOS with Cocoa and Swift on and Vulkan
+off, which is how packaging/macos-libmpv-build.sh builds it: View's
+isOpaque refers to MetalLayer, a class defined in
+video/out/mac/metal_layer.swift, which meson.build compiles only when
+Vulkan is on. The reference came in after 0.41.0, and mpv's issue 18357,
+which reports the error, was closed without a fix. This puts it behind
+HAVE_VULKAN, which mpv's meson defines for the Swift compiler whenever
+Vulkan is on, so a build without Vulkan takes the view as opaque, as it
+would for any layer that isn't a MetalLayer. Patina renders through the
+render API into its own OpenGL context and never shows mpv's window, so
+this code doesn't run for it at all.
+
+Applied with `patch -p1` in the unpacked source. Drop it once an mpv
+release compiles without it.
+
+--- a/video/out/mac/view.swift
++++ b/video/out/mac/view.swift
+@@ -29,9 +29,11 @@
+     override var acceptsFirstResponder: Bool { return true }
+ 
+     override var isOpaque: Bool {
++#if HAVE_VULKAN
+         if let metalLayer = layer as? MetalLayer {
+             return !metalLayer.isOpaque
+         }
++#endif
+ 
+         return true
+     }

@@ -1,0 +1,259 @@
+# Builds the libmpv Patina.app is to carry from source, as
+# packaging/macos-libmpv-build.sh does it: mpv 0.42 and every library it
+# loads, from the sources pinned in packaging/macos-libmpv.env (FFmpeg's in
+# packaging/bundled-tools.env), for macOS 11, arm64 and x86_64 joined into
+# one universal set. Then it checks the set, loads it on both architectures,
+# and runs Patina's tests against it.
+#
+# This is how the build is proved before anything ships it: release.yml
+# still bundles IINA's prebuilt libraries (packaging/macos-libmpv.txt) until
+# it is switched over to this build, and nothing here publishes anything.
+# Run it by hand, on the branch to try (a dispatch takes a branch or a tag,
+# not a commit):
+#   gh workflow run macos-libmpv.yml --repo jzbz/patina --ref <branch>
+# The artifact libmpv-macos holds the universal libraries, their licences
+# and a SHA256SUMS of them; libmpv-macos-<arch> holds each architecture's
+# libraries and its build logs.
+#
+# Every run builds from nothing, caching nothing, as release.yml does (see
+# the comment above its `permissions`). Both halves are built on Apple
+# silicon, x86_64 cross-compiled, in a job each, side by side; the x86_64
+# half is then run under Rosetta, which GitHub's arm64 images install.
+#
+# The Xcode is pinned, not left to the image's default: 26.6, the newest
+# that still builds for macOS 11 (Xcode 27 builds for 12 and later), and
+# the one IINA's own library builds use. The logs say which Xcode
+# and which SDK each run had.
+name: macos-libmpv
+
+on:
+  workflow_dispatch:
+
+# A second run of the same ref makes the first one pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only, and nothing after a checkout needs git credentials. Actions
+# are pinned by commit SHA, as in ci.yml and release.yml.
+permissions:
+  contents: read
+
+env:
+  XCODE: /Applications/Xcode_26.6.app
+  XCODE_VERSION: "26.6"
+
+jobs:
+  build:
+    name: libmpv (${{ matrix.arch }})
+    # macos-26 rather than macos-latest, so that a label moving to a new
+    # image doesn't change the build under the same workflow.
+    runs-on: macos-26
+    # About 15 minutes for each half when it works; a build still going at
+    # an hour is stuck.
+    timeout-minutes: 60
+    strategy:
+      # Each half's failure says something the other's doesn't.
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Xcode
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          version=$(xcodebuild -version | head -n1)
+          if [ "$version" != "Xcode $XCODE_VERSION" ]; then
+            echo "::error::$XCODE is $version, not Xcode $XCODE_VERSION"
+            exit 1
+          fi
+          echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version) at $(xcrun --sdk macosx --show-sdk-path)"
+          xcrun swiftc --version
+          echo "runner: $(uname -m), macOS $(sw_vers -productVersion)"
+
+      # meson needs Python 3.10 or later, and /usr/bin/python3, Xcode's, is
+      # 3.9. The image's cached Pythons (actions/python-versions builds, the
+      # ones setup-python installs from) are used rather than Homebrew's:
+      # nothing in the build comes from Homebrew. 3.13 first, a release that
+      # meson, mpv's build scripts and the jinja and glad libplacebo runs at
+      # build time have all long supported; then any other 3.10 or later.
+      - name: Python for meson
+        id: python
+        run: |
+          set -euo pipefail
+          python=
+          for minor in 13 12 14 11 10; do
+            for candidate in "$RUNNER_TOOL_CACHE"/Python/3."$minor".*/arm64/bin/python3; do
+              if [ -x "$candidate" ] && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+                python=$candidate
+              fi
+            done
+            if [ -n "$python" ]; then
+              break
+            fi
+          done
+          if [ -z "$python" ]; then
+            echo "::error::no Python 3.10 or later in $RUNNER_TOOL_CACHE/Python"
+            ls -l "$RUNNER_TOOL_CACHE/Python" || true
+            exit 1
+          fi
+          "$python" --version
+          echo "python=$python" >> "$GITHUB_OUTPUT"
+
+      - name: Build tools
+        timeout-minutes: 10
+        env:
+          PYTHON: ${{ steps.python.outputs.python }}
+        run: packaging/macos-libmpv-build.sh tools "$RUNNER_TEMP/libmpv-downloads" "$RUNNER_TEMP/libmpv-tools"
+
+      - name: Build
+        timeout-minutes: 45
+        env:
+          LIBMPV_TOOLS: ${{ runner.temp }}/libmpv-tools
+        run: packaging/macos-libmpv-build.sh build "$ARCH" "$RUNNER_TEMP/libmpv-downloads" "$RUNNER_TEMP/libmpv-work" "$RUNNER_TEMP/libmpv-$ARCH"
+
+      # The libraries, the licences and the logs, for the universal job.
+      # lib/ holds each library under its full version as well as under
+      # the shorter names its links give it, and the upload copies each of
+      # those; universal takes only the files the install names name.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: libmpv-macos-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/libmpv-${{ matrix.arch }}/lib/*.dylib
+            ${{ runner.temp }}/libmpv-${{ matrix.arch }}/licenses/
+            ${{ runner.temp }}/libmpv-${{ matrix.arch }}/logs/
+          if-no-files-found: error
+          retention-days: 7
+
+      # When the build failed, its logs alone: each project's output and
+      # its configure log, up to the one that failed.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: libmpv-macos-${{ matrix.arch }}-logs
+          path: ${{ runner.temp }}/libmpv-${{ matrix.arch }}/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  universal:
+    name: Join, check and load
+    needs: [build]
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # lipo, install_name_tool, strip, vtool and codesign from the same
+      # Xcode the halves were built with.
+      - name: Xcode
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: libmpv-macos-arm64
+          path: ${{ runner.temp }}/libmpv-arm64
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: libmpv-macos-x86_64
+          path: ${{ runner.temp }}/libmpv-x86_64
+
+      - name: Join the halves
+        id: join
+        run: packaging/macos-libmpv-build.sh universal "$RUNNER_TEMP/libmpv-arm64" "$RUNNER_TEMP/libmpv-x86_64" "$RUNNER_TEMP/libmpv-macos"
+
+      # Install names, rpaths, minimum macOS, system libraries, the set
+      # itself, signatures, and the build logs of both halves.
+      - name: Check
+        id: check
+        run: packaging/macos-libmpv-build.sh check "$RUNNER_TEMP/libmpv-macos" "$RUNNER_TEMP/libmpv-arm64" "$RUNNER_TEMP/libmpv-x86_64"
+
+      # Loaded and played on both architectures, the x86_64 half under
+      # Rosetta, by Xcode's own Python, which is universal. These run even
+      # when Check failed, since a run costs a while and what they find is
+      # worth knowing too; the job fails all the same.
+      - name: Load it (arm64)
+        if: ${{ !cancelled() && steps.join.outcome == 'success' }}
+        timeout-minutes: 5
+        run: /usr/bin/python3 -I packaging/macos-libmpv-smoke.py "$RUNNER_TEMP/libmpv-macos/libmpv.2.dylib" --arch arm64
+
+      - name: Load it (x86_64, under Rosetta)
+        if: ${{ !cancelled() && steps.join.outcome == 'success' }}
+        timeout-minutes: 5
+        run: arch -x86_64 /usr/bin/python3 -I packaging/macos-libmpv-smoke.py "$RUNNER_TEMP/libmpv-macos/libmpv.2.dylib" --arch x86_64
+
+      # Only what passed everything above is handed on.
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/libmpv-macos"
+          files=$(find . -type f | sed 's|^\./||' | LC_ALL=C sort)
+          sums=$(while IFS= read -r file; do shasum -a 256 "$file"; done <<< "$files")
+          printf '%s\n' "$sums" > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: libmpv-macos
+          path: ${{ runner.temp }}/libmpv-macos
+          if-no-files-found: error
+
+  # Patina's whole test suite against the universal libmpv rather than
+  # Homebrew's, as ci.yml runs it: the tests that need libmpv fail rather
+  # than skip without it. PATINA_LIBMPV names the library, since a test
+  # binary has no Frameworks beside it; the set's own @loader_path rpath is
+  # what lets libmpv find the rest. Nothing installs ffmpeg here, so the
+  # tests that need the ffmpeg program (thumbnails, probing, media info,
+  # subtitle matching) skip; they test ffmpeg, which ci.yml covers.
+  test:
+    name: Patina's tests against it
+    needs: [universal]
+    runs-on: macos-26
+    # A cold debug build and the suite.
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      PATINA_TEST_REQUIRE_MPV: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the compiler, as in ci.yml.
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install --no-self-update
+          rustc -Vv
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: libmpv-macos
+          path: ${{ runner.temp }}/libmpv-macos
+
+      - name: Check the download
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/libmpv-macos"
+          shasum -a 256 -c SHA256SUMS
+
+      - name: Test
+        env:
+          PATINA_LIBMPV: ${{ runner.temp }}/libmpv-macos/libmpv.2.dylib
+        run: cargo test --locked
