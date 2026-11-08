@@ -327,3 +327,10 @@ glyph included, are [Lucide](https://lucide.dev)'s, under the ISC license
 (a few derived from Feather, MIT); see [ui/icons/LICENSE](ui/icons/LICENSE).
 The typeface is [IBM Plex Sans](https://github.com/IBM/plex), under the SIL
 Open Font License 1.1; see [ui/fonts/LICENSE](ui/fonts/LICENSE).
+
+Patina uses Slint under its royalty-free licence, which asks for this badge:
+
+<a href="https://slint.dev"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/made-with-slint-dark.svg">
+  <img src="docs/images/made-with-slint-light.svg" alt="Made with Slint" width="110">
+</picture></a>
