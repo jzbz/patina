@@ -179,7 +179,7 @@ and where its source is.
 ## Requirements
 
 - Rust 1.99.1, which `rust-toolchain.toml` selects automatically
-- libmpv from mpv 0.39 or newer, built with Lua (developed against 0.41).
+- libmpv from mpv 0.39 or newer, built with Lua (developed against 0.41 and 0.42).
   Ubuntu 26.04 and Debian 13 ship a recent enough one; Ubuntu 24.04 (0.37)
   and Debian 12 (0.35) are too old
 - OpenGL 3 or OpenGL ES 3 (mpv's minimum is OpenGL 2.1 or ES 2.0). Without
@@ -212,12 +212,10 @@ ffmpeg they carry, on a Windows 11 VM and an Intel macOS VM, neither with a
 GPU. Most features have so far only been tried on Linux, and nothing yet on
 Apple Silicon or with the signed and notarised Patina.app. On macOS,
 Homebrew's `mpv` provides libmpv. On Windows, put `libmpv-2.dll` beside
-`patina.exe`, for example from an `mpv-dev`
-archive of [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild/releases)
-or [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake/releases).
-Those builds also need `vulkan-1.dll`, which mpv's own Windows release ships
-beside `mpv.exe`. The release packages are self-contained: Patina.app carries
-IINA's libmpv, and the Windows folder has the DLLs beside the exe.
+`patina.exe`, from the `libmpv-v…-x86_64-w64-mingw32-lgpl.zip` on
+[mpv's releases](https://github.com/mpv-player/mpv/releases) (since 0.42.0).
+The release packages are self-contained: Patina.app carries IINA's libmpv,
+and the Windows folder has mpv's beside the exe.
 
 ## Building and running
 

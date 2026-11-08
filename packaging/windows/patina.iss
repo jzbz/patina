@@ -1,6 +1,6 @@
 ; Patina's Windows installer: a per-user Inno Setup script around the Patina
 ; folder every release already ships as its portable zip: patina.exe, the
-; libmpv-2.dll and vulkan-1.dll it needs beside it, the yt-dlp folder and
+; libmpv-2.dll it needs beside it, the yt-dlp folder and
 ; ffmpeg.exe it runs for online video and downloads, and the license files.
 ;
 ; The windows job of .github/workflows/release.yml compiles it with the Inno
@@ -109,9 +109,9 @@ Compression=lzma2/max
 ; after the tag or commit being built, as it names the portable zip.
 OutputBaseFilename=patina-v{#AppVersion}-x86_64-setup
 
-; An upgrade has to replace a patina.exe, and the libmpv-2.dll and
-; vulkan-1.dll it loads, that may be in use, so Setup asks Restart Manager to
-; close the Patina holding them first. Restart Manager finds it by those open
+; An upgrade has to replace a patina.exe, and the libmpv-2.dll it loads,
+; that may be in use, so Setup asks Restart Manager to close the Patina
+; holding them first. Restart Manager finds it by those open
 ; files, which the default CloseApplicationsFilter (*.exe,*.dll,*.chm)
 ; covers. It covers a yt-dlp.exe or ffmpeg.exe still running for Patina
 ; too, as each holds its own exe open while it runs, and yt-dlp.exe the
@@ -152,9 +152,10 @@ CloseApplications=yes
 ; happens to sit in the folder is swept in. A file added to the folder has
 ; to be added here too. One the folder stops carrying needs an [InstallDelete]
 ; entry then, or an upgrade leaves the old copy in {app} until Patina is
-; uninstalled. The two DLLs stay beside patina.exe: that is where Patina
-; looks for libmpv, and where Windows finds the vulkan-1.dll libmpv imports.
-; So does ffmpeg.exe, which is where Patina looks for it, and yt-dlp's folder
+; uninstalled. libmpv-2.dll stays beside patina.exe: that is where Patina
+; looks for it, and LICENSE-libmpv.txt (mpv's LGPL 2.1) and LICENSE-LGPLv3.txt
+; (its FFmpeg's) go with it. So does
+; ffmpeg.exe, which is where Patina looks for it, and yt-dlp's folder
 ; build is in yt-dlp\, where Patina looks for yt-dlp.exe (src/platform.rs,
 ; `bundled`); THIRD-PARTY-yt-dlp.txt, LICENSE-GPLv3.txt (yt-dlp's licence)
 ; and LICENSE-ffmpeg.txt (ffmpeg.exe's LGPL 2.1) are their notices.
@@ -173,7 +174,6 @@ CloseApplications=yes
 ; compiles of the same bytes differ.
 Source: "{#SourceDir}\patina.exe"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion notimestamp
-Source: "{#SourceDir}\vulkan-1.dll"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\yt-dlp\yt-dlp.exe"; DestDir: "{app}\yt-dlp"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\yt-dlp\_internal\*"; DestDir: "{app}\yt-dlp\_internal"; Flags: ignoreversion notimestamp recursesubdirs createallsubdirs
 Source: "{#SourceDir}\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion notimestamp
@@ -184,6 +184,8 @@ Source: "{#SourceDir}\THIRD-PARTY.md"; DestDir: "{app}"; Flags: ignoreversion no
 Source: "{#SourceDir}\THIRD-PARTY-yt-dlp.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-GPLv3.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-ffmpeg.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\LICENSE-libmpv.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\LICENSE-LGPLv3.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 
 [InstallDelete]
 ; The yt-dlp\_internal an earlier version installed, before this version's
@@ -193,6 +195,10 @@ Type: filesandordirs; Name: "{app}\yt-dlp\_internal"
 ; Where installers built before yt-dlp came as a folder put it, beside
 ; patina.exe (none of them was released).
 Type: files; Name: "{app}\yt-dlp.exe"
+; The Vulkan loader installers built before libmpv came from mpv's own build
+; put beside patina.exe, as that libmpv imported it (none of them was
+; released either).
+Type: files; Name: "{app}\vulkan-1.dll"
 
 [Icons]
 ; The Start Menu entry, and the reason this installer exists. No desktop

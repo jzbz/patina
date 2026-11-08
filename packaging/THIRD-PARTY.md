@@ -16,10 +16,10 @@ each under its own license.
 
 ## Flatpak (under /app)
 
-- **libmpv.so.2**: mpv 0.41.0, built in the manifest with its default
+- **libmpv.so.2**: mpv 0.42.0, built in the manifest with its default
   options, which make it GPL; so the Flatpak as a whole is under the GPL.
-  With it come libass, libplacebo, LuaJIT, uchardet and libXpresent, each
-  built from its source. FFmpeg is the runtime's own
+  With it come libass, libplacebo, LuaJIT, uchardet, libXpresent and
+  libdisplay-info, each built from its source. FFmpeg is the runtime's own
   (org.freedesktop.Platform), not part of the bundle.
 - **yt-dlp**, Unlicense. <https://github.com/yt-dlp/yt-dlp>
 - **yt-dlp-ejs**, Unlicense, with meriyah (ISC) and astring (MIT) built into
@@ -33,12 +33,14 @@ package.
 
 ## Windows (the Patina folder)
 
-- **libmpv-2.dll**: mpv and the FFmpeg it links, built as LGPL (mpv's
-  `-Dgpl=false`) by <https://github.com/zhongfly/mpv-winbuild>; the build it
-  came from is named in `packaging/windows-deps.env`. mpv's source:
+- **libmpv-2.dll**: mpv 0.42.0 and the FFmpeg and other libraries it links,
+  mpv's own build for its release (`libmpv-v0.42.0-x86_64-w64-mingw32-lgpl.zip`,
+  made by mpv's CI with `ci/build-mingw64-full.sh`), named in
+  `packaging/windows-deps.env`. mpv is built as LGPL (`-Dgpl=false`), under
+  LGPL 2.1 or later, whose text is beside it as LICENSE-libmpv.txt; its
+  FFmpeg is configured as LGPL version 3 or later, whose text is beside it
+  as LICENSE-LGPLv3.txt, with the GPLv3's as LICENSE-GPLv3.txt. mpv's source:
   <https://github.com/mpv-player/mpv>; FFmpeg's: <https://ffmpeg.org>.
-- **vulkan-1.dll**: the Khronos Vulkan loader, Apache-2.0, as shipped with
-  mpv 0.41.0's own Windows release. <https://github.com/KhronosGroup/Vulkan-Loader>
 - **yt-dlp\\** (yt-dlp.exe and its `_internal` folder): yt-dlp's own folder
   build, `yt-dlp_win.zip` of the version named in
   `packaging/bundled-tools.env`, unpacked unchanged. yt-dlp's own code is

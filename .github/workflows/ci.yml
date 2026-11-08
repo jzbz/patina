@@ -65,7 +65,9 @@ jobs:
         # ubuntu-26.04 rather than ubuntu-latest: the label is moving from
         # 24.04 to 26.04 until 2026-11-19, and 24.04's libmpv (mpv 0.37) is
         # older than Patina supports, so the floating label would test a
-        # different mpv from one run to the next. 26.04 ships mpv 0.41.
+        # different mpv from one run to the next. 26.04 ships mpv 0.41, so
+        # the tests meet 0.41 there and 0.42 on macOS (Homebrew's) and
+        # Windows (mpv's own build).
         os: [ubuntu-26.04, macos-latest, windows-latest]
 
     steps:
@@ -182,27 +184,11 @@ jobs:
           path: ${{ runner.temp }}/downloads
           key: windows-downloads-${{ hashFiles('packaging/windows-deps.env') }}
 
-      - name: Download libmpv, vulkan-1.dll and ffmpeg (Windows)
+      - name: Download libmpv and ffmpeg (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 10
         shell: pwsh
         run: ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads')
-
-      # The digest proves these are the bytes that were pinned; this proves
-      # they came from zhongfly's own workflow on a GitHub-hosted runner. It
-      # matters when the pin moves, which is when the cache misses.
-      - name: Check libmpv's build provenance (Windows)
-        if: runner.os == 'Windows' && steps.downloads.outputs.cache-hit != 'true'
-        timeout-minutes: 5
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $file = Join-Path $env:RUNNER_TEMP ('downloads\' + [IO.Path]::GetFileName($env:WIN_LIBMPV_URL))
-          gh attestation verify $file --repo zhongfly/mpv-winbuild `
-            --signer-workflow zhongfly/mpv-winbuild/.github/workflows/mpv.yml `
-            --deny-self-hosted-runners
-          if ($LASTEXITCODE -ne 0) { throw "libmpv's attestation did not verify" }
 
       # Saved straight away, not at the end of the job, so a red test run
       # still keeps the downloads. Only from master, whose cache every branch
@@ -215,9 +201,8 @@ jobs:
           key: ${{ steps.downloads.outputs.cache-primary-key }}
 
       # PATINA_LIBMPV names the DLL, since the test binary runs from
-      # target\debug\deps, where nothing is beside it. Its directory also goes
-      # on PATH for vulkan-1.dll: Windows looks for a DLL's own imports along
-      # the normal search path, not in the directory it was loaded from.
+      # target\debug\deps, where nothing is beside it. It needs only Windows'
+      # own DLLs.
       - name: Install libmpv and ffmpeg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -226,7 +211,6 @@ jobs:
           $bin = Join-Path $env:RUNNER_TEMP 'ffmpeg'
           ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads') -Lib $lib -Ffmpeg $bin
           Add-Content -Path $env:GITHUB_ENV -Value "PATINA_LIBMPV=$(Join-Path $lib 'libmpv-2.dll')"
-          Add-Content -Path $env:GITHUB_PATH -Value $lib
           Add-Content -Path $env:GITHUB_PATH -Value $bin
 
       # Restored under its exact key or not at all. Falling back on an older

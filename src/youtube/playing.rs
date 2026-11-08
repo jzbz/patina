@@ -150,7 +150,11 @@ pub fn play_format(filter: &str) -> String {
 /// a seek it held 8 seconds; anything slower for a moment and playback waited.
 /// A stream sent at full speed to one request (a 1080p VP9 one was) comes a
 /// little slower in parts, still far ahead of playback. mpv's yt-dlp hook
-/// doesn't pass the part size yt-dlp gives for each format.
+/// before 0.42 doesn't pass the part size yt-dlp gives for each format.
+/// 0.42's does, as `request_size` where nothing set one and as libcurl's
+/// `curl-max-request-size`, the same 10 MiB for YouTube; and where libcurl
+/// opens the streams, ahead of FFmpeg, it reads none of `stream-lavf-o`, so
+/// this is for an older libmpv.
 pub const REQUEST_SIZE: &str = "10485760";
 
 /// Whether `url` is a YouTube page, which mpv's hook opens through yt-dlp and

@@ -827,6 +827,7 @@ pub fn apply(mpv: &Mpv, options: &LoadOptions) -> Result<(), Failure> {
         }
     }
     if let Some(header) = &options.header {
+        follow_no_redirect(mpv);
         quiet_ffmpeg(mpv);
         if let Err(error) = mpv.set_property_secret("file-local-options/http-header-fields", header)
         {
@@ -866,18 +867,35 @@ fn added_to(mut entries: Vec<(String, String)>, ours: &[(&str, &str)]) -> Vec<(S
     entries
 }
 
-/// At its trace level FFmpeg prints every request with its headers, the
-/// token's among them, to the terminal (`--verbose` with a level of trace
-/// asked for). While the header goes with a file, FFmpeg's messages stop
-/// at debug, for that file only, whatever else the levels say.
+/// mpv 0.42 opens http and https with libcurl ahead of FFmpeg, when it was
+/// built with it, and libcurl reads none of `stream-lavf-o`: it follows up
+/// to 16 redirects whatever `max_redirects` says. It leaves the header out
+/// when one leads to another host or port, but follows one on the server,
+/// plain http included. Its own limit is set too, while the header goes
+/// with a file, where mpv has it: an older mpv has no such option.
+fn follow_no_redirect(mpv: &Mpv) {
+    if mpv.get_property("option-info/curl-max-redirects").is_err() {
+        return;
+    }
+    if let Err(error) = mpv.set_property("file-local-options/curl-max-redirects", 0i64) {
+        log::warn!("{error}");
+    }
+}
+
+/// At their trace level FFmpeg and mpv's libcurl stream print every
+/// request with its headers, the token's among them, to the terminal
+/// (`--verbose` with a level of trace asked for). While the header goes
+/// with a file, their messages stop at debug, for that file only, whatever
+/// else the levels say.
 fn quiet_ffmpeg(mpv: &Mpv) {
     let levels = key_values(mpv, "msg-level");
     if !levels.iter().any(|(_, level)| level == "trace") {
         return;
     }
     // The last level that matches a module counts, and "ffmpeg" matches
-    // FFmpeg's every module ("ffmpeg/demuxer" too).
-    let capped = Value::Map(added_to(levels, &[("ffmpeg", "debug")]));
+    // FFmpeg's every module ("ffmpeg/demuxer" too). An mpv without libcurl
+    // takes a level for a module it doesn't have.
+    let capped = Value::Map(added_to(levels, &[("ffmpeg", "debug"), ("curl", "debug")]));
     if let Err(error) = mpv.set_property("file-local-options/msg-level", capped) {
         log::warn!("{error}");
     }
@@ -2454,14 +2472,23 @@ mod tests {
                 ("max_redirects".to_owned(), "0".to_owned())
             ]
         );
-        // FFmpeg would print the header at trace.
+        // FFmpeg and libcurl would print the header at trace.
         assert_eq!(
             map("msg-level"),
             [
                 ("all".to_owned(), "trace".to_owned()),
-                ("ffmpeg".to_owned(), "debug".to_owned())
+                ("ffmpeg".to_owned(), "debug".to_owned()),
+                ("curl".to_owned(), "debug".to_owned())
             ]
         );
+        // An mpv with libcurl follows no redirect with it either.
+        let curl = mpv.get_property("option-info/curl-max-redirects").is_ok();
+        if curl {
+            assert_eq!(
+                mpv.get_property("curl-max-redirects").unwrap(),
+                crate::mpv::Node::Int(0)
+            );
+        }
         assert_eq!(
             mpv.get_property("http-header-fields")
                 .unwrap()
@@ -2482,6 +2509,12 @@ mod tests {
             [("reconnect".to_owned(), "1".to_owned())]
         );
         assert_eq!(map("msg-level"), [("all".to_owned(), "trace".to_owned())]);
+        if curl {
+            assert_eq!(
+                mpv.get_property("curl-max-redirects").unwrap(),
+                crate::mpv::Node::Int(16)
+            );
+        }
         assert!(
             mpv.get_property("http-header-fields")
                 .unwrap()

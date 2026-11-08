@@ -178,6 +178,20 @@ fn ytdl_paths(paths: &str) -> Vec<&str> {
 /// `key=value` a line, `#` lines and blank lines skipped, nothing trimmed,
 /// the last one winning. An empty one names nothing, to the hook too.
 pub(crate) fn hook_ytdl_path(prefs: &Preferences, mpv_config: &Path) -> Option<String> {
+    hook_option(prefs, mpv_config, "ytdl_path", |_| true)
+        .filter(|value| !ytdl_paths(value).is_empty())
+}
+
+/// One of the hook's options as its `script-opts/ytdl_hook.conf` sets it,
+/// read as `hook_ytdl_path` reads `ytdl_path`: the last line of that name
+/// whose value mpv takes for it (`valid`), as mpv keeps the option as it was
+/// for one it can't convert. None when nothing sets it.
+pub(crate) fn hook_option(
+    prefs: &Preferences,
+    mpv_config: &Path,
+    name: &str,
+    valid: impl Fn(&str) -> bool,
+) -> Option<String> {
     if !prefs.use_mpv_config {
         return None;
     }
@@ -189,10 +203,9 @@ pub(crate) fn hook_ytdl_path(prefs: &Preferences, mpv_config: &Path) -> Option<S
             !line.is_empty() && !line.starts_with('#')
         })
         .filter_map(|line| line.split_once('='))
-        .filter(|(key, _)| *key == "ytdl_path")
+        .filter(|(key, value)| *key == name && valid(value))
         .map(|(_, value)| value.to_owned())
         .next_back()
-        .filter(|value| !ytdl_paths(value).is_empty())
 }
 
 /// The ffmpeg a download's yt-dlp joins video and audio with.
@@ -2020,6 +2033,31 @@ mod tests {
         assert_eq!(
             find_mine(&mpv_config, &config.0, Some(bundled), exists),
             Some(in_config)
+        );
+        // Its other options are read the same way, keeping the last value mpv
+        // would take: it keeps the default for one it can't convert.
+        let flag = |value: &str| matches!(value, "yes" | "no");
+        assert_eq!(
+            hook_option(&mpv_config, &config.0, "all_formats", flag),
+            None
+        );
+        std::fs::write(
+            opts.join("ytdl_hook.conf"),
+            "all_formats=yes\nall_formats=false\nall_formats= no\nall_formats=\n",
+        )
+        .unwrap();
+        assert_eq!(
+            hook_option(&mpv_config, &config.0, "all_formats", flag).as_deref(),
+            Some("yes")
+        );
+        std::fs::write(opts.join("ytdl_hook.conf"), "all_formats=false\n").unwrap();
+        assert_eq!(
+            hook_option(&mpv_config, &config.0, "all_formats", flag),
+            None
+        );
+        assert_eq!(
+            hook_option(&no_mpv_config, &config.0, "all_formats", flag),
+            None
         );
     }
 

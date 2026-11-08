@@ -311,8 +311,12 @@ that they end with the file:
   `TranscodingUrl` on another host isn't played. With the header go
   `max_redirects=0`, added to the user's own `stream-lavf-o` (FFmpeg
   would send the header on to wherever a redirect points, plain http
-  included), and `prefetch-playlist` off (mpv would open the next entry
-  with this file's options while it plays).
+  included), `curl-max-redirects=0` where mpv has it (mpv 0.42 built with
+  libcurl opens http and https with it ahead of FFmpeg, and it reads none
+  of `stream-lavf-o`; it leaves the header out when a redirect leads to
+  another host or port, but follows one on the server), and
+  `prefetch-playlist` off (mpv would open the next entry with this file's
+  options while it plays).
 - `start`: the server's resume position, unless the user chose to play
   from the beginning (which holds for that one load: the entry opened
   again from History, Recent or the playlist resumes where the server
@@ -635,9 +639,9 @@ that setter sets the header, mpv's own messages go no further than info.
 mpv's log file (`log-file`, from the preferences' extra options, mpv.conf
 or `--mpv-log-file`) records the debug level whatever the levels say,
 which no option lowers: while mpv writes one, a transcode doesn't play,
-and says why. At its trace level FFmpeg prints each request with its
-headers, so while the header goes with a file FFmpeg's messages stop at
-debug. The Inspector's Watch tab shows `http-header-fields` as hidden.
+and says why. At their trace level FFmpeg and mpv's libcurl stream print
+each request with its headers, so while the header goes with a file their
+messages (`ffmpeg` and `curl`) stop at debug. The Inspector's Watch tab shows `http-header-fields` as hidden.
 
 ## Tests
 

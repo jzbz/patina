@@ -96,12 +96,11 @@ concurrency:
 # The libmpv downloads are not cached either, though their scripts check
 # every file's digest even on a hit. packaging/macos-bundle.sh copies every
 # dylib in the folder it is given, not only the pinned ones, so a restored
-# folder holding one more file would ship it unchecked; and the Windows
-# attestation check below is worth running on every release, not only when
-# a cache misses. The price is that a release needs live pins: zhongfly
-# deletes its libmpv builds after about a month and IINA replaces its files
-# in place, and when either has happened the download step fails and names
-# the pin to refresh (packaging/windows-deps.env, packaging/macos-libmpv.txt).
+# folder holding one more file would ship it unchecked. The price is that a
+# release needs live pins: IINA replaces its files in place, and when it has
+# the download step fails and names the pin to refresh
+# (packaging/macos-libmpv.txt). The Windows libmpv is an asset of mpv's own
+# release, which stays (packaging/windows-deps.env).
 permissions:
   contents: read
 
@@ -654,7 +653,7 @@ jobs:
   # the winget manifests point at the installer produced here.
   #
   # Two files come out of it, holding the same folder: patina.exe with the
-  # libmpv-2.dll and vulkan-1.dll it loads from beside itself, yt-dlp's
+  # libmpv-2.dll it loads from beside itself, yt-dlp's
   # folder build in yt-dlp\ and the ffmpeg.exe it runs for online video and
   # downloads, and the licences. patina-<tag>-windows-x86_64.zip is that folder, for whoever
   # wants to unpack it and run it from anywhere. patina-<tag>-x86_64-setup.exe
@@ -698,24 +697,10 @@ jobs:
 
       # Fetched afresh and checked against the digests pinned in
       # packaging/windows-deps.env (see the comment above `permissions`).
-      - name: Download libmpv and vulkan-1.dll
+      - name: Download libmpv
         timeout-minutes: 10
         shell: pwsh
         run: ./packaging/windows-deps.ps1 -Downloads (Join-Path $env:RUNNER_TEMP 'downloads')
-
-      # The digest proves these are the bytes that were pinned; this proves
-      # they came from zhongfly's own workflow on a GitHub-hosted runner.
-      - name: Check libmpv's build provenance
-        timeout-minutes: 5
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $file = Join-Path $env:RUNNER_TEMP ('downloads\' + [IO.Path]::GetFileName($env:WIN_LIBMPV_URL))
-          gh attestation verify $file --repo zhongfly/mpv-winbuild `
-            --signer-workflow zhongfly/mpv-winbuild/.github/workflows/mpv.yml `
-            --deny-self-hosted-runners
-          if ($LASTEXITCODE -ne 0) { throw "libmpv's attestation did not verify" }
 
       # The statically linked CRT is not set here. `.cargo/config.toml` asks
       # for it per Windows target, and RUSTFLAGS in the environment *replaces*
@@ -732,14 +717,13 @@ jobs:
           path: ${{ runner.temp }}/ffmpeg
 
       # patina.exe with libmpv-2.dll beside it, where Patina looks first, and
-      # the vulkan-1.dll libmpv imports, which Windows finds in the exe's
-      # folder; yt-dlp's folder build from packaging/bundled-tools.env in a
+      # libmpv's licences; yt-dlp's folder build from packaging/bundled-tools.env in a
       # yt-dlp folder of its own and the ffmpeg.exe built from FFmpeg's
       # source beside patina.exe, where Patina looks for them, ffmpeg.exe
       # checked against the hashes ffmpeg-windows recorded; then the
       # licences, those two's notices among them. This folder is the zip's
       # content and what the installer puts in {app}, so it is checked to
-      # hold exactly these eleven files and the yt-dlp folder, and every
+      # hold exactly these twelve files and the yt-dlp folder, and every
       # file's hash, each one in yt-dlp\ included, is kept as well as
       # printed: Inno Setup's installer, its compiler and the setup exe all
       # run in this workspace after this, and the last step checks against
@@ -766,7 +750,7 @@ jobs:
           Copy-Item ui\icons\LICENSE (Join-Path $dir 'LICENSE-lucide.txt')
           Copy-Item ui\fonts\LICENSE (Join-Path $dir 'LICENSE-ibm-plex.txt')
           Copy-Item packaging\THIRD-PARTY.md (Join-Path $dir 'THIRD-PARTY.md')
-          $expected = 'LICENSE-GPLv3.txt', 'LICENSE-ffmpeg.txt', 'LICENSE-ibm-plex.txt', 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY-yt-dlp.txt', 'THIRD-PARTY.md', 'ffmpeg.exe', 'libmpv-2.dll', 'patina.exe', 'vulkan-1.dll', 'yt-dlp'
+          $expected = 'LICENSE-GPLv3.txt', 'LICENSE-LGPLv3.txt', 'LICENSE-ffmpeg.txt', 'LICENSE-ibm-plex.txt', 'LICENSE-libmpv.txt', 'LICENSE-lucide.txt', 'LICENSE.txt', 'THIRD-PARTY-yt-dlp.txt', 'THIRD-PARTY.md', 'ffmpeg.exe', 'libmpv-2.dll', 'patina.exe', 'yt-dlp'
           $found = @(Get-ChildItem -LiteralPath $dir -Force | ForEach-Object Name)
           if (Compare-Object $expected $found) {
             throw "$dir holds $($found -join ', '), not $($expected -join ', ')"

@@ -190,8 +190,8 @@ impl App {
     /// said their versions, or theirs was removed or replaced. mpv's hook,
     /// the YouTube section and the Downloads window move to it, as for a
     /// changed path preference. The hook is told through `script-opts`,
-    /// unless the user's own mpv options set that, which would win at start
-    /// and should go on winning. Once a change: `ytdl_current` may have
+    /// where a `ytdl_path` of the user's own goes on winning
+    /// (`Player::set_hook_options`). Once a change: `ytdl_current` may have
     /// handed it on before the call queued for it comes.
     pub fn ytdl_choice_changed(&self) {
         let changes = crate::ytdl_versions::global().changes();
@@ -199,24 +199,10 @@ impl App {
             return;
         }
         self.ytdl_handed_on.set(changes);
-        let prefs = self.prefs();
-        let own_script_opts = prefs
-            .mpv_options
-            .iter()
-            .chain(&self.cli_mpv_options)
-            .any(|(name, _)| name == "script-opts");
-        let script_opts: Vec<(&'static str, String)> = if own_script_opts {
-            Vec::new()
-        } else {
-            prefs
-                .mpv_options()
-                .into_iter()
-                .filter(|(name, _)| *name == "script-opts")
-                .collect()
-        };
+        let hook_options = self.prefs().hook_options();
         let windows = self.windows.borrow().clone();
         for window in &windows {
-            window.apply_mpv_options(&script_opts);
+            window.apply_hook_options(&hook_options);
             window.yt_dlp_changed();
         }
         if let Some(downloads) = self.existing_downloads() {
@@ -248,6 +234,7 @@ impl App {
             .into_iter()
             .filter(|option| !before.contains(option))
             .collect();
+        let hook_options = prefs.hook_options();
         let windows = self.windows.borrow().clone();
         let playlist_tags = prefs.playlist_show_metadata != old.playlist_show_metadata
             || prefs.playlist_show_metadata_in_music_mode
@@ -255,6 +242,7 @@ impl App {
         for window in &windows {
             window.apply_interface_preferences();
             window.apply_mpv_options(&changed);
+            window.apply_hook_options(&hook_options);
             if playlist_tags {
                 window.refresh_playlist();
             }
@@ -408,6 +396,7 @@ impl App {
             options,
             verbose: self.verbose,
             list_audio_devices: !pipewire_missing,
+            hook_options: prefs.hook_options(),
         }
     }
 

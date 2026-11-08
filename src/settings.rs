@@ -677,43 +677,71 @@ impl Preferences {
         if !self.user_agent.is_empty() {
             options.push(("user-agent", self.user_agent.clone()));
         }
-        let mpv_config = || Paths::discover().mpv_config_dir();
-        if let Some(script_opts) = self.ytdl_script_opts(
-            crate::platform::bundled("yt-dlp"),
-            || crate::downloads::hook_ytdl_path(self, &mpv_config()).is_some(),
-            || crate::downloads::find_ytdl(self, &mpv_config()),
-        ) {
-            options.push(("script-opts", script_opts));
-        }
         options
     }
 
-    /// The yt-dlp mpv's hook is told to run, as its `script-opts`: the path
-    /// preference as it was written, or, when a package carries yt-dlp, the
-    /// one `find_ytdl` settles on. Nothing otherwise, which leaves the hook to
-    /// search as it always has; nor when the hook's own configuration
+    /// What Patina tells mpv's yt-dlp hook through `script-opts`, as entries
+    /// `Player::set_hook_options` adds to what mpv has there: the yt-dlp to
+    /// run, when `ytdl_for_hook` names one, and to give a file only the
+    /// formats asked for, unless the hook's own configuration
+    /// (`script-opts/ytdl_hook.conf`) says which.
+    ///
+    /// mpv 0.42's hook gives every format yt-dlp lists by default, each video
+    /// format an edition of the file and each audio format a track, where
+    /// 0.41's gave the one asked for. Patina's Video Quality and Audio
+    /// Quality menus choose a format by playing the entry again, its audio
+    /// menu would list every audio format YouTube has, and the edition key
+    /// would step through the video formats; and only some packages' libmpv
+    /// is 0.42. So the hook goes on as 0.41's did, with every libmpv, unless
+    /// the user says otherwise there or in their own `script-opts`.
+    pub fn hook_options(&self) -> Vec<(String, String)> {
+        let mpv_config = || Paths::discover().mpv_config_dir();
+        let path = self.ytdl_for_hook(
+            crate::platform::bundled("yt-dlp"),
+            || crate::downloads::hook_ytdl_path(self, &mpv_config()).is_some(),
+            || crate::downloads::find_ytdl(self, &mpv_config()),
+        );
+        // mpv's options.lua takes only yes or no for a flag, and keeps the
+        // default for anything else.
+        let formats_set =
+            crate::downloads::hook_option(self, &mpv_config(), "all_formats", |value| {
+                matches!(value, "yes" | "no")
+            })
+            .is_some();
+        hook_entries(path, formats_set)
+    }
+
+    /// The yt-dlp mpv's hook is told to run: the path preference as it was
+    /// written, or, when a package carries yt-dlp, the one `find_ytdl`
+    /// settles on. Nothing otherwise, which leaves the hook to search as it
+    /// always has; nor when the hook's own configuration
     /// (`script-opts/ytdl_hook.conf`) names one, which `script-opts` would
     /// override, and which `find_ytdl` then settles on too. Without this the
     /// hook would never run the bundled copy: it isn't on the `PATH`, and on
     /// macOS an app opened from the Finder has only the system's folders
-    /// there. Quoted with its length, as a path can hold a comma.
-    fn ytdl_script_opts(
+    /// there.
+    fn ytdl_for_hook(
         &self,
         bundled: Option<PathBuf>,
         hook_names_one: impl FnOnce() -> bool,
         find: impl FnOnce() -> Option<PathBuf>,
     ) -> Option<String> {
         if !self.ytdl_path.is_empty() {
-            return Some(format!("ytdl_hook-ytdl_path={}", self.ytdl_path));
+            return Some(self.ytdl_path.clone());
         }
         bundled?;
         if hook_names_one() {
             return None;
         }
-        let found = find()?;
-        let path = found.to_str()?;
-        Some(format!("ytdl_hook-ytdl_path=%{}%{path}", path.len()))
+        Some(find()?.to_str()?.to_owned())
     }
+}
+
+/// The `script-opts` entries for the hook (`Preferences::hook_options`).
+fn hook_entries(path: Option<String>, formats_set: bool) -> Vec<(String, String)> {
+    let path = path.map(|path| ("ytdl_hook-ytdl_path".to_owned(), path));
+    let formats = (!formats_set).then(|| ("ytdl_hook-all_formats".to_owned(), "no".to_owned()));
+    path.into_iter().chain(formats).collect()
 }
 
 /// The clients yt-dlp is to ask YouTube for, as `--extractor-args` takes
@@ -721,16 +749,19 @@ impl Preferences {
 ///
 /// A YouTube video with an ad fails to open otherwise. yt-dlp's default
 /// clients are given stream addresses that answer 403 until the ad's skip
-/// time has passed, which yt-dlp waits for and mpv's hook, before its PR
-/// #18193, doesn't. `visionos` is given addresses that work at once.
-/// `default` stays after it for the formats and the fallback it brings, and
-/// because `visionos` alone chooses a format that takes merging, which fails
+/// time has passed, which yt-dlp waits for and mpv's hook before 0.42
+/// doesn't. `visionos` is given addresses that work at once. `default`
+/// stays after it for the formats and the fallback it brings, and because
+/// `visionos` alone chooses a format that takes merging, which fails
 /// without ffmpeg.
 ///
-/// Remove this once every package's libmpv has that fix: Windows' has, the
-/// Flatpak's and macOS's 0.41.0 don't. It rests on how yt-dlp and YouTube
-/// treat that client today, which any yt-dlp release can change, so a video
-/// with an ad failing to open again means looking here first.
+/// mpv 0.42's hook waits too (its PR #18193), but shows nothing while it
+/// does, and a stop or another file waits with it: for an ad that can't be
+/// skipped, the whole ad. So this stays with every libmpv, and the wait is
+/// what is left should YouTube change how it treats that client, which any
+/// yt-dlp release can follow; a video with an ad failing to open, or slow
+/// to, means looking here first. A libmpv older than 0.42, as distributions
+/// carry, needs it to open such a video at all.
 ///
 /// An `extractor-args` of the user's wins, since mpv's options keep only one
 /// of a name. So do cookies, since yt-dlp skips `visionos` with them, with a
@@ -1326,24 +1357,24 @@ mod tests {
         let found = || Some(PathBuf::from("/A,b/Patina.app/Contents/Helpers/yt-dlp"));
         let none = Preferences::default();
         let no_hook = || false;
-        assert_eq!(none.ytdl_script_opts(None, || panic!("read"), found), None);
+        assert_eq!(none.ytdl_for_hook(None, || panic!("read"), found), None);
         assert_eq!(
-            none.ytdl_script_opts(bundled(), no_hook, found).as_deref(),
-            Some("ytdl_hook-ytdl_path=%39%/A,b/Patina.app/Contents/Helpers/yt-dlp")
+            none.ytdl_for_hook(bundled(), no_hook, found).as_deref(),
+            Some("/A,b/Patina.app/Contents/Helpers/yt-dlp")
         );
         // A yt-dlp of the user's in mpv's folder is what find_ytdl gives, and
         // the hook is then pointed at that.
         assert_eq!(
-            none.ytdl_script_opts(bundled(), no_hook, || Some(PathBuf::from(
+            none.ytdl_for_hook(bundled(), no_hook, || Some(PathBuf::from(
                 "/conf/mpv/yt-dlp"
             )))
             .as_deref(),
-            Some("ytdl_hook-ytdl_path=%16%/conf/mpv/yt-dlp")
+            Some("/conf/mpv/yt-dlp")
         );
         // A ytdl_path in the hook's own configuration is the user's too, and
         // script-opts would override it, so the hook is told nothing.
         assert_eq!(
-            none.ytdl_script_opts(bundled(), || true, || panic!("searched")),
+            none.ytdl_for_hook(bundled(), || true, || panic!("searched")),
             None
         );
         // The preference wins, as written, and is never searched for here.
@@ -1352,13 +1383,34 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            own.ytdl_script_opts(bundled(), || panic!("read"), || panic!("searched"))
+            own.ytdl_for_hook(bundled(), || panic!("read"), || panic!("searched"))
                 .as_deref(),
-            Some("ytdl_hook-ytdl_path=/opt/yt-dlp")
+            Some("/opt/yt-dlp")
         );
     }
 
-    /// A bundled yt-dlp's path reaches the hook whole, comma and all.
+    /// The hook gives a file only the formats asked for, as 0.41's did,
+    /// unless its own configuration says which; beside the yt-dlp to run,
+    /// when there is one.
+    #[test]
+    fn the_hook_gives_only_the_formats_asked_for() {
+        let entry = |key: &str, value: &str| (key.to_owned(), value.to_owned());
+        assert_eq!(
+            hook_entries(None, false),
+            [entry("ytdl_hook-all_formats", "no")]
+        );
+        assert_eq!(hook_entries(None, true), []);
+        assert_eq!(
+            hook_entries(Some("/a,b/yt-dlp".into()), false),
+            [
+                entry("ytdl_hook-ytdl_path", "/a,b/yt-dlp"),
+                entry("ytdl_hook-all_formats", "no")
+            ]
+        );
+    }
+
+    /// A yt-dlp's path reaches the hook whole, comma and all, set as an
+    /// entry of `script-opts`, as `Player::set_hook_options` sets it.
     #[test]
     fn a_bundled_yt_dlp_reaches_mpv_whole() {
         let Some(mpv) = crate::mpv::testing::headless() else {
@@ -1368,22 +1420,19 @@ mod tests {
             r"C:\Users\Ann, Bo\AppData\Local\Programs\Patina\yt-dlp.exe",
             "/Volumes/A=b [c]/Patina.app/Contents/Helpers/yt-dlp",
             "/Applications/名前/Patina.app/Contents/Helpers/yt-dlp",
+            "/a%3%b/yt-dlp",
         ] {
-            let opts = Preferences::default()
-                .ytdl_script_opts(
-                    Some(PathBuf::from(path)),
-                    || false,
-                    || Some(PathBuf::from(path)),
-                )
-                .unwrap();
-            mpv.set_property("script-opts", opts.as_str())
-                .unwrap_or_else(|error| panic!("{opts}: {error}"));
+            let entries = hook_entries(Some(path.into()), false);
+            mpv.set_property("script-opts", crate::mpv::Value::Map(entries.clone()))
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
             let Node::Map(seen) = mpv.get_property("script-opts").unwrap() else {
-                panic!("{opts}: not a map");
+                panic!("{path}: not a map");
             };
-            assert_eq!(seen.len(), 1, "{opts}");
-            assert_eq!(seen[0].0, "ytdl_hook-ytdl_path", "{opts}");
-            assert_eq!(seen[0].1.as_str(), Some(path), "{opts}");
+            let seen: Vec<(String, String)> = seen
+                .into_iter()
+                .map(|(key, value)| (key, value.as_str().unwrap_or_default().to_owned()))
+                .collect();
+            assert_eq!(seen, entries, "{path}");
         }
     }
 

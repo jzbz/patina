@@ -161,10 +161,14 @@ modules:
       # sandbox. mpv builds DRM only with libdisplay-info, built below.
       - -Ddrm=enabled
       - -Dvaapi-drm=enabled
+      # mpv 0.42 opens http and https with libcurl, the runtime's, ahead of
+      # FFmpeg; as mpv builds it wherever libcurl is found, and named, as
+      # Patina's Jellyfin playback sets libcurl's options as well as FFmpeg's.
+      - -Dlibcurl=enabled
     sources:
       - type: archive
-        url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.41.0.tar.gz
-        sha256: ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209
+        url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.42.0.tar.gz
+        sha256: bcfebbfa2b65a6d88dc97ea18117831072373e38b5785a2afb874ed4df5070dd
     modules:
       # libdisplay-info, which mpv's DRM support needs, and hwdata, whose PNP
       # ID list libdisplay-info compiles in; the list itself isn't shipped.

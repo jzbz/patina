@@ -9,7 +9,7 @@ pub mod state;
 
 pub use props::Prop;
 
-use crate::mpv::{Event, Mpv, Value};
+use crate::mpv::{Event, Mpv, Node, Value};
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,6 +32,10 @@ pub struct CoreOptions {
     /// (platform::pipewire_missing) the window asks for the list only when
     /// it is about to show it.
     pub list_audio_devices: bool,
+    /// Patina's entries for mpv's `script-opts`
+    /// (`Preferences::hook_options`), added once mpv has read everything
+    /// else (see `Player::set_hook_options`).
+    pub hook_options: Vec<(String, String)>,
 }
 
 /// Userdata for asynchronous commands whose failure should be shown.
@@ -51,6 +55,8 @@ pub struct Player {
     mpv: Arc<Mpv>,
     hook: Arc<PendingHook>,
     events: Option<JoinHandle<()>>,
+    /// The `script-opts` entries Patina last asked for.
+    hook_options: std::cell::RefCell<Vec<(String, String)>>,
 }
 
 /// The load hook mpv is waiting in, so that shutting down can let it go:
@@ -178,14 +184,42 @@ impl Player {
             .spawn(move || pump_events(&thread_mpv, &thread_hook, &sender))
             .map_err(|error| format!("could not start the mpv event thread: {error}"))?;
 
-        Ok((
-            Player {
-                mpv,
-                hook,
-                events: Some(events),
-            },
-            receiver,
-        ))
+        let player = Player {
+            mpv,
+            hook,
+            events: Some(events),
+            hook_options: Default::default(),
+        };
+        player.set_hook_options(&options.hook_options);
+        Ok((player, receiver))
+    }
+
+    /// Adds Patina's entries to mpv's `script-opts` (`entries`, from
+    /// `Preferences::hook_options`) rather than setting the option, which
+    /// would put them in place of every other entry: libmpv's own (0.42's
+    /// keeps its select script from reading the audio devices, see
+    /// `CoreOptions::list_audio_devices`), and the user's, from mpv.conf,
+    /// the preferences' extra options or the command line. Those win: an
+    /// entry is added only where nothing set its key, and later only an
+    /// entry Patina set is changed, or removed when Patina no longer asks
+    /// for it. mpv's scripts follow `script-opts` as it changes, though the
+    /// hook, once told a yt-dlp, doesn't search again when told none: a
+    /// cleared path preference takes effect in a new window.
+    pub fn set_hook_options(&self, entries: &[(String, String)]) {
+        let mut ours = self.hook_options.borrow_mut();
+        let mut current = match self.mpv.get_property("script-opts") {
+            Ok(Node::Map(map)) => map
+                .into_iter()
+                .filter_map(|(key, value)| Some((key, value.as_str()?.to_owned())))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let (changed, owned) = merge_hook_options(&mut current, &ours, entries);
+        if changed && let Err(error) = self.mpv.set_property("script-opts", Value::Map(current)) {
+            log::warn!("{error}");
+            return;
+        }
+        *ours = owned;
     }
 
     pub fn mpv(&self) -> &Arc<Mpv> {
@@ -343,10 +377,49 @@ fn trim_stream_addresses(text: &str) -> Cow<'_, str> {
     Cow::Owned(trimmed)
 }
 
+/// `current` (mpv's `script-opts`) with `wanted` merged in, as
+/// `Player::set_hook_options` says: an entry is added where its key is
+/// missing, replaced only where it still holds what Patina set (`before`,
+/// the entries Patina owns), and one Patina no longer wants is removed only
+/// on the same terms. Whether anything changed, and the entries Patina owns
+/// now: not one of someone else's that happened to hold what Patina wanted.
+fn merge_hook_options(
+    current: &mut Vec<(String, String)>,
+    before: &[(String, String)],
+    wanted: &[(String, String)],
+) -> (bool, Vec<(String, String)>) {
+    let ours = |key: &str, value: &str| {
+        before
+            .iter()
+            .any(|(known, old)| known == key && old == value)
+    };
+    let mut changed = false;
+    let mut owned = Vec::new();
+    for (key, value) in wanted {
+        match current.iter_mut().find(|(known, _)| known == key) {
+            None => {
+                current.push((key.clone(), value.clone()));
+                changed = true;
+            }
+            Some(entry) if ours(key, &entry.1) => {
+                if entry.1 != *value {
+                    entry.1.clone_from(value);
+                    changed = true;
+                }
+            }
+            Some(_) => continue,
+        }
+        owned.push((key.clone(), value.clone()));
+    }
+    let before_len = current.len();
+    current
+        .retain(|(key, value)| wanted.iter().any(|(known, _)| known == key) || !ours(key, value));
+    (changed || current.len() != before_len, owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mpv::Node;
 
     #[test]
     fn the_core_starts_with_the_default_options() {
@@ -372,6 +445,143 @@ mod tests {
             ..Default::default()
         };
         let (mut player, _events) = Player::start(&options).unwrap();
+        player.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn entries(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    /// Patina's entries go in beside everyone else's, and change or leave
+    /// only while they hold what Patina set.
+    #[test]
+    fn hook_options_join_the_users() {
+        let ours = entries(&[
+            ("ytdl_hook-ytdl_path", "/a"),
+            ("ytdl_hook-all_formats", "no"),
+        ]);
+        let mut current = entries(&[("select-populate_menu_data", "no"), ("osc-layout", "box")]);
+        assert!(merge_hook_options(&mut current, &[], &ours).0);
+        assert_eq!(
+            current,
+            entries(&[
+                ("select-populate_menu_data", "no"),
+                ("osc-layout", "box"),
+                ("ytdl_hook-ytdl_path", "/a"),
+                ("ytdl_hook-all_formats", "no")
+            ])
+        );
+        // Asked again, nothing changes.
+        assert!(!merge_hook_options(&mut current, &ours, &ours).0);
+        // A key the user set stays theirs, whatever Patina asks for.
+        let mut theirs = entries(&[("ytdl_hook-all_formats", "yes")]);
+        assert!(merge_hook_options(&mut theirs, &[], &ours).0);
+        assert_eq!(
+            theirs,
+            entries(&[
+                ("ytdl_hook-all_formats", "yes"),
+                ("ytdl_hook-ytdl_path", "/a")
+            ])
+        );
+        // Patina's own entry moves with it, and goes when it is no longer
+        // asked for; one the user changed since stays.
+        let moved = entries(&[
+            ("ytdl_hook-ytdl_path", "/b"),
+            ("ytdl_hook-all_formats", "no"),
+        ]);
+        assert!(merge_hook_options(&mut current, &ours, &moved).0);
+        assert!(current.contains(&("ytdl_hook-ytdl_path".to_owned(), "/b".to_owned())));
+        let formats = entries(&[("ytdl_hook-all_formats", "no")]);
+        assert!(merge_hook_options(&mut current, &moved, &formats).0);
+        assert!(!current.iter().any(|(key, _)| key == "ytdl_hook-ytdl_path"));
+        let mut changed = entries(&[("ytdl_hook-ytdl_path", "/mine")]);
+        assert!(!merge_hook_options(&mut changed, &moved, &formats[..0]).0);
+        assert_eq!(changed, entries(&[("ytdl_hook-ytdl_path", "/mine")]));
+        // One of the user's that holds what Patina wants is still theirs:
+        // not moved, nor removed, with Patina's next wish.
+        let mut same = entries(&[("ytdl_hook-ytdl_path", "/x")]);
+        let wanted = entries(&[("ytdl_hook-ytdl_path", "/x")]);
+        let (changed, owned) = merge_hook_options(&mut same, &[], &wanted);
+        assert!(!changed);
+        assert!(owned.is_empty());
+        let elsewhere = entries(&[("ytdl_hook-ytdl_path", "/bundled")]);
+        assert!(!merge_hook_options(&mut same, &owned, &elsewhere).0);
+        assert!(!merge_hook_options(&mut same, &owned, &[]).0);
+        assert_eq!(same, wanted);
+    }
+
+    /// In a running core, the entries join libmpv's own and those of the
+    /// user's mpv.conf, which mpv reads after the options Patina sets.
+    #[test]
+    fn hook_options_join_mpv_conf_and_libmpvs_own() {
+        let Some(bare) = crate::mpv::testing::headless() else {
+            return;
+        };
+        let script_opts = |mpv: &Mpv| match mpv.get_property("script-opts") {
+            Ok(Node::Map(map)) => map
+                .into_iter()
+                .map(|(key, value)| (key, value.as_str().unwrap_or_default().to_owned()))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        // libmpv's own entries (0.42 has one), which Patina keeps.
+        let builtin = script_opts(&bare);
+        drop(bare);
+        let ours = entries(&[
+            ("ytdl_hook-ytdl_path", "/a,b/yt-dlp"),
+            ("ytdl_hook-all_formats", "no"),
+        ]);
+        let dir = std::env::temp_dir().join(format!("patina-hook-options-{}", std::process::id()));
+        let start = |config_dir: Option<PathBuf>| {
+            let options = CoreOptions {
+                config_dir,
+                watch_later_dir: dir.join("watch-later"),
+                options: entries(&[("ao", "null")]),
+                hook_options: ours.clone(),
+                ..Default::default()
+            };
+            Player::start(&options).unwrap().0
+        };
+        let mut player = start(None);
+        let mut expected = builtin.clone();
+        expected.extend(ours.iter().cloned());
+        assert_eq!(script_opts(&player.mpv), expected);
+        player.shutdown();
+
+        let config = dir.join("mpv");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("mpv.conf"), "script-opts=osc-layout=box\n").unwrap();
+        let mut player = start(Some(config));
+        assert_eq!(
+            script_opts(&player.mpv),
+            entries(&[
+                ("osc-layout", "box"),
+                ("ytdl_hook-ytdl_path", "/a,b/yt-dlp"),
+                ("ytdl_hook-all_formats", "no")
+            ])
+        );
+        // The user's own path, set while it runs, is left alone after.
+        player
+            .mpv
+            .command(&[
+                "change-list",
+                "script-opts",
+                "append",
+                "ytdl_hook-ytdl_path=/mine",
+            ])
+            .unwrap();
+        player.set_hook_options(&entries(&[
+            ("ytdl_hook-ytdl_path", "/c"),
+            ("ytdl_hook-all_formats", "no"),
+        ]));
+        assert!(
+            script_opts(&player.mpv)
+                .contains(&("ytdl_hook-ytdl_path".to_owned(), "/mine".to_owned()))
+        );
         player.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

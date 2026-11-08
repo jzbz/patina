@@ -742,6 +742,14 @@ impl PlayerController {
         }
     }
 
+    /// Sets Patina's `script-opts` entries on this window's running core
+    /// (`Player::set_hook_options`).
+    pub fn apply_hook_options(&self, entries: &[(String, String)]) {
+        if self.is_running() {
+            self.player().set_hook_options(entries);
+        }
+    }
+
     fn attach_video(self: &Rc<Self>) -> Result<(), String> {
         if !crate::video::software::enabled() {
             match crate::video::attach(&self.window, self.mpv.clone(), self.video_hooks()) {
@@ -5976,7 +5984,8 @@ fn apply_quality(
 /// From the load hook, before mpv's yt-dlp hook, for a YouTube video: its
 /// streams are fetched a part at a time (`playing::REQUEST_SIZE`), which the
 /// yt-dlp hook keeps as it adds its own stream options. A part size in the
-/// user's own stream options wins.
+/// user's own stream options wins, where FFmpeg opens the streams: with
+/// mpv 0.42's libcurl the hook's part size counts.
 fn stream_in_parts(mpv: &Mpv) {
     let mut options = playback::key_values(mpv, "file-local-options/stream-lavf-o");
     if options.iter().any(|(name, _)| name == "request_size") {

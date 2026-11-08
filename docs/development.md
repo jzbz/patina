@@ -53,7 +53,7 @@ explains the design.
 - `release.yml` builds every package: the Flatpak bundles
   (`packaging/video.patina.Patina.yml`), a universal Patina.app (with IINA's
   libmpv, pinned in `packaging/macos-libmpv.txt`), and a Windows folder
-  (patina.exe, libmpv-2.dll and vulkan-1.dll, pinned in
+  (patina.exe and mpv's own libmpv-2.dll, pinned in
   `packaging/windows-deps.env`) with its installer
   (`packaging/windows/patina.iss`). Patina.app and the Windows folder also
   carry yt-dlp and ffmpeg, pinned for both in `packaging/bundled-tools.env`
@@ -115,9 +115,8 @@ The runbook is the header of `.github/workflows/release.yml` and
    `<release version="X.Y.Z" date="YYYY-MM-DD">` in
    `packaging/linux/video.patina.Patina.metainfo.xml` (the workflow's
    version job checks both); the screenshot URLs there pinned to a commit;
-   and live pins in `packaging/windows-deps.env` (zhongfly's builds expire
-   after about a month) and `packaging/macos-libmpv.txt`, since release
-   builds download them afresh. And yt-dlp in `packaging/bundled-tools.env`
+   and a live pin in `packaging/macos-libmpv.txt` (IINA replaces its files
+   in place), since release builds download it afresh. And yt-dlp in `packaging/bundled-tools.env`
    moved to its newest release, every time: the macOS and Windows packages
    carry it, Patina doesn't update it, and YouTube breaks old ones; and the
    Flatpak manifest's yt-dlp with it. The comment at the top of that file

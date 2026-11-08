@@ -7,8 +7,9 @@
 # The first form only fetches and checks the libraries. A file already in
 # -Downloads is checked, not fetched again, so a cache of that folder
 # outlives the pinned assets being deleted upstream. -Lib receives
-# libmpv-2.dll and the vulkan-1.dll it imports; -Ffmpeg receives the tests'
-# ffmpeg.exe, a full build. -Tools receives the yt-dlp the Patina folder
+# libmpv-2.dll, its licence as LICENSE-libmpv.txt and the LGPLv3 its FFmpeg
+# is under as LICENSE-LGPLv3.txt; -Ffmpeg receives the tests' ffmpeg.exe, a
+# full build. -Tools receives the yt-dlp the Patina folder
 # carries for online video: yt-dlp_win.zip unpacked as it is into a yt-dlp
 # folder, yt-dlp.exe and the _internal folder it loads Python and its
 # libraries from, where Patina looks for it (src/platform.rs, `bundled`);
@@ -68,12 +69,13 @@ function Expand-One([string] $archive, [string] $out, [string] $name) {
 # Named apart from the parameters: PowerShell's variable names ignore case,
 # so $ffmpeg would be $Ffmpeg.
 $libmpvArchive = Get-Pinned 'WIN_LIBMPV'
-$vulkanArchive = Get-Pinned 'WIN_VULKAN'
 $ffmpegArchive = Get-Pinned 'WIN_FFMPEG'
 
 if ($Lib) {
     Expand-One $libmpvArchive $Lib 'libmpv-2.dll'
-    Expand-One $vulkanArchive $Lib 'vulkan-1.dll'
+    Expand-One $libmpvArchive $Lib 'LICENSE.LGPL'
+    Move-Item -Force -LiteralPath (Join-Path $Lib 'LICENSE.LGPL') -Destination (Join-Path $Lib 'LICENSE-libmpv.txt')
+    Copy-Item -LiteralPath (Get-Pinned 'WIN_LGPLV3_LICENSE') -Destination (Join-Path $Lib 'LICENSE-LGPLv3.txt')
 }
 if ($Tools) {
     $ytdlp = Get-Pinned 'YTDLP_WINDOWS'

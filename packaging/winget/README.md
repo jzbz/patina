@@ -13,7 +13,7 @@ its `SHA256SUMS` signed.
 
 A release carries two Windows files: the portable
 `patina-vX.Y.Z-windows-x86_64.zip`, a `Patina` folder holding `patina.exe`
-and the DLLs it needs, and `patina-vX.Y.Z-x86_64-setup.exe`, a per-user Inno
+and the `libmpv-2.dll` it needs, and `patina-vX.Y.Z-x86_64-setup.exe`, a per-user Inno
 Setup installer that release.yml builds around that same folder
 (`packaging/windows/`). winget installs the second one, as
 `InstallerType: inno` with `Scope: user`. It asks for no administrator
@@ -23,7 +23,7 @@ uninstaller, which first has Patina remove the file types and `patina://`
 links it registered from Preferences › Utilities, then takes the rest away
 again provided Patina is closed first, and leaves the settings, history and
 the rest of `%APPDATA%\Patina` where they are either way. With Patina still
-running, the uninstaller also leaves `patina.exe`, the DLLs and the folder
+running, the uninstaller also leaves `patina.exe`, `libmpv-2.dll` and the folder
 behind, to be deleted by hand once Patina is closed
 (`packaging/windows/README.md`). The zip is still on every release for
 whoever downloads it directly; winget does not install it.

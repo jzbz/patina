@@ -407,13 +407,15 @@ shift down by 50) and sets the yt-dlp format for that file, and its start
 at the position it was playing, before yt-dlp is asked. Choices are kept
 per address for as long as the window is open.
 
-mpv 0.41's hook can't open a YouTube video with an ad under yt-dlp's default
-clients: their stream addresses answer 403 until the ad's skip time has
-passed, and the hook doesn't wait. So Patina adds
+Under yt-dlp's default clients, a YouTube video with an ad has stream
+addresses that answer 403 until the ad's skip time has passed. mpv's hook
+before 0.42 doesn't wait, and the video fails to open; 0.42's waits, showing
+nothing, and a stop or another file waits with it. So Patina adds
 `extractor-args=youtube:player_client=visionos,default` to what mpv and
-downloads pass to yt-dlp, unless Patina's yt-dlp options have their own
-`extractor-args` or cookies (`settings::ytdl_youtube_clients`, which says when
-it can go). It isn't kept in the preference, and mpv needs its value quoted.
+downloads pass to yt-dlp, whose addresses work at once, unless Patina's
+yt-dlp options have their own `extractor-args` or cookies
+(`settings::ytdl_youtube_clients`). It isn't kept in the preference, and mpv
+needs its value quoted.
 mpv isn't given it when its hook would run youtube-dl, which has no such
 option. Options mpv can't read, such as a flag with no `=`, are dropped with a
 warning and it goes alone, as adding to them would stop every online video;
@@ -424,12 +426,29 @@ options if they are to last.
 For a YouTube address, opened from anywhere, the load hook also has FFmpeg
 fetch the streams 10 MiB at a time (`request_size` in the file's
 `stream-lavf-o`, `youtube::playing::REQUEST_SIZE`), as yt-dlp's downloads do;
-mpv's hook doesn't pass on the part size yt-dlp gives. YouTube's servers sent
-some streams (each AV1 format tried) at little more than their own rate to a
-single open-ended request, which left the cache seconds ahead and playback
-waiting at the first slow moment. A stream sent at full speed to one request
-comes a little slower in parts, still far ahead of playback. A `request_size`
-in the user's own stream options wins.
+mpv's hook before 0.42 doesn't pass on the part size yt-dlp gives. YouTube's
+servers sent some streams (each AV1 format tried) at little more than their
+own rate to a single open-ended request, which left the cache seconds ahead
+and playback waiting at the first slow moment. A stream sent at full speed to
+one request comes a little slower in parts, still far ahead of playback. A
+`request_size` in the user's own stream options wins. mpv 0.42 built with
+libcurl opens http and https with it ahead of FFmpeg, and libcurl reads none
+of `stream-lavf-o`; its hook passes yt-dlp's part size on as
+`curl-max-request-size`, the same 10 MiB.
+mpv 0.42's hook gives a file every format yt-dlp lists by default, each video
+format an edition and each audio format a track. Patina's quality menus choose
+a format by playing the entry again, so it tells the hook
+`ytdl_hook-all_formats=no` in `script-opts`, as 0.41 had it, unless the hook's
+own `script-opts/ytdl_hook.conf` says which (`Preferences::hook_options`).
+Patina's entries are added to `script-opts` once mpv has started, and has
+read mpv.conf, the preferences' extra options and the command line, rather
+than set in place of the list (`Player::set_hook_options`): an entry goes in
+only where nothing set its key, and later only an entry Patina set is
+changed or removed (the hook, once told a yt-dlp, doesn't search again when
+told none, so a cleared path preference takes effect in a new window). Setting the option would drop the user's entries, or be
+dropped by any of theirs, and would drop libmpv 0.42's own
+`select-populate_menu_data=no`, without which its select script reads the
+audio device list (see `CoreOptions::list_audio_devices`).
 mpv says the signed stream address, with the user's IP address in it, when
 one fails to open, so `player/mod.rs` cuts `googlevideo.com` addresses out of
 what it logs.
@@ -481,18 +500,18 @@ its files, or answers something that isn't a version, is passed over for the
 run. The choice never waits: until both have answered the package's copy is
 used. Whenever the choice changes, as when the installed one turns out newer,
 or is removed or replaced by an older one,
-`App::ytdl_choice_changed` hands the hook its new `script-opts` and tells the
+`App::ytdl_choice_changed` hands the hook its new `ytdl_path` and tells the
 YouTube section and the Downloads window, as a changed path preference
 does; a window makes the choice again before it opens a web address, so a
 copy removed since is noticed before the hook would run it. The Downloads
 window and the section drop a version read for a copy no longer chosen. A `youtube-dl` is never a candidate, as it can't play YouTube. Where a package carries one,
-`Preferences::mpv_options` hands the hook the result as its `ytdl_path`, quoted
-with its length, since the hook would never find the bundled copy itself and
-an app opened from the Finder has only the system's folders on its `PATH`;
-but not when `ytdl_hook.conf` names one, which a `script-opts` would
-override. Where nothing is bundled (a Linux build, the Flatpak, a build from
-the source tree) the search is the hook's own, unchanged, and the hook is
-told nothing unless the preference says. ffmpeg for downloads goes the same
+`Preferences::hook_options` hands the hook the result as its `ytdl_path`, an
+entry of `script-opts`, since the hook would never find the bundled copy
+itself and an app opened from the Finder has only the system's folders on its
+`PATH`; but not when `ytdl_hook.conf` names one, which a `script-opts` entry
+would override. Where nothing is bundled (a Linux build, the Flatpak, a build
+from the source tree) the search is the hook's own, unchanged, and the hook is
+told no `ytdl_path` unless the preference says. ffmpeg for downloads goes the same
 way (`downloads::Ffmpeg`): an `ffmpeg-location` in Patina's yt-dlp options,
 else the bundled copy, passed as `--ffmpeg-location` (so it wins over one in
 the user's own yt-dlp configuration file, which yt-dlp reads before its
