@@ -239,12 +239,15 @@ unpack() {
 # screenshot encoders (png, mjpeg) are all among them. --pkg-config-flags
 # =--static, so that configure's link tests see what the static OpenSSL
 # needs; each other library in the prefix is a dylib all the same.
+# --extra-libs=-liconv: with --disable-autodetect, configure looks for
+# iconv only in libc, which on macOS hasn't it, and leaves iconv on all the
+# same, so libavcodec failed to link; macOS's own is /usr/lib/libiconv.
 ffmpeg_common=(
     --enable-shared --disable-static
     --install-name-dir=@rpath
     --disable-programs --disable-doc --disable-debug
     --disable-autodetect
-    --enable-zlib --enable-bzlib --enable-iconv
+    --enable-zlib --enable-bzlib --enable-iconv --extra-libs=-liconv
     --enable-videotoolbox --enable-audiotoolbox
     --enable-openssl --enable-libdav1d --enable-libwebp
     --disable-indevs --enable-indev=lavfi --disable-outdevs
