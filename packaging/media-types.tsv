@@ -13,6 +13,8 @@ avi	video	video/vnd.avi;video/x-msvideo;video/avi;video/msvideo;video/x-avi
 divx	video	video/vnd.avi;video/divx;video/vnd.divx
 dv	video	video/dv
 f4v	video	video/mp4
+flc	video	video/x-flic;video/fli;video/x-fli;video/x-flc
+fli	video	video/x-flic;video/fli;video/x-fli;video/x-flc
 flv	video	video/x-flv;video/flv
 h264	video
 hevc	video
@@ -20,7 +22,7 @@ m2ts	video	video/mp2t
 m2v	video	video/mpeg
 m4v	video	video/mp4;video/x-m4v
 mk3d	video	video/matroska-3d
-mkv	video	video/matroska;video/x-matroska
+mkv	video	video/matroska;video/x-matroska;application/x-matroska
 mov	video	video/quicktime
 mp4	video	video/mp4;video/mp4v-es
 mpeg	video	video/mpeg
@@ -32,6 +34,7 @@ ogv	video	video/ogg;video/x-theora+ogg
 qt	video	video/quicktime
 rm	video	application/vnd.rn-realmedia
 rmvb	video	application/vnd.rn-realmedia;application/vnd.rn-realmedia-vbr
+rv	video	video/vnd.rn-realvideo;video/x-real-video
 ts	video	video/mp2t
 vob	video	video/mpeg
 webm	video	video/webm
