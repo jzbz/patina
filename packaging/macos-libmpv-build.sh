@@ -145,7 +145,7 @@ mpv_patch="$here/macos-libmpv-view-without-vulkan.patch"
 minos=11.0
 
 # The sources build needs, in no particular order, and the two tools'.
-sources="MPV LIBPLACEBO GLAD JINJA MARKUPSAFE FAST_FLOAT LIBASS FREETYPE HARFBUZZ FRIBIDI LUAJIT UCHARDET DAV1D OPENSSL LIBWEBP FFMPEG"
+sources="MPV LIBPLACEBO GLAD JINJA MARKUPSAFE FAST_FLOAT VULKAN_HEADERS LIBASS FREETYPE HARFBUZZ FRIBIDI LUAJIT UCHARDET DAV1D OPENSSL LIBWEBP FFMPEG"
 tool_sources="NASM PKGCONF"
 
 # The order build builds them in: each needs only what comes before it.
@@ -659,13 +659,15 @@ build_libplacebo() {
     source_tree LIBPLACEBO "$src"
     license libplacebo "$src" LICENSE
     # A tag's archive holds its submodules as empty directories.
-    for sub in glad jinja markupsafe fast_float; do
+    for sub in glad jinja markupsafe fast_float Vulkan-Headers; do
         rmdir "$src/3rdparty/$sub"
-        name=$(printf '%s' "$sub" | tr '[:lower:]' '[:upper:]')
+        name=$(printf '%s' "$sub" | tr '[:lower:]-' '[:upper:]_')
         source_tree "$name" "$src/3rdparty/$sub"
     done
     # glad generates the OpenGL loader that is compiled in, and fast_float
-    # is a header that is; jinja and markupsafe only run at build time.
+    # is a header that is; jinja and markupsafe only run at build time, and
+    # Vulkan-Headers only gives the types the Vulkan stubs, built without
+    # Vulkan, are declared with.
     license libplacebo-glad "$src/3rdparty/glad" LICENSE
     license libplacebo-fast_float "$src/3rdparty/fast_float" LICENSE-MIT
     meson_project "$src" "$work/build/libplacebo" \
