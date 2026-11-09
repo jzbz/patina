@@ -911,6 +911,20 @@ impl History {
         }
     }
 
+    /// Gives `path`'s entry `title` in place of one of `fallbacks`, names it
+    /// was recorded under for want of one; whether it changed. A title
+    /// already there stays.
+    pub fn retitle(&mut self, path: &str, title: &str, fallbacks: &[&str]) -> bool {
+        let fallback = |name: &str| !name.is_empty() && fallbacks.contains(&name);
+        match self.entries.iter_mut().find(|entry| entry.path == path) {
+            Some(entry) if fallback(&entry.title) && !title.is_empty() && !fallback(title) => {
+                entry.title = title.to_owned();
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn recent(&self, limit: usize) -> impl Iterator<Item = &HistoryEntry> {
         self.entries.iter().take(limit)
     }
@@ -1501,6 +1515,37 @@ mod tests {
         assert_eq!(paths, ["a", "b"]);
         history.update_progress("b", 30.0, 60.0);
         assert_eq!(history.entries[1].position, 30.0);
+    }
+
+    /// A web address recorded under its last part, for want of a title,
+    /// gets the title mpv gives later; a title it already has stays.
+    #[test]
+    fn history_takes_a_title_that_comes_late() {
+        let mut history = History::default();
+        let url = "https://www.youtube.com/watch?v=5xAgp6i9lUQ";
+        history.record(HistoryEntry {
+            path: url.into(),
+            title: "watch?v=5xAgp6i9lUQ".into(),
+            played_at: 1,
+            duration: 0.0,
+            position: 0.0,
+            section: false,
+        });
+        // As App::retitle_history gives them: mpv's stand-in (its
+        // `filename`), then Patina's, which for an address is all of it.
+        let full = crate::player::state::file_name(url);
+        assert_eq!(full, url);
+        assert!(!history.retitle(url, "Big Buck Bunny Trailer", &[full.as_str()]));
+        let fallbacks = ["watch?v=5xAgp6i9lUQ", full.as_str()];
+        assert!(!history.retitle(url, "", &fallbacks));
+        assert!(!history.retitle(url, "watch?v=5xAgp6i9lUQ", &fallbacks));
+        assert!(!history.retitle("https://elsewhere", "Other", &fallbacks));
+        // mpv may have had no stand-in either.
+        assert!(!history.retitle(url, "Big Buck Bunny Trailer", &["", full.as_str()]));
+        assert!(history.retitle(url, "Big Buck Bunny Trailer", &fallbacks));
+        assert_eq!(history.entries[0].title, "Big Buck Bunny Trailer");
+        assert!(!history.retitle(url, "Something else", &fallbacks));
+        assert_eq!(history.entries[0].title, "Big Buck Bunny Trailer");
     }
 
     #[test]

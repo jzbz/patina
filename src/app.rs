@@ -1483,6 +1483,23 @@ impl App {
         self.history_changed();
     }
 
+    /// yt-dlp's title for `path`, a web video whose History entry was
+    /// recorded, when it loaded, before mpv had it (PlayerController::
+    /// title_from_ytdl): under mpv's stand-in, its `filename`, the
+    /// address's last part, or under Patina's when mpv had none at all.
+    pub fn retitle_history(&self, path: &str, title: &str, filename: &str) {
+        if !self.prefs().record_history {
+            return;
+        }
+        let changed = self
+            .history
+            .borrow_mut()
+            .retitle(path, title, &[filename, &file_name(path)]);
+        if changed {
+            self.history_changed();
+        }
+    }
+
     pub fn update_history(&self, path: &str, position: f64, duration: f64) {
         if path.is_empty() || !self.prefs().record_history {
             return;

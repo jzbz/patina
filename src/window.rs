@@ -1255,10 +1255,13 @@ impl PlayerController {
                     userdata: REPLY_YTDL,
                     result,
                 } => {
-                    let media = result
+                    let json = result
                         .ok()
-                        .and_then(|(_, json)| json.as_str().and_then(ytdl::Media::parse))
-                        .map(Rc::new);
+                        .and_then(|(_, json)| json.as_str().map(str::to_owned));
+                    if let Some(title) = json.as_deref().and_then(ytdl::title) {
+                        self.title_from_ytdl(&title);
+                    }
+                    let media = json.as_deref().and_then(ytdl::Media::parse).map(Rc::new);
                     self.set_online(media);
                 }
                 Event::GetPropertyReply {
@@ -5020,6 +5023,33 @@ impl PlayerController {
     }
 
     // ---- Online video ---------------------------------------------------
+
+    /// yt-dlp's title for the web video that has just loaded, for its
+    /// History entry, which was recorded as it loaded and may have mpv's
+    /// stand-in, its `filename`, for want of one: mpv 0.42's yt-dlp hook
+    /// gives the title later than 0.41's did (player::give_ytdl_title
+    /// gives mpv the title in time where it would have none at all). By the
+    /// file's path, which still names it here: the reply comes before mpv
+    /// says the next file has begun. A Jellyfin item's and a YouTube
+    /// section video's titles are Patina's.
+    fn title_from_ytdl(&self, title: &str) {
+        if self.jellyfin.borrow().is_some() {
+            return;
+        }
+        let state = self.state.borrow();
+        if self.section_title(&state.path).is_some() {
+            return;
+        }
+        let (path, filename) = (state.path.clone(), state.filename.clone());
+        drop(state);
+        // Deferred: the app may be borrowing its windows right now.
+        if let Some(app) = self.app.upgrade() {
+            let title = title.to_owned();
+            Timer::single_shot(Duration::ZERO, move || {
+                app.retitle_history(&path, &title, &filename)
+            });
+        }
+    }
 
     /// Fills the Video Quality and Audio Quality menus for what yt-dlp said
     /// about the file (or empties them).

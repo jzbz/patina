@@ -18,6 +18,10 @@ struct Info {
     original_url: Option<String>,
     #[serde(default, rename = "_type")]
     kind: Option<String>,
+    /// yt-dlp's generic answer for a plain media address, whose title it
+    /// makes up from the address.
+    #[serde(default)]
+    direct: Option<bool>,
     #[serde(default)]
     format_id: Option<String>,
     #[serde(default)]
@@ -141,6 +145,17 @@ pub struct Media {
     pub channel_id: Option<String>,
     /// A live stream, whose end moves on with it.
     pub live: bool,
+}
+
+/// yt-dlp's title for one video, from its JSON: None for a playlist, a
+/// plain media address's generic answer (whose title is made up from the
+/// address, not a site's) or no title.
+pub fn title(json: &str) -> Option<String> {
+    let info: Info = serde_json::from_str(json).ok()?;
+    if info.kind.as_deref().is_some_and(|kind| kind != "video") || info.direct == Some(true) {
+        return None;
+    }
+    info.title.filter(|title| !title.trim().is_empty())
 }
 
 impl Media {
@@ -358,6 +373,22 @@ fn audio_formats(formats: &[Format]) -> Vec<AudioFormat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// yt-dlp's title for one video, not for a playlist, a plain media
+    /// address's generic answer or an empty one.
+    #[test]
+    fn a_videos_title_and_no_other() {
+        assert_eq!(
+            title(r#"{"_type": "video", "title": "Big Buck Bunny Trailer"}"#).as_deref(),
+            Some("Big Buck Bunny Trailer")
+        );
+        assert_eq!(title(r#"{"title": "No type"}"#).as_deref(), Some("No type"));
+        assert_eq!(title(r#"{"_type": "playlist", "title": "A list"}"#), None);
+        assert_eq!(title(r#"{"title": "radio", "direct": true}"#), None);
+        assert_eq!(title(r#"{"title": "  "}"#), None);
+        assert_eq!(title(r#"{"id": "x"}"#), None);
+        assert_eq!(title("not json"), None);
+    }
 
     /// A trimmed-down version of what yt-dlp says about a YouTube video.
     const VIDEO: &str = r#"{

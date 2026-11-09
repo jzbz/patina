@@ -50,6 +50,12 @@ pub const HOOK_LOAD: u64 = 1;
 /// scripts' priorities are 50 more than they say: the yt-dlp hook's 10 is
 /// -40, and this is a script's 0.
 const HOOK_LOAD_PRIORITY: i32 = -50;
+/// Userdata of the `on_preloaded` hook: mpv has opened a file and waits
+/// before it loads it (`give_ytdl_title`), handled on the event thread.
+const HOOK_PRELOADED: u64 = 2;
+/// After mpv's yt-dlp hook's own (a script's 10 is -40), so that a title it
+/// gives there counts.
+const HOOK_PRELOADED_PRIORITY: i32 = 50;
 
 pub struct Player {
     mpv: Arc<Mpv>,
@@ -173,6 +179,9 @@ impl Player {
             }
         }
         if let Err(error) = mpv.hook_add(HOOK_LOAD, "on_load", HOOK_LOAD_PRIORITY) {
+            log::warn!("{error}");
+        }
+        if let Err(error) = mpv.hook_add(HOOK_PRELOADED, "on_preloaded", HOOK_PRELOADED_PRIORITY) {
             log::warn!("{error}");
         }
 
@@ -303,6 +312,17 @@ fn pump_events(mpv: &Mpv, hook: &PendingHook, sender: &async_channel::Sender<Vec
                 log_mpv_message(message);
                 message.prefix == "ytdl_hook" && message.level == "error"
             }
+            Event::Hook {
+                userdata: HOOK_PRELOADED,
+                id,
+                ..
+            } => {
+                give_ytdl_title(mpv);
+                if let Err(error) = mpv.hook_continue(*id) {
+                    log::warn!("{error}");
+                }
+                false
+            }
             Event::Hook { id, .. } => hook.waiting(mpv, *id),
             _ => true,
         });
@@ -313,6 +333,38 @@ fn pump_events(mpv: &Mpv, hook: &PendingHook, sender: &async_channel::Sender<Vec
         if shutdown {
             break;
         }
+    }
+}
+
+/// Gives a web video yt-dlp's title while mpv holds it, opened but not yet
+/// loaded, if mpv has only its stand-in: the address's last part, its
+/// `filename`. mpv 0.41's yt-dlp hook set the title before it opened the
+/// file; 0.42's gives it later, with the stream's tags, and not at all for
+/// a single-format answer. Set here, the title is the file's, whatever
+/// plays next, and is there when the window records the file in History.
+/// Nothing changes where mpv has a title (a YouTube section video's, the
+/// user's own `force-media-title`, the tags'), nor where yt-dlp didn't run
+/// (a Jellyfin item, a local file), nor for its generic answer for a plain
+/// media address (`ytdl::title`).
+fn give_ytdl_title(mpv: &Mpv) {
+    let Some(title) = mpv
+        .get_property("user-data/mpv/ytdl/json-subprocess-result/stdout")
+        .ok()
+        .and_then(|json| json.as_str().and_then(crate::ytdl::title))
+    else {
+        return;
+    };
+    let text = |name: &str| {
+        mpv.get_property(name)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    };
+    let media_title = text("media-title");
+    if (media_title.is_empty() || media_title == text("filename"))
+        && let Err(error) = mpv.set_property("file-local-options/force-media-title", title.as_str())
+    {
+        log::warn!("{error}");
     }
 }
 
@@ -584,6 +636,63 @@ mod tests {
         );
         player.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A web video gets yt-dlp's title while mpv holds it, only where mpv
+    /// has none of its own, and for that file only.
+    #[test]
+    fn a_web_video_gets_yt_dlps_title_in_time() {
+        let Some(mpv) = crate::mpv::testing::headless() else {
+            return;
+        };
+        mpv.hook_add(HOOK_PRELOADED, "on_preloaded", HOOK_PRELOADED_PRIORITY)
+            .unwrap();
+        let answer = |json: &str| {
+            mpv.set_property(
+                "user-data/mpv/ytdl/json-subprocess-result",
+                Value::Map(vec![("stdout".into(), json.into())]),
+            )
+            .unwrap();
+        };
+        let play = |path: &str| -> String {
+            mpv.command(&["loadfile", path]).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                assert!(std::time::Instant::now() < deadline, "{path}: no hook");
+                if let Some(Event::Hook {
+                    userdata: HOOK_PRELOADED,
+                    id,
+                    ..
+                }) = mpv.wait_event(0.5)
+                {
+                    give_ytdl_title(&mpv);
+                    mpv.hook_continue(id).unwrap();
+                    break;
+                }
+            }
+            crate::mpv::testing::wait_for(&mpv, |event| matches!(event, Event::PlaybackRestart));
+            let title = mpv.get_property("media-title").unwrap();
+            mpv.command(&["stop"]).unwrap();
+            crate::mpv::testing::wait_for(&mpv, |event| matches!(event, Event::EndFile { .. }));
+            title.as_str().unwrap_or_default().to_owned()
+        };
+        const VIDEO: &str = "av://lavfi:sine=frequency=440";
+        answer(r#"{"_type": "video", "title": "Big Buck Bunny Trailer"}"#);
+        assert_eq!(play(VIDEO), "Big Buck Bunny Trailer");
+        // For that file only: the next has its own stand-in.
+        mpv.set_property(
+            "user-data/mpv/ytdl/json-subprocess-result",
+            Value::Map(Vec::new()),
+        )
+        .unwrap();
+        assert_ne!(play(VIDEO), "Big Buck Bunny Trailer");
+        // Not yt-dlp's generic answer for a plain media address.
+        answer(r#"{"title": "made up", "direct": true}"#);
+        assert_ne!(play(VIDEO), "made up");
+        // Nor over a title mpv has: the user's own, say.
+        answer(r#"{"_type": "video", "title": "Big Buck Bunny Trailer"}"#);
+        mpv.set_property("force-media-title", "Mine").unwrap();
+        assert_eq!(play(VIDEO), "Mine");
     }
 
     #[test]
