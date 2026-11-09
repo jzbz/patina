@@ -1,19 +1,26 @@
-# Builds the libmpv Patina.app is to carry from source, as
+# Builds the libmpv Patina.app carries from source, as
 # packaging/macos-libmpv-build.sh does it: mpv 0.42 and every library it
 # loads, from the sources pinned in packaging/macos-libmpv.env (FFmpeg's in
 # packaging/bundled-tools.env), for macOS 11, arm64 and x86_64 joined into
 # one universal set. Then it checks the set, loads it on both architectures,
 # and runs Patina's tests against it.
 #
-# This is how the build is proved before anything ships it: release.yml
-# still bundles IINA's prebuilt libraries (packaging/macos-libmpv.txt) until
-# it is switched over to this build, and nothing here publishes anything.
-# Run it by hand, on the branch to try (a dispatch takes a branch or a tag,
-# not a commit):
+# release.yml calls it for every build, with the commit its resolve job
+# found as `ref`, and its macos job bundles the artifact libmpv-macos only
+# once every job here has passed. The artifact holds the universal
+# libraries, their licences and a SHA256SUMS of them, and the same
+# SHA256SUMS comes back to the caller as the output sha256sums, which the
+# caller checks the download against; libmpv-macos-<arch> holds each
+# architecture's libraries and its build logs. Nothing here publishes
+# anything.
+#
+# On its own it runs for a push to master that changes the build: its
+# script, its pins, FFmpeg's pin (bundled-tools.env, which holds yt-dlp's
+# too, so a yt-dlp bump runs it as well), the patch, the smoke test or this
+# file. A bump then proves itself on master rather than first in a release.
+# And by hand, on a branch to try (a dispatch takes a branch or a tag, not
+# a commit):
 #   gh workflow run macos-libmpv.yml --repo jzbz/patina --ref <branch>
-# The artifact libmpv-macos holds the universal libraries, their licences
-# and a SHA256SUMS of them; libmpv-macos-<arch> holds each architecture's
-# libraries and its build logs.
 #
 # Every run builds from nothing, caching nothing, as release.yml does (see
 # the comment above its `permissions`). Both halves are built on Apple
@@ -27,12 +34,42 @@
 name: macos-libmpv
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - packaging/macos-libmpv-build.sh
+      - packaging/macos-libmpv.env
+      - packaging/macos-build-tools.txt
+      - packaging/macos-libmpv-smoke.py
+      - packaging/macos-libmpv-view-without-vulkan.patch
+      - packaging/bundled-tools.env
+      - .github/workflows/macos-libmpv.yml
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "The commit to build; empty builds the caller's own"
+        type: string
+        required: false
+        default: ""
+    outputs:
+      sha256sums:
+        description: "The SHA256SUMS in the artifact libmpv-macos, as the job that checked the libraries wrote it"
+        value: ${{ jobs.universal.outputs.sha256sums }}
 
-# A second run of the same ref makes the first one pointless.
+# A second push or dispatch of the same ref makes the first run pointless,
+# so it cancels it: a newer push to master carries the older one's change
+# too. A call is another matter. A called workflow runs in its
+# caller's github context, so github.workflow is the caller's name and
+# github.ref the caller's ref, and two release builds dispatched on master
+# share that ref even when they build different commits, which
+# release.yml's own concurrency lets run side by side. A group made of
+# those would let one release run's call cancel the other's, so a call
+# gets a group of its own run's and cancels nothing: the caller's
+# concurrency alone decides which of its runs go on.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow == 'macos-libmpv' && format('macos-libmpv-{0}', github.ref) || format('macos-libmpv-call-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.workflow == 'macos-libmpv' }}
 
 # Read-only, and nothing after a checkout needs git credentials. Actions
 # are pinned by commit SHA, as in ci.yml and release.yml.
@@ -62,6 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Xcode
@@ -148,9 +186,12 @@ jobs:
     needs: [build]
     runs-on: macos-26
     timeout-minutes: 20
+    outputs:
+      sha256sums: ${{ steps.sums.outputs.sha256sums }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       # lipo, install_name_tool, strip, vtool and codesign from the same
@@ -195,8 +236,14 @@ jobs:
         timeout-minutes: 5
         run: arch -x86_64 /usr/bin/python3 -I packaging/macos-libmpv-smoke.py "$RUNNER_TEMP/libmpv-macos/libmpv.2.dylib" --arch x86_64
 
-      # Only what passed everything above is handed on.
+      # Only what passed everything above is handed on. The SHA256SUMS goes
+      # into the artifact and out as the job's output too: an output travels
+      # apart from the artifact, so a caller that checks the download
+      # against it takes exactly the files these steps checked (release.yml
+      # does, before bundling them). Each line of the file begins with a
+      # digest, so none can be the delimiter and end the value early.
       - name: SHA256SUMS
+        id: sums
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/libmpv-macos"
@@ -204,6 +251,11 @@ jobs:
           sums=$(while IFS= read -r file; do shasum -a 256 "$file"; done <<< "$files")
           printf '%s\n' "$sums" > SHA256SUMS
           cat SHA256SUMS
+          {
+            echo "sha256sums<<END_OF_SHA256SUMS"
+            cat SHA256SUMS
+            echo "END_OF_SHA256SUMS"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -233,6 +285,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       # rust-toolchain.toml pins the compiler, as in ci.yml.

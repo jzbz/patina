@@ -51,8 +51,11 @@ explains the design.
   public channels and generic searches, as an address has a budget and a log
   of a real stream holds its address.
 - `release.yml` builds every package: the Flatpak bundles
-  (`packaging/video.patina.Patina.yml`), a universal Patina.app (with IINA's
-  libmpv, pinned in `packaging/macos-libmpv.txt`), and a Windows folder
+  (`packaging/video.patina.Patina.yml`), a universal Patina.app (with a
+  libmpv built from the sources pinned in `packaging/macos-libmpv.env` by
+  `packaging/macos-libmpv-build.sh`, in `.github/workflows/macos-libmpv.yml`,
+  which `release.yml` calls and which also runs by itself for a push to
+  master that changes the build), and a Windows folder
   (patina.exe and mpv's own libmpv-2.dll, pinned in
   `packaging/windows-deps.env`) with its installer
   (`packaging/windows/patina.iss`). Patina.app and the Windows folder also
@@ -114,9 +117,8 @@ The runbook is the header of `.github/workflows/release.yml` and
 1. Before tagging: the version in `Cargo.toml`, and a
    `<release version="X.Y.Z" date="YYYY-MM-DD">` in
    `packaging/linux/video.patina.Patina.metainfo.xml` (the workflow's
-   version job checks both); the screenshot URLs there pinned to a commit;
-   and a live pin in `packaging/macos-libmpv.txt` (IINA replaces its files
-   in place), since release builds download it afresh. And yt-dlp in `packaging/bundled-tools.env`
+   version job checks both); and the screenshot URLs there pinned to a
+   commit. And yt-dlp in `packaging/bundled-tools.env`
    moved to its newest release, every time: the macOS and Windows packages
    carry it, Patina doesn't update it, and YouTube breaks old ones; and the
    Flatpak manifest's yt-dlp with it. The comment at the top of that file

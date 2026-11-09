@@ -65,11 +65,85 @@ package.
 
 ## macOS (Patina.app/Contents/Frameworks)
 
-- **libmpv.2.dylib and the libraries beside it**: mpv 0.41.0 with FFmpeg,
-  libass, libplacebo, LuaJIT and the rest, as IINA builds them for its own
-  app (<https://iina.io>, <https://github.com/iina/iina>). They include GPL
-  parts, so Patina.app as a whole is under the GPL. Each library's name says
-  which project it comes from.
+libmpv.2.dylib and the 18 libraries it loads, built for Patina from each
+project's source release by `packaging/macos-libmpv-build.sh` in Patina's
+repository: for arm64 and for x86_64, each for macOS 11, joined into one
+universal file of each. None of them is used under the GPL: the one part
+of Patina.app that is, yt-dlp.app below, is a program of its own that
+Patina runs. Each project's licence texts are in
+Contents/Resources/licenses, named `<project>-<file>`. Their
+corresponding source is the tarballs named below, each pinned by its
+SHA-256 in `packaging/macos-libmpv.env` (FFmpeg's in
+`packaging/bundled-tools.env`), unmodified but for the one patch named
+under mpv, together with `packaging/macos-libmpv-build.sh`, those two
+files, `packaging/macos-build-tools.txt` and
+`packaging/macos-libmpv-view-without-vulkan.patch` at the release's tag in
+<https://github.com/jzbz/patina>, which fetch, check, configure and build
+them; `packaging/macos-libmpv-build.sh flags` prints the options FFmpeg and
+mpv are configured with.
+
+- **mpv** 0.42.0, libmpv.2.dylib: built with `-Dgpl=false`, which leaves
+  out every part of mpv that is GPL only, so libmpv is under the LGPL 2.1 or
+  later (mpv-LICENSE.LGPL; mpv-Copyright says which files are under other
+  licences). Patched with `packaging/macos-libmpv-view-without-vulkan.patch`,
+  without which 0.42.0 does not compile without Vulkan.
+  <https://github.com/mpv-player/mpv/archive/refs/tags/v0.42.0.tar.gz>
+- **FFmpeg** 9.0.2, libavcodec.63, libavdevice.63, libavfilter.12,
+  libavformat.63, libavutil.61, libswresample.7 and libswscale.10: from
+  the same tarball as the ffmpeg described under "ffmpeg" below, and like
+  it configured without `--enable-gpl`, `--enable-version3` or
+  `--enable-nonfree`, which FFmpeg's configure makes LGPL 2.1 or later.
+  libavformat has OpenSSL linked into it, for https (next item). OpenSSL 3
+  is under the Apache License 2.0, which the FSF counts compatible with
+  version 3 of the LGPL but not with version 2.1; FFmpeg's LICENSE.md calls
+  OpenSSL compatible with the LGPL without naming a version. So these
+  libraries are passed on under the LGPL version 3 or later, which the "or
+  later" of FFmpeg's licence allows. Both LGPL texts are included
+  (ffmpeg-COPYING.LGPLv3 and ffmpeg-COPYING.LGPLv2.1), with the GPLv3's
+  that the LGPLv3 builds on (ffmpeg-COPYING.GPLv3) and FFmpeg's
+  ffmpeg-LICENSE.md. <https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz>
+- **OpenSSL** 3.5.9, its libssl and libcrypto linked statically into
+  libavformat.63.dylib rather than shipped as files of their own: Apache
+  License 2.0 (openssl-LICENSE.txt).
+  <https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz>
+- **libplacebo** 7.387.0, libplacebo.387.dylib, built for OpenGL alone:
+  LGPL 2.1 or later (libplacebo-LICENSE).
+  <https://github.com/haasn/libplacebo/archive/refs/tags/v7.387.0.tar.gz>.
+  Compiled into it are the OpenGL loader that glad generates, under glad's
+  licence (libplacebo-glad-LICENSE: MIT for glad, and the Khronos licences
+  of the specifications the loader is generated from), and fast_float,
+  under the MIT licence (libplacebo-fast_float-LICENSE-MIT), each from the
+  commit libplacebo's tag names as its submodule (macos-libmpv.env lists
+  them).
+- **libass** 0.17.5, libass.9.dylib: ISC (libass-COPYING).
+  <https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz>
+- **FreeType** 2.15.0, libfreetype.6.dylib: under the FreeType License
+  (freetype-FTL.TXT), one of the two licences FreeType offers
+  (freetype-LICENSE.TXT); as it asks, portions of this software are
+  copyright © 2026 The FreeType Project (<https://freetype.org>). All rights
+  reserved. Its BDF and PCF drivers and fthash, which are compiled in, are
+  under an X11-style licence (freetype-bdf-README, freetype-pcf-README).
+  <https://download.savannah.gnu.org/releases/freetype/freetype-2.15.0.tar.xz>
+- **HarfBuzz** 15.1.0, libharfbuzz.0.dylib: the "Old MIT" licence
+  (harfbuzz-COPYING); its Universal Shaping Engine table is generated from
+  Microsoft's data files, under the MIT licence (harfbuzz-ms-use-COPYING).
+  <https://github.com/harfbuzz/harfbuzz/releases/download/15.1.0/harfbuzz-15.1.0.tar.xz>
+- **GNU FriBidi** 1.0.18, libfribidi.0.dylib: LGPL 2.1 or later
+  (fribidi-COPYING).
+  <https://github.com/fribidi/fribidi/releases/download/v1.0.18/fribidi-1.0.18.tar.xz>
+- **LuaJIT** 2.1, at commit 8e6520a7aecd0517e792b359afbbfd7274791f5f,
+  libluajit-5.1.2.dylib: MIT (luajit-COPYRIGHT).
+  <https://github.com/LuaJIT/LuaJIT/archive/8e6520a7aecd0517e792b359afbbfd7274791f5f.tar.gz>
+- **uchardet** 0.0.8, libuchardet.0.dylib: the MPL 1.1, the GPL 2.0 or
+  later or the LGPL 2.1 or later, at the recipient's choice, as its source
+  files say; uchardet-COPYING is the MPL's text.
+  <https://www.freedesktop.org/software/uchardet/releases/uchardet-0.0.8.tar.xz>
+- **dav1d** 1.5.4, libdav1d.7.dylib: BSD 2-Clause (dav1d-COPYING).
+  <https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz>
+- **libwebp** 1.6.0, libwebp.7.dylib, libwebpmux.3.dylib and
+  libsharpyuv.0.dylib: BSD 3-Clause (libwebp-COPYING), with Google's patent
+  grant (libwebp-PATENTS).
+  <https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz>
 
 ## macOS (Patina.app/Contents/Helpers)
 

@@ -315,17 +315,18 @@ xattr -cr "$APP"
 
 # ----------------------------------------------------------------- contents
 # The code in a Patina.app is its executable, the libraries in
-# Contents/Frameworks (libmpv and everything it links, from macos-libmpv.txt),
-# and in Contents/Helpers ffmpeg (built by ffmpeg.sh) and yt-dlp.app (yt-dlp's
-# folder build, pinned in bundled-tools.env and laid out by macos-tools.sh):
-# its launcher, and the libraries and extension modules in its Frameworks,
-# Python.framework's among them. That is all macos-bundle.sh puts there and
-# all this signs. Anything else that is code would go out unsigned and come
-# back from the notary as a rejection, ten minutes later, so it stops the
-# run here; so does anything in a directory under Patina's own Frameworks,
-# since a nested framework or bundle is signed as a bundle, which this does
-# only for yt-dlp.app's, and anything in yt-dlp.app's Frameworks that is not
-# code, which codesign would sign into extended attributes.
+# Contents/Frameworks (libmpv and everything it links, built by
+# macos-libmpv-build.sh), and in Contents/Helpers ffmpeg (built by
+# ffmpeg.sh) and yt-dlp.app (yt-dlp's folder build, pinned in
+# bundled-tools.env and laid out by macos-tools.sh): its launcher, and the
+# libraries and extension modules in its Frameworks, Python.framework's
+# among them. That is all macos-bundle.sh puts there and all this signs.
+# Anything else that is code would go out unsigned and come back from the
+# notary as a rejection, ten minutes later, so it stops the run here; so
+# does anything in a directory under Patina's own Frameworks, since a nested
+# framework or bundle is signed as a bundle, which this does only for
+# yt-dlp.app's, and anything in yt-dlp.app's Frameworks that is not code,
+# which codesign would sign into extended attributes.
 step "Checking what the bundle holds"
 find "$APP/Contents" -type f >"$WORK/files"
 LIBS=0
@@ -411,12 +412,13 @@ done
 # signing anything inside it afterwards would break the seal. (--deep IS still
 # correct for verifying, below.)
 #
-# The libraries are IINA's builds, signed ad hoc by macos-bundle.sh, which
-# --force replaces. Signed with the app's own Developer ID, they pass the
-# hardened runtime's library validation when Patina loads libmpv and libmpv
-# loads the rest, which is why the entitlements can leave
-# disable-library-validation out. They get no entitlements: those belong to a
-# process, are read from its main executable, and mean nothing on a library.
+# The libraries are Patina's own build (macos-libmpv-build.sh), signed ad hoc
+# by macos-bundle.sh, which --force replaces. Signed with the app's own
+# Developer ID, they pass the hardened runtime's library validation when
+# Patina loads libmpv and libmpv loads the rest, which is why the
+# entitlements can leave disable-library-validation out. They get no
+# entitlements: those belong to a process, are read from its main
+# executable, and mean nothing on a library.
 #
 # The helpers are programs of their own, so each is a main executable with
 # its own hardened runtime and entitlements of its own, here none. ffmpeg

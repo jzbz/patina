@@ -492,6 +492,10 @@ build_freetype() {
     local src="$work/src/freetype"
     source_tree FREETYPE "$src"
     license freetype "$src" LICENSE.TXT docs/FTL.TXT
+    # The BDF and PCF drivers and fthash, all compiled in, are under an
+    # X11-style licence whose notice has to ship with them.
+    license freetype-bdf "$src/src/bdf" README
+    license freetype-pcf "$src/src/pcf" README
     # HVF: freetype links Apple's libhvf when the SDK has its header, a
     # library macOS 11 doesn't have.
     meson_project "$src" "$work/build/freetype" \
@@ -510,6 +514,9 @@ build_harfbuzz() {
     local src="$work/src/harfbuzz"
     source_tree HARFBUZZ "$src"
     license harfbuzz "$src" COPYING
+    # The Universal Shaping Engine's table is generated from Microsoft's
+    # data files, under the MIT licence, whose notice has to ship with it.
+    license harfbuzz-ms-use "$src/src/ms-use" COPYING
     # libharfbuzz alone: raster, vector, gpu and subset are libraries of
     # their own, and on by default.
     meson_project "$src" "$work/build/harfbuzz" \
@@ -614,8 +621,9 @@ build_ffmpeg() {
     local src="$work/src/ffmpeg" build="$work/build/ffmpeg" config license
     source_tree FFMPEG "$src"
     # LGPL 2.1 or later as configured, and linked with OpenSSL, whose
-    # Apache License 2.0 goes with the LGPL's version 3, so both texts.
-    license ffmpeg "$src" LICENSE.md COPYING.LGPLv2.1 COPYING.LGPLv3
+    # Apache License 2.0 goes with the LGPL's version 3, so both LGPL texts,
+    # and the GPLv3's, which the LGPLv3 is written as additions to.
+    license ffmpeg "$src" LICENSE.md COPYING.LGPLv2.1 COPYING.LGPLv3 COPYING.GPLv3
     mkdir -p "$build"
     (cd "$build" && "$src/configure" --prefix="$prefix" \
         --enable-cross-compile --target-os=darwin "--arch=$arch" \

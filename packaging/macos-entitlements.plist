@@ -25,16 +25,17 @@
     MAP_JIT path behind that option, issue 1334). Built without it, LuaJIT maps
     ordinary anonymous memory and mprotect()s it executable, and allow-jit on
     its own does not prevent the kill; issue 1334 opens with exactly that
-    crash. The libluajit-5.1.2.dylib that macos-libmpv.txt pins is built
-    without the option: neither slice imports pthread_jit_write_protect_np,
-    and every mmap() in it passes MAP_PRIVATE|MAP_ANON (0x1002) and no MAP_JIT
-    (0x800). IINA, whose build it is, ships this entitlement for the same
-    reason (IINA commit a4ae19d replaced allow-jit with it, issue 3551).
+    crash. packaging/macos-libmpv-build.sh builds libluajit-5.1.2.dylib
+    without the option (nothing in its make command defines it), so LuaJIT
+    takes that path: ordinary anonymous memory, no MAP_JIT, and no call to
+    pthread_jit_write_protect_np. IINA, whose LuaJIT is built the same way,
+    ships this entitlement for the same reason (IINA commit a4ae19d replaced
+    allow-jit with it, issue 3551).
 
     macos-sign.sh checks the LuaJIT it is about to sign against this file and
-    stops if the two disagree. A refreshed macos-libmpv.txt that brings a
-    LuaJIT built with LUAJIT_ENABLE_OSX_HRT is the time to replace this
-    entitlement with allow-jit.
+    stops if the two disagree. A LuaJIT pin or build change that brings
+    LUAJIT_ENABLE_OSX_HRT is the time to replace this entitlement with
+    allow-jit.
 
     (FFmpeg's libswscale also makes generated code executable, on x86_64 and
     only for its fast-bilinear scaler, which mpv uses only when asked to.)

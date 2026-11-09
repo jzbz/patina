@@ -2,8 +2,12 @@
 # Lay out Patina.app around a universal binary, the libmpv it carries, and
 # the yt-dlp and ffmpeg it runs.
 #
-#   packaging/macos-bundle.sh <dir of libraries from macos-libmpv.sh> \
+#   packaging/macos-bundle.sh <dir of libraries from macos-libmpv-build.sh> \
 #                             <dir of tools from macos-tools.sh>
+#
+# The libraries are the folder `packaging/macos-libmpv-build.sh universal`
+# writes (release.yml takes it from the libmpv-macos job): libmpv.2.dylib
+# and every library it loads, and licenses/, their licence texts.
 #
 # Expects release builds for both aarch64-apple-darwin and
 # x86_64-apple-darwin. A .app is a directory of a particular shape with a
@@ -28,8 +32,19 @@ lipo -create \
 chmod +x "$app/Contents/MacOS/patina"
 
 # libmpv and what it links, where Patina looks first
-# (<executable>/../Frameworks) and where the executable's rpath points.
+# (<executable>/../Frameworks) and where the executable's rpath points:
+# every dylib in the folder, and only those, so SHA256SUMS or anything else
+# beside them stays out. And their licences, in a folder of their own in
+# Resources, under the names the build gave them (<project>-<file>, as
+# several projects have more than one). Not in Frameworks: macos-sign.sh
+# refuses anything in a folder there, which codesign would take for a
+# nested bundle.
+[ -f "$libs/libmpv.2.dylib" ] || { echo "$libs has no libmpv.2.dylib" >&2; exit 1; }
+[ -d "$libs/licenses" ] && [ -n "$(ls -A "$libs/licenses")" ] \
+    || { echo "$libs has no licenses/, which the libraries may not ship without" >&2; exit 1; }
 cp "$libs"/*.dylib "$app/Contents/Frameworks/"
+mkdir "$app/Contents/Resources/licenses"
+cp "$libs"/licenses/* "$app/Contents/Resources/licenses/"
 
 # yt-dlp.app and ffmpeg, by name rather than with a wildcard, in
 # Contents/Helpers: Apple's place for helper apps and tools, a code location
@@ -136,8 +151,9 @@ $(document_types)
 PLIST
 
 # Inside out, as macos-sign.sh signs it: signing a bundle checks what is
-# nested in it. Signing ad hoc replaces IINA's and yt-dlp's own signatures,
-# which a bundle signed by someone else could not keep anyway, and the
+# nested in it. Signing ad hoc replaces the signatures already there:
+# yt-dlp's own, which a bundle signed by someone else could not keep
+# anyway, the ad hoc ones the libmpv build gave the libraries, and the
 # linker's ad hoc one on ffmpeg's arm64 half. In yt-dlp.app every library
 # and extension module in its Frameworks comes first, then Python.framework,
 # then the app, which takes its identifier from its Info.plist; ffmpeg has

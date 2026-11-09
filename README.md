@@ -210,12 +210,16 @@ CI builds Patina and runs its tests on both. The self-contained packages
 below play video, and online video and downloads through the yt-dlp and
 ffmpeg they carry, on a Windows 11 VM and an Intel macOS VM, neither with a
 GPU. Most features have so far only been tried on Linux, and nothing yet on
-Apple Silicon or with the signed and notarised Patina.app. On macOS,
+Apple Silicon or with the signed and notarised Patina.app. Patina.app was
+tried with the libmpv it carried before; the one it is now built with has
+passed Patina's tests in CI on Apple Silicon, and loads and plays there
+under Rosetta too, but has not yet been tried in the app. On macOS,
 Homebrew's `mpv` provides libmpv. On Windows, put `libmpv-2.dll` beside
 `patina.exe`, from the `libmpv-v…-x86_64-w64-mingw32-lgpl.zip` on
 [mpv's releases](https://github.com/mpv-player/mpv/releases) (since 0.42.0).
-The release packages are self-contained: Patina.app carries IINA's libmpv,
-and the Windows folder has mpv's beside the exe.
+The release packages are self-contained: Patina.app carries a libmpv built
+from source for it (LGPL, by `packaging/macos-libmpv-build.sh`), and the
+Windows folder has mpv's beside the exe.
 
 ## Building and running
 
@@ -319,12 +323,15 @@ cargo fmt
 
 MIT. Patina is an independent project, not affiliated with IINA, YouTube or
 Google, and contains no IINA code or artwork. mpv, FFmpeg, Slint and the other
-dependencies keep their own licenses; note that mpv is GPL-licensed by
-default, which applies to builds that bundle it. The icons, the logo's
-glyph included, are [Lucide](https://lucide.dev)'s, under the ISC license
-(a few derived from Feather, MIT); see [ui/icons/LICENSE](ui/icons/LICENSE).
-The typeface is [IBM Plex Sans](https://github.com/IBM/plex), under the SIL
-Open Font License 1.1; see [ui/fonts/LICENSE](ui/fonts/LICENSE).
+dependencies keep their own licenses. mpv is GPL-licensed by default, and the
+Flatpak builds it so, which makes that package GPL; Patina.app and the Windows
+folder carry LGPL builds of libmpv (`-Dgpl=false`).
+[packaging/THIRD-PARTY.md](packaging/THIRD-PARTY.md) lists each package's
+libraries and licences. The icons, the logo's glyph included, are
+[Lucide](https://lucide.dev)'s, under the ISC license (a few derived from
+Feather, MIT); see [ui/icons/LICENSE](ui/icons/LICENSE). The typeface is
+[IBM Plex Sans](https://github.com/IBM/plex), under the SIL Open Font License
+1.1; see [ui/fonts/LICENSE](ui/fonts/LICENSE).
 
 Patina uses Slint under its royalty-free licence, which asks for this badge:
 

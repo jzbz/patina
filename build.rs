@@ -4,8 +4,11 @@ fn main() {
         .expect("failed to compile the Slint UI");
 
     // Patina.app carries libmpv and the libraries it needs in
-    // Contents/Frameworks, and they name each other by @rpath without an
-    // rpath of their own, so the executable supplies it. (The target's OS,
+    // Contents/Frameworks, where they name each other by @rpath. The ones
+    // packaging/macos-libmpv-build.sh builds carry an @loader_path rpath of
+    // their own, which is enough by itself; the executable's rpath to
+    // Frameworks stays as well, so that a set without one, as libraries
+    // built elsewhere often are, still loads from there. (The target's OS,
     // not this build script's.)
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path/../Frameworks");

@@ -93,14 +93,14 @@ concurrency:
 # would let whatever one manual run compiled decide what a release links.
 # What ships is compiled here, from nothing.
 #
-# The libmpv downloads are not cached either, though their scripts check
-# every file's digest even on a hit. packaging/macos-bundle.sh copies every
-# dylib in the folder it is given, not only the pinned ones, so a restored
-# folder holding one more file would ship it unchecked. The price is that a
-# release needs live pins: IINA replaces its files in place, and when it has
-# the download step fails and names the pin to refresh
-# (packaging/macos-libmpv.txt). The Windows libmpv is an asset of mpv's own
-# release, which stays (packaging/windows-deps.env).
+# Nor are the libraries: the macOS libmpv and everything it loads are built
+# from their pinned sources on every run (libmpv-macos below), and the
+# Windows libmpv, an asset of mpv's own release, is downloaded afresh and
+# checked against its digest (packaging/windows-deps.env).
+# packaging/macos-bundle.sh copies every dylib in the folder it is given,
+# whatever it is, so a restored folder holding one more file would ship it
+# unchecked; the macos job takes the folder only when it holds exactly the
+# files the build checked, each with the digest the build gave it.
 permissions:
   contents: read
 
@@ -1385,6 +1385,21 @@ jobs:
             patina-${{ env.LABEL }}-windows-x86_64.zip
           if-no-files-found: error
 
+  # The libmpv Patina.app carries, and every library it loads, built from
+  # source by .github/workflows/macos-libmpv.yml, the same workflow that runs
+  # on its own when the build changes: both architectures for macOS 11,
+  # joined, checked, loaded on both, and Patina's tests run against it, from
+  # the commit `resolve` found. Built afresh every run, like everything else
+  # here (see the comment above `permissions`). It hands the macos job the
+  # artifact libmpv-macos, and the artifact's SHA256SUMS as the output
+  # sha256sums, which that job checks the download against.
+  libmpv-macos:
+    name: libmpv for macOS
+    needs: [resolve, version]
+    uses: ./.github/workflows/macos-libmpv.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+
   # Not published from here, and unlike the Windows job that is not a matter
   # of confidence. What it cannot do is reach a user: Gatekeeper refuses an
   # unsigned .app downloaded from the web outright, offering to move it to
@@ -1402,7 +1417,7 @@ jobs:
   # need one per arch.
   macos:
     name: macOS (universal, signed by hand)
-    needs: [resolve, version]
+    needs: [resolve, version, libmpv-macos]
     # Two cold release builds, one per architecture.
     timeout-minutes: 90
     runs-on: macos-latest
@@ -1429,24 +1444,50 @@ jobs:
         timeout-minutes: 20
         run: packaging/ffmpeg.sh macos "$RUNNER_TEMP/ffmpeg-downloads" "$RUNNER_TEMP/ffmpeg-work" "$RUNNER_TEMP/ffmpeg"
 
-      # IINA's libmpv and the libraries it links, fetched afresh and checked
-      # against packaging/macos-libmpv.txt (see the comment above
-      # `permissions`). packaging/macos-bundle.sh copies every dylib in this
-      # folder into the bundle, so the folder has to hold exactly the pinned
-      # files and nothing else.
-      - name: Download the libraries
-        timeout-minutes: 10
+      # The libraries libmpv-macos built and checked. packaging/macos-bundle.sh
+      # copies every dylib in this folder into the bundle and its licences
+      # into Contents/Resources, so the folder has to hold exactly what that
+      # workflow checked and nothing else: its SHA256SUMS has to be the one
+      # it handed over as an output, every file has to match it, and nothing
+      # it doesn't list may be there. Which libraries make up the set is the
+      # build's own check (libmpv's closure, nothing more); here every name
+      # has to be a library at the top or a licence in licenses/.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: libmpv-macos
+          path: ${{ runner.temp }}/macos-libmpv
+
+      - name: Check the libraries
+        env:
+          SUMS: ${{ needs.libmpv-macos.outputs.sha256sums }}
         run: |
           set -euo pipefail
-          dir="$RUNNER_TEMP/macos-libmpv"
-          packaging/macos-libmpv.sh "$dir"
-          expected=$(grep -vE '^(#|$)' packaging/macos-libmpv.txt | awk '{print $2}' | LC_ALL=C sort)
-          found=$(cd "$dir" && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||' | LC_ALL=C sort)
-          if [ "$expected" != "$found" ]; then
-            echo "::error::$dir does not hold exactly the libraries pinned in packaging/macos-libmpv.txt"
-            diff <(echo "$expected") <(echo "$found") || true
+          cd "$RUNNER_TEMP/macos-libmpv"
+          if [ -z "$SUMS" ] || [ ! -f SHA256SUMS ] || [ "$(cat SHA256SUMS)" != "$(printf '%s\n' "$SUMS")" ]; then
+            echo "::error::the libmpv-macos artifact's SHA256SUMS is not the one the libmpv-macos job wrote"
             exit 1
           fi
+          shasum -a 256 -c SHA256SUMS
+          listed=$(sed 's/^[0-9a-f]\{64\}  //' SHA256SUMS | LC_ALL=C sort)
+          found=$(find . -mindepth 1 ! -path ./SHA256SUMS ! -path ./licenses | sed 's|^\./||' | LC_ALL=C sort)
+          if [ "$listed" != "$found" ]; then
+            echo "::error::the libmpv-macos artifact holds other files (>) than its SHA256SUMS lists (<)"
+            diff <(echo "$listed") <(echo "$found") || true
+            exit 1
+          fi
+          strays=$(find . -mindepth 1 ! -type f ! -path ./licenses)
+          if [ -n "$strays" ]; then
+            echo "::error::the libmpv-macos artifact holds what is not a plain file: $strays"
+            exit 1
+          fi
+          odd=$(grep -vE '^([^/]+\.dylib|licenses/[^/]+)$' <<< "$listed" || true)
+          if [ -n "$odd" ]; then
+            echo "::error::the libmpv-macos artifact holds files that are neither libraries nor licences: $odd"
+            exit 1
+          fi
+          [ -f libmpv.2.dylib ] || { echo "::error::the libmpv-macos artifact has no libmpv.2.dylib"; exit 1; }
+          grep -q '^licenses/' <<< "$listed" || { echo "::error::the libmpv-macos artifact has no licences"; exit 1; }
+          echo "$(grep -c '\.dylib$' <<< "$listed") libraries and $(grep -c '^licenses/' <<< "$listed") licence files, as built and checked"
 
       # yt-dlp's folder build for Contents/Helpers, fetched afresh, checked
       # against packaging/bundled-tools.env and laid out as yt-dlp.app, with
@@ -1466,9 +1507,10 @@ jobs:
       #
       # Both pinned to 11.0. Left alone, rustc defaults the Intel slice to
       # 10.12 and the Apple Silicon slice to 11.0, which puts a version in the
-      # binary that LSMinimumSystemVersion then contradicts — and IINA builds
-      # the libraries in Contents/Frameworks for 11.0 and later, so no older
-      # macOS could load them anyway.
+      # binary that LSMinimumSystemVersion then contradicts — and
+      # packaging/macos-libmpv-build.sh builds the libraries in
+      # Contents/Frameworks for 11.0, so no older macOS could load them
+      # anyway.
       - name: Build both architectures
         env:
           MACOSX_DEPLOYMENT_TARGET: '11.0'
