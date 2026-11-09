@@ -7,7 +7,7 @@ use crate::jellyfin::models::StreamKind;
 use crate::jellyfin::playback::{self, Playing, Report};
 use crate::jellyfin::segments::{self, Segments, Span};
 use crate::jellyfin::{session, trickplay};
-use crate::mpv::{EndFileReason, Event, Mpv, Secret};
+use crate::mpv::{EndFileReason, Event, Mpv, Node, Secret};
 use crate::opensubtitles;
 use crate::player::state::{
     AudioStatus, PlaybackState, PlaylistEntry, Track, TrackKind, file_name,
@@ -458,6 +458,28 @@ impl PlayerController {
     pub fn is_playing(&self) -> bool {
         let state = self.state.borrow();
         !self.closed.get() && !state.idle && !state.paused
+    }
+
+    /// Has mpv write where the file playing is, for it to resume there when
+    /// it is opened again, as a file taking its place or Home leaves it:
+    /// only when mpv would save it by itself on a quit or a replace
+    /// (`save-position-on-quit`). Resume Playback sets that, and it is off,
+    /// for the file only, for a Jellyfin item, whose place the server keeps
+    /// (jellyfin::playback::prepare), and a video the YouTube section sent,
+    /// which keeps its own marks and starts one over on purpose
+    /// (apply_section): mpv reads a watch-later file before the load hook,
+    /// so it would win over either. Both are checked here as well, for one
+    /// still opening, before the load hook has said so.
+    fn save_place(&self, player: &Player) {
+        let path = self.state.borrow().path.clone();
+        let saves = matches!(
+            player.mpv().get_property("save-position-on-quit"),
+            Ok(Node::Flag(true))
+        );
+        let section = self.from_section.get() && self.section_list.borrow().contains(&path);
+        if saves && session::parse_entry(&path).is_none() && !section {
+            player.command_quiet(&["write-watch-later-config"]);
+        }
     }
 
     pub fn is_idle(&self) -> bool {
@@ -971,12 +993,7 @@ impl PlayerController {
         let player = self.player();
         self.load_asked.set(true);
         if !append {
-            // The server keeps a Jellyfin item's place, opened or still
-            // opening: a watch-later file for its entry would be read
-            // before the load hook the next time it opens.
-            if session::parse_entry(&self.state.borrow().path).is_none() {
-                player.command_quiet(&["write-watch-later-config"]);
-            }
+            self.save_place(&player);
             self.has_fitted.set(false);
         }
         if placement == Placement::Shuffled {
@@ -1889,16 +1906,18 @@ impl PlayerController {
                 String::new(),
                 None,
             ))
-        } else if changed.contains(&Prop::Aid) {
+        // Not as a file stops, when mpv sets every track back: Home, or
+        // Stop, would say "Audio: None" over the welcome screen.
+        } else if changed.contains(&Prop::Aid) && !state.idle {
             Some(track_osd("Audio", state.selected_track(TrackKind::Audio)))
-        } else if changed.contains(&Prop::Sid) {
+        } else if changed.contains(&Prop::Sid) && !state.idle {
             Some(track_osd("Subtitle", state.selected_track(TrackKind::Sub)))
-        } else if changed.contains(&Prop::SecondarySid) {
+        } else if changed.contains(&Prop::SecondarySid) && !state.idle {
             let track = state
                 .secondary_sid
                 .and_then(|id| state.tracks(TrackKind::Sub).find(|t| t.id == id));
             Some(track_osd("Secondary Subtitle", track))
-        } else if changed.contains(&Prop::Vid) {
+        } else if changed.contains(&Prop::Vid) && !state.idle {
             Some(track_osd("Video", state.selected_track(TrackKind::Video)))
         } else if changed.contains(&Prop::LoopFile) {
             Some((
@@ -2498,17 +2517,22 @@ impl PlayerController {
                     youtube.open();
                 }
             }
-            // The title bar's Home, shown over the library and the YouTube
-            // section: both go, for the welcome screen. Not under a file
-            // playing, which would end on the welcome screen.
+            // The title bar's Home, shown wherever the window isn't on the
+            // welcome screen: the library and the YouTube section go, and a
+            // file playing stops, which the section or the library it was
+            // played from would otherwise come back for. Where it stopped
+            // is kept, as when another file takes its place (save_place).
             "welcome" => {
-                if self.is_idle() {
-                    if let Some(youtube) = self.youtube() {
-                        youtube.hide();
-                    }
-                    if let Some(library) = self.library() {
-                        library.leave();
-                    }
+                if let Some(youtube) = self.youtube() {
+                    youtube.hide();
+                }
+                if let Some(library) = self.library() {
+                    library.leave();
+                }
+                if !self.is_idle() {
+                    let player = self.player();
+                    self.save_place(&player);
+                    player.command(&["stop"]);
                 }
             }
             "close-window" => self.close(),
@@ -6033,6 +6057,11 @@ fn apply_section(mpv: &Mpv, path: &str, section: &SectionLoad) {
     if let Some(start) = entry.start {
         set("file-local-options/start", &format!("{start:.3}"));
     }
+    // Nor does mpv write a watch-later file for it, as it would on a quit
+    // or a replace (`save-position-on-quit`, which Resume Playback sets):
+    // read before the load hook the next time it opens, it would win over
+    // the section's own mark, or its starting the video over.
+    set("file-local-options/save-position-on-quit", "no");
     if util::is_url(path) {
         if let Err(error) =
             mpv.set_property_secret("file-local-options/ytdl-raw-options", &section.options)
@@ -6501,6 +6530,58 @@ mod tests {
             .map(|f| f.str_or_default("label"))
             .collect();
         assert_eq!(labels, ["patina-eq"]);
+    }
+
+    /// A video the YouTube section sent has mpv write no watch-later file
+    /// for it while it plays, Resume Playback on: on a replace or a quit mpv
+    /// would, and read before the load hook it would win over the section's
+    /// own mark or its starting the video over. Anything else keeps it.
+    #[test]
+    fn a_section_video_leaves_no_watch_later_file() {
+        let Some(mpv) = crate::mpv::testing::headless() else {
+            return;
+        };
+        mpv.hook_add(1, "on_load", -50).unwrap();
+        // As Resume Playback has it.
+        mpv.set_property("save-position-on-quit", true).unwrap();
+        const SECTION: &str = "av://lavfi:sine=frequency=440";
+        let section = SectionLoad {
+            format: None,
+            options: Secret("".into()),
+            entries: HashMap::from([(
+                SECTION.to_owned(),
+                SectionEntry {
+                    title: None,
+                    start: None,
+                },
+            )]),
+        };
+        for (path, saves) in [(SECTION, false), ("av://lavfi:sine=frequency=880", true)] {
+            mpv.command(&["loadfile", path]).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let id = loop {
+                assert!(Instant::now() < deadline, "{path}: no load hook");
+                if let Some(Event::Hook { id, .. }) = mpv.wait_event(0.5) {
+                    break id;
+                }
+            };
+            apply_section(&mpv, path, &section);
+            mpv.hook_continue(id).unwrap();
+            crate::mpv::testing::wait_for(&mpv, |event| matches!(event, Event::PlaybackRestart));
+            assert_eq!(
+                mpv.get_property("save-position-on-quit").unwrap(),
+                Node::Flag(saves),
+                "{path}"
+            );
+            mpv.command(&["stop"]).unwrap();
+            crate::mpv::testing::wait_for(&mpv, |event| matches!(event, Event::EndFile { .. }));
+            // For that file only.
+            assert_eq!(
+                mpv.get_property("save-position-on-quit").unwrap(),
+                Node::Flag(true),
+                "{path}"
+            );
+        }
     }
 
     #[test]
@@ -7087,11 +7168,11 @@ mod tests {
         assert!(press_ctrl_q(&window, &keys));
     }
 
-    /// The title bar's Home shows over the library and the YouTube section, not
-    /// on the welcome screen or over a file playing, and asks for the welcome
-    /// screen. The keys work on as the view goes for it.
+    /// The title bar's Home shows over the library, the YouTube section and a
+    /// file playing, not on the welcome screen or in music mode, and asks for
+    /// the welcome screen. The keys work on as the view goes for it.
     #[test]
-    fn the_title_bar_goes_home_from_the_library_and_the_section() {
+    fn the_title_bar_goes_home_from_the_library_the_section_and_a_file() {
         let window = window_for_keys();
         let keys = keys_reaching_the_window(&window);
         let actions: Rc<RefCell<Vec<String>>> = Rc::default();
@@ -7104,12 +7185,19 @@ mod tests {
             ("library", "home", true),
             ("library", "sign-in", true),
             ("youtube", "feed", true),
-            ("player", "", false),
+            ("player", "", true),
             ("music", "", false),
         ] {
             show_page(&window, view, page);
             assert_eq!(window.get_can_go_home(), shown, "{view} {page}");
         }
+
+        // Over a file playing too, which the window then stops.
+        show_page(&window, "player", "");
+        actions.borrow_mut().clear();
+        window.set_controls_visible(true);
+        click(&window, 1280.0 - 124.0 - 3.0 * 34.0 + 14.0, 2.0 + 14.0);
+        assert_eq!(*actions.borrow(), ["welcome"], "player");
 
         for view in ["library", "youtube"] {
             show_page(

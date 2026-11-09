@@ -393,8 +393,8 @@ component WindowButton inherits Rectangle {
 export component TitleBar inherits Rectangle {
     in property <bool> always-on-top;
     in property <bool> maximized;
-    // The library or the YouTube section shows, which Home leaves for the
-    // welcome screen. Nothing plays then: a file has neither on screen.
+    // The window shows something other than the welcome screen, which Home
+    // goes to: the library, the YouTube section, or a file, which it stops.
     in property <bool> can-go-home;
     callback show-menu(length, length);
     callback toggle-maximized;

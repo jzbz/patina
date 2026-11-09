@@ -87,9 +87,10 @@ export component PlayerWindow inherits Window {
     property <bool> youtube-open: !Playback.has-media && !root.music-mode && YouTube.shown;
     // The library is on screen, in the welcome screen's place.
     property <bool> library-open: !Playback.has-media && !root.music-mode && Library.shown && !YouTube.shown;
-    // The title bar's Home shows, for the welcome screen: over the library or
-    // the YouTube section, never over a file.
-    out property <bool> can-go-home: root.library-open || root.youtube-open;
+    // The title bar's Home shows, for the welcome screen, wherever the window
+    // isn't on it already: over the library, the YouTube section or a file,
+    // which it stops. Music mode has no title bar.
+    out property <bool> can-go-home: !root.music-mode && (root.media-open || root.library-open || root.youtube-open);
     // A Jellyfin item's intro, credits or the like plays (Playback.skip-label).
     // The button shows for a few seconds as the span begins, and again with
     // the controller or a key: in a small window it would sit over the
