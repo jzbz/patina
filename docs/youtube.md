@@ -348,13 +348,17 @@ leaves YouTube alone for an hour, while Update Now still asks. Only an update
 that reaches its end counts as a check. One stopped by leaving the section,
 quitting or a crash doesn't, and the next open asks only the channels it hadn't
 reached, as they are the ones not answered in the last 30 minutes. Coming back
-while it winds down is taken up as it ends. A channel never asked, because its
-own fetch was stopped, is asked on opening though no update is due. Saved
-videos show at once, answers change the lines in place at most every half a
-second, and `youtube-feed.json` and any changed channel names are written on
-another thread every 30 seconds and at the end, and once more when quitting.
-The feed can always be fetched again, so an unreadable one is simply started
-over.
+while it winds down is taken up as it ends. An update takes yt-dlp and the
+proxy as it begins, so turning yt-dlp off, choosing another copy of it or
+another proxy stops it, and the channels it hadn't reached are asked again with
+the new preferences as it ends, whether it was due or Update Now started it
+(`Session::config_changed`); the pass over saved videos' titles stops and goes
+on the same way. A channel never asked, because its own fetch was stopped, is
+asked on opening though no update is due. Saved videos show at once, answers
+change the lines in place at most every half a second, and `youtube-feed.json`
+and any changed channel names are written on another thread every 30 seconds
+and at the end, and once more when quitting. The feed can always be fetched
+again, so an unreadable one is simply started over.
 
 **Shorts.** Only a video known to be a Short is hidden, in the feed and in
 search, each with a switch to show them. Watch Later keeps what was put on it,
@@ -502,9 +506,10 @@ know of a video, its title, channel and length, fills in what the history
 doesn't keep; the history's title and length are used otherwise, from an older
 entry of the same video where the newest has none: a title that is only the
 address or a file's name is none, and a file that has only just loaded has no
-length. A downloaded file with no title anywhere is called what its name says,
-yt-dlp's "<title> [<id>]". With "Remember playback history" off, nothing is
-added, and the empty page says so.
+length. A downloaded file with no title anywhere is called what its name
+says, yt-dlp's "<title> [<id>]". Both come from mpv or yt-dlp, and are
+cleaned as any other title is (see Untrusted input). With "Remember playback
+history" off, nothing is added, and the empty page says so.
 
 Clear History asks first, in a dialog, as the clearing goes further than the
 page: the YouTube videos leave the history, Recent and the History window
@@ -602,7 +607,9 @@ the HTTP proxy preference, and with neither, the system's proxy settings
 apply as they do for any program. It goes to feed and picture requests and
 to every yt-dlp call, and through mpv's hook and `http-proxy` to its
 streams. A proxy that can't be used is an error, for feeds and pictures
-alike, and nothing goes direct instead. Outside the section the HTTP proxy
+alike, and nothing goes direct instead. A changed proxy applies at once: an
+update or a pass over titles that began with the old one stops and starts
+again with the new (see The feed). Outside the section the HTTP proxy
 preference reaches yt-dlp too, from mpv's hook and from downloads, unless
 the yt-dlp options name their own. OpenSubtitles and Jellyfin requests don't
 read this preference.
@@ -643,17 +650,24 @@ History page's Clear History… opens the window's dialog
 any dialog's does.
 Each page keeps its scroll when left. Lines are made afresh only when a page
 is shown; what comes later changes them in place, so a list being read
-doesn't jump. Pictures are held only near the screen, as a decoded image for
-each of thousands of videos would run to gigabytes. The view says what of a
-list is in sight, in pixels from its top, with the height of each kind of line
-(`YouTubeSight`), and the controller counts the lines from those: a channel's
-line is a third as tall as a line of videos, and a count that took every line
-for one of those left most of a long Channels page without pictures until the
-window was made larger. The view places each line from the count of each kind
-above it, so those pixels are the lines' own; a ListView, which went by the
-average height of the rows it had made, told of lines far from those on a
-search's page, and the cards on screen lost their pictures. Only the lines near
-those in sight are made (`YouTube.near-lines`, see architecture.md).
+doesn't jump. A card's place can then hold another video than when its menu
+opened, as a new upload moves every card along by one, so the menu keeps the
+video it was opened on and acts on that. Pictures are held only near the
+screen, as a decoded image for each of thousands of videos would run to
+gigabytes. A picture asked for while its line was near can arrive after a
+scroll has taken the line far away (a drag of the scrollbar leaves many on
+their way); it is dropped then, with no large picture asked for, and asked
+for again, from memory as a rule, when the line comes back. The view says
+what of a list is in sight, in pixels from its top, with the height of each
+kind of line (`YouTubeSight`), and the controller counts the lines from
+those: a channel's line is a third as tall as a line of videos, and a count
+that took every line for one of those left most of a long Channels page
+without pictures until the window was made larger. The view places each line
+from the count of each kind above it, so those pixels are the lines' own; a
+ListView, which went by the average height of the rows it had made, told of
+lines far from those on a search's page, and the cards on screen lost their
+pictures. Only the lines near those in sight are made (`YouTube.near-lines`,
+see architecture.md).
 
 ## Tests
 

@@ -39,16 +39,17 @@ pub fn parse(link: &str) -> Result<Request, String> {
 
     let mut request = Request::default();
     let mut url = None;
-    let mut seen = Vec::new();
+    // A set, not a list: a page could make a link of a great many names,
+    // and checking each against all before it would hold up the window.
+    let mut seen = HashSet::new();
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
         let (name, value) = (decode(name)?, decode(value)?);
         // The first of a name counts, where IINA would crash.
-        if seen.contains(&name) {
+        if !seen.insert(name.clone()) {
             log::debug!("ignoring a second {name:?} in a patina:// link");
             continue;
         }
-        seen.push(name.clone());
         let on = value == "1";
         match name.as_str() {
             "url" => url = Some(value),
@@ -471,6 +472,14 @@ mod tests {
             "patina://open?url=https://a&mpv_script=/tmp/x.lua&mpv_volume-max=1000&mpv_tls-verify=no&mpv_vd-lavc-threads=9999&mpv_volume=50",
         )
         .unwrap();
+        assert_eq!(request.mpv_options, [("volume".into(), "50".into())]);
+        // The first of a name counts, however many names come between.
+        let fillers: String = (0..1000).map(|n| format!("&x{n}=1")).collect();
+        let request = parse(&format!(
+            "patina://open?url=https://a&mpv_volume=50{fillers}&mpv_volume=10&url=https://b"
+        ))
+        .unwrap();
+        assert_eq!(request.sources, ["https://a"]);
         assert_eq!(request.mpv_options, [("volume".into(), "50".into())]);
     }
 }

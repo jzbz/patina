@@ -89,7 +89,9 @@ fn answered<T: Send + 'static>(
 /// Runs keyring work on one thread, one job at a time in the order asked,
 /// and then `done` on the interface thread. A token saved and then deleted
 /// (signing out while the keyring waits to be unlocked) must not be deleted
-/// first and saved after, which threads of their own allowed.
+/// first and saved after, which threads of their own allowed. The
+/// OpenSubtitles password in the preferences goes through it too, for the
+/// same reason.
 pub fn keyring<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     done: impl FnOnce(T) + 'static,
@@ -105,7 +107,7 @@ pub fn keyring<T: Send + 'static>(
     let queue = QUEUE.get_or_init(|| {
         let (sender, receiver) = mpsc::channel::<Job>();
         let spawned = std::thread::Builder::new()
-            .name("jellyfin-keyring".into())
+            .name("keyring".into())
             .spawn(move || {
                 for job in receiver {
                     job();
@@ -283,7 +285,8 @@ pub enum Change {
     SignedIn(String),
     /// The account is about to be signed out, its token still working:
     /// the windows playing from the server report where they stopped, and
-    /// stop. `SignedOut` follows.
+    /// stop. `SignedOut` follows, or `SignedIn` when another user signs in
+    /// on the server in its place.
     SigningOut(String),
     SignedOut(String),
     /// The server no longer takes the account's token: the windows showing
@@ -471,10 +474,10 @@ impl Session {
     }
 
     /// Sends a report about a playback to its server, with the account's
-    /// sign-in of now; nothing once it is signed out.
-    pub fn report(self: &Rc<Self>, server_id: &str, report: Report) {
-        let Some(account) = self.account(server_id) else {
-            log::debug!("no report: signed out of {server_id}");
+    /// sign-in of now; nothing once it is signed out, or once another user
+    /// is signed in there.
+    pub fn report(self: &Rc<Self>, server_id: &str, user_id: &str, report: Report) {
+        let Some(account) = self.reporting_account(server_id, user_id) else {
             return;
         };
         let mut reporter = self.reporter.borrow_mut();
@@ -504,6 +507,22 @@ impl Session {
         if let Some(reporter) = reporter.as_ref() {
             reporter.send(server_id, &account.client, report);
         }
+    }
+
+    /// The account to report a playback as `user_id` with: the server's,
+    /// while that user is the one signed in there. A playback that began
+    /// under another user would otherwise change the new one's progress
+    /// and watched state, with the new one's token.
+    fn reporting_account(&self, server_id: &str, user_id: &str) -> Option<Account> {
+        let Some(account) = self.account(server_id) else {
+            log::debug!("no report: signed out of {server_id}");
+            return None;
+        };
+        if account.server.user_id != user_id {
+            log::debug!("no report: signed in as another user on {server_id}");
+            return None;
+        }
+        Some(account)
     }
 
     /// A report's answer: a 401 signs the account out, and an ended
@@ -666,11 +685,24 @@ impl Session {
     /// Another account signed in on the same server before is returned, to
     /// be signed out.
     pub fn add_account(&self, server: Server, token: &str) -> Result<Option<Account>, Error> {
+        let client = self.client_for(&server, token)?;
+        Ok(self.add_client(server, client))
+    }
+
+    /// The client `server`'s account signs in with, if its address and CA
+    /// file can be used.
+    fn client_for(&self, server: &Server, token: &str) -> Result<Client, Error> {
         let url = server
             .url()
             .ok_or_else(|| Error::Address(format!("“{}” is not a web address.", server.address)))?;
-        let client = Client::new(url, self.identity(), server.ca_file.as_deref())?
-            .with_session(token, &server.user_id);
+        Ok(
+            Client::new(url, self.identity(), server.ca_file.as_deref())?
+                .with_session(token, &server.user_id),
+        )
+    }
+
+    /// `add_account` with the client made.
+    fn add_client(&self, server: Server, client: Client) -> Option<Account> {
         self.clients.insert(client.clone());
         self.servers.set(playback::Server {
             id: server.id.clone(),
@@ -686,7 +718,7 @@ impl Session {
             .map(|at| accounts.remove(at))
             .filter(|old| old.server.user_id != server.user_id);
         accounts.push(Account { server, client });
-        Ok(replaced)
+        replaced
     }
 
     /// Forgets a server's account and its client. With `keep_user` the
@@ -722,6 +754,12 @@ impl Session {
     /// keyring on a thread of its own, and the windows hear of it. When
     /// the keyring can't keep it, the token lasts as long as Patina runs,
     /// the reason is logged, and `unsaved` is called, the first time only.
+    /// Another user signed in on the server is signed out as `sign_out`
+    /// does it, once the new account is sure to go in: what plays from the
+    /// server reports where it stopped under its own account and stops, a
+    /// load still asking the server stops, and its downloads stop, rather
+    /// than going on under the new one. A report made under the old user
+    /// that comes later is dropped, not sent with the new one's token.
     pub fn signed_in_with(
         self: &Rc<Self>,
         server: Server,
@@ -729,9 +767,18 @@ impl Session {
         unsaved: impl FnOnce() + 'static,
     ) -> Result<(), Error> {
         let id = server.id.clone();
-        let replaced = self.add_account(server.clone(), &token)?;
-        if let Some(old) = replaced {
-            revoke(old, None);
+        let client = self.client_for(&server, &token)?;
+        let switching = self
+            .account(&id)
+            .is_some_and(|account| account.server.user_id != server.user_id);
+        if switching {
+            self.notify(&Change::SigningOut(id.clone()));
+        }
+        if let Some(old) = self.add_client(server.clone(), client) {
+            self.forget_items(&id);
+            self.clear_images();
+            let reports = self.reporter.borrow().as_ref().map(Reporter::pending);
+            revoke(old, reports);
         }
         let weak = Rc::downgrade(self);
         keyring(
@@ -1797,6 +1844,106 @@ mod tests {
         // Once is enough: there was nothing left to decline.
         session.forget_expired("s1");
         assert_eq!(heard.0.borrow().len(), 1);
+    }
+
+    /// Signing in as another user on a server signs the account there out
+    /// first, while its token still works, so that what plays from it
+    /// stops under its own account; but not before the new one is sure to
+    /// go in, nor when the same user signs in again.
+    #[test]
+    fn another_user_signing_in_signs_the_account_out_first() {
+        /// The changes heard, each with whose the server's account was then.
+        struct Heard {
+            session: Weak<Session>,
+            changes: RefCell<Vec<(Change, Option<String>)>>,
+        }
+        impl Listener for Heard {
+            fn session_changed(&self, change: &Change) {
+                let user = self
+                    .session
+                    .upgrade()
+                    .and_then(|session| session.account("s1"))
+                    .map(|account| account.server.user_id);
+                self.changes.borrow_mut().push((change.clone(), user));
+            }
+        }
+
+        // Revoking the replaced account asks the network on a thread, whose
+        // answer finds no event loop to come back on.
+        i_slint_backend_testing::init_no_event_loop();
+        let folder = Folder::new("switching");
+        let session = session(&folder);
+        // Nothing listens there: the replaced account's logout fails at once.
+        let at = |user: &str| Server {
+            address: "http://127.0.0.1:9".into(),
+            ..server("s1", user)
+        };
+        session.add_account(at("u1"), "token-1").unwrap();
+        let heard = Rc::new(Heard {
+            session: Rc::downgrade(&session),
+            changes: RefCell::default(),
+        });
+        session.subscribe(Rc::downgrade(&heard) as Weak<dyn Listener>);
+
+        // An address that can't be used leaves the account playing.
+        let unusable = Server {
+            address: "not an address".into(),
+            ..server("s1", "u9")
+        };
+        assert!(
+            session
+                .signed_in_with(unusable, "token-9".into(), || {})
+                .is_err()
+        );
+        assert!(
+            heard.changes.borrow().is_empty(),
+            "{:?}",
+            heard.changes.borrow()
+        );
+        assert_eq!(session.account("s1").unwrap().server.user_id, "u1");
+
+        session
+            .signed_in_with(at("u9"), "token-9".into(), || {})
+            .unwrap();
+        let u = |user: &str| Some(user.to_owned());
+        assert_eq!(
+            *heard.changes.borrow(),
+            [
+                (Change::SigningOut("s1".into()), u("u1")),
+                (Change::SignedIn("s1".into()), u("u9")),
+            ]
+        );
+
+        // The same user again replaces nothing to sign out.
+        heard.changes.borrow_mut().clear();
+        session
+            .signed_in_with(at("u9"), "token-10".into(), || {})
+            .unwrap();
+        assert_eq!(
+            *heard.changes.borrow(),
+            [(Change::SignedIn("s1".into()), u("u9"))]
+        );
+    }
+
+    /// A playback that began under one user and reports after another has
+    /// signed in on its server would change the new user's progress with
+    /// the new user's token: its reports are dropped instead.
+    #[test]
+    fn reports_go_only_under_the_user_they_were_made_as() {
+        let folder = Folder::new("report-user");
+        let session = session(&folder);
+        session.add_account(server("s1", "u1"), "token-1").unwrap();
+        let reporting = |server: &str, user: &str| {
+            session
+                .reporting_account(server, user)
+                .map(|account| account.server.user_id)
+        };
+        assert_eq!(reporting("s1", "u1").as_deref(), Some("u1"));
+        assert_eq!(reporting("s1", "u2"), None);
+        assert_eq!(reporting("s2", "u1"), None);
+        session.add_account(server("s1", "u2"), "token-2").unwrap();
+        assert_eq!(reporting("s1", "u1"), None);
+        assert_eq!(reporting("s1", "u2").as_deref(), Some("u2"));
     }
 
     #[test]

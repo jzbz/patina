@@ -109,8 +109,8 @@ pub struct ImportReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Played {
     pub id: VideoId,
-    /// What the history calls it; empty when that is only its address or its
-    /// file's name.
+    /// What the history calls it, cleaned as others' text is; empty when that
+    /// is only its address or its file's name.
     pub title: String,
     /// Seconds since the Unix epoch.
     pub played_at: i64,
@@ -172,6 +172,10 @@ pub struct Session {
     /// When what is being fetched is the update of every channel, when that
     /// began: it counts as a check only if it reaches its end.
     checking: Cell<Option<i64>>,
+    /// When the update of every channel that changed preferences stopped had
+    /// begun. It carries on from there with the new ones as it winds down,
+    /// due or not, since Update Now may have started it.
+    resume: Cell<Option<i64>>,
     /// Channels added while it is, to fetch after it.
     waiting: RefCell<Vec<ChannelId>>,
     /// Channels' descriptions changed since they were last saved.
@@ -189,6 +193,11 @@ pub struct Session {
     details: RefCell<Option<Cancel>>,
     /// Asked for them again meanwhile: more rows may be waiting after these.
     details_again: Cell<bool>,
+    /// The preferences the newest work began with, or that the app has said
+    /// changed since. A pass takes its yt-dlp and proxy as it begins, and
+    /// what starts again as one winds down goes by these rather than by
+    /// those, which may have been changed under it.
+    latest_prefs: RefCell<Option<Preferences>>,
     /// The app is quitting, and nothing new starts.
     closing: Cell<bool>,
     /// The windows showing the section. When the last has left it, what is on
@@ -324,6 +333,7 @@ impl Session {
             detail_gap: Cell::new(DETAIL_GAP),
             refresh: RefCell::new(None),
             checking: Cell::new(None),
+            resume: Cell::new(None),
             waiting: RefCell::new(Vec::new()),
             channels_changed: Cell::new(false),
             feed_changed: Cell::new(false),
@@ -334,6 +344,7 @@ impl Session {
             progress: Cell::new((0, 0)),
             details: RefCell::new(None),
             details_again: Cell::new(false),
+            latest_prefs: RefCell::new(None),
             closing: Cell::new(false),
             viewers: Cell::new(0),
             images_dir: paths.youtube_images_dir(),
@@ -607,6 +618,33 @@ impl Session {
         self.fetch_details(prefs);
     }
 
+    /// The preferences the section's work goes by have changed: yt-dlp turned
+    /// on or off, another copy of it, or another proxy. An update or a pass
+    /// over saved videos took yt-dlp and the proxy as it began, and would go
+    /// on with them, the titles of a long import for an hour or more; so what
+    /// runs stops, and what is due starts again with these while a window
+    /// shows the section. As when a window comes back, what is still winding
+    /// down is taken up as it ends.
+    pub fn config_changed(self: &Rc<Self>, prefs: &Preferences) {
+        *self.latest_prefs.borrow_mut() = Some(prefs.clone());
+        if self.is_refreshing() && self.checking.get().is_some() {
+            self.resume.set(self.checking.get());
+        }
+        self.cancel();
+        if self.viewers.get() > 0 && !self.closing.get() {
+            self.section_opened(prefs);
+        }
+    }
+
+    /// The preferences to start more work with as a pass ends: the newest
+    /// known, or else those it began with.
+    fn newest_prefs(&self, began_with: &Preferences) -> Preferences {
+        self.latest_prefs
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| began_with.clone())
+    }
+
     /// Asks about what opening the section should: the channels an update that
     /// is due hasn't reached, or those never asked. While something still winds
     /// down, this is looked at again as it ends.
@@ -668,6 +706,7 @@ impl Session {
             return;
         }
         let (first, second) = (self.sources)(prefs, &self.mpv_config);
+        *self.latest_prefs.borrow_mut() = Some(prefs.clone());
         let cancel = Cancel::default();
         *self.refresh.borrow_mut() = Some(cancel.clone());
         self.checking.set(check);
@@ -757,6 +796,9 @@ impl Session {
             .take()
             .is_some_and(|cancel| cancel.cancelled());
         let check = self.checking.take().filter(|_| !stopped);
+        // Taken before the return below, so that a section left meanwhile
+        // drops it.
+        let resume = self.resume.take().filter(|_| stopped);
         let subscribed = self.subscribed();
         {
             let mut feed = self.feed();
@@ -774,12 +816,43 @@ impl Session {
         if self.viewers.get() == 0 || self.closing.get() {
             return;
         }
+        let prefs = self.newest_prefs(prefs);
         if stopped {
-            // A window came back while this was winding down, and what it
-            // wanted was refused for as long as this ran.
-            self.ask_what_is_due(prefs);
+            // A window came back while this was winding down, or the
+            // preferences changed under it, and what that wanted was refused
+            // for as long as this ran.
+            match resume {
+                // An update of every channel goes on with those that haven't
+                // answered since it began. Going by what is due would end
+                // one that Update Now started soon after the last check.
+                Some(began) => {
+                    let rest: Vec<ChannelId> = {
+                        let feed = self.feed();
+                        subscribed
+                            .iter()
+                            .filter(|channel| {
+                                feed.state(channel)
+                                    .and_then(|state| state.last_ok)
+                                    .is_none_or(|at| at < began)
+                            })
+                            .cloned()
+                            .collect()
+                    };
+                    if rest.is_empty() {
+                        // Each has answered since: it stopped at its very end.
+                        if !subscribed.is_empty() {
+                            self.feed().finished(began);
+                            self.feed_changed.set(true);
+                            self.notify(Change::RefreshFinished);
+                        }
+                    } else {
+                        self.fetch_channels(&prefs, rest, Some(began));
+                    }
+                }
+                None => self.ask_what_is_due(&prefs),
+            }
         } else {
-            self.fetch_channels(prefs, waiting, None);
+            self.fetch_channels(&prefs, waiting, None);
         }
     }
 
@@ -866,6 +939,7 @@ impl Session {
         let Ok(tool) = Ytdlp::from_prefs(prefs, &self.mpv_config) else {
             return;
         };
+        *self.latest_prefs.borrow_mut() = Some(prefs.clone());
         let cancel = Cancel::default();
         *self.details.borrow_mut() = Some(cancel.clone());
         // The rows say whether their titles are on their way.
@@ -892,7 +966,11 @@ impl Session {
             },
             move |(id, answer, stop): (VideoId, Result<Video, Error>, bool)| {
                 if let Some(session) = answered.upgrade() {
-                    if stop {
+                    // Stopped by a cancel, the pass says nothing of the next
+                    // video: asked for again since, the details go on.
+                    let cancelled =
+                        matches!(&answer, Err(error) if error.kind == Failure::Cancelled);
+                    if stop && !cancelled {
                         session.details_again.set(false);
                     }
                     session.took_details(&id, answer);
@@ -910,7 +988,7 @@ impl Session {
         *self.details.borrow_mut() = None;
         self.notify(Change::Saved);
         if self.details_again.replace(false) && self.viewers.get() > 0 && !self.closing.get() {
-            self.details_pass(prefs, true);
+            self.details_pass(&self.newest_prefs(prefs), true);
         }
     }
 
@@ -1017,7 +1095,9 @@ impl Session {
     /// newest didn't (a downloaded file's history has only its name, a file
     /// only just loaded no length) is kept. A file the section downloaded
     /// with no title known anywhere is called what its name says, which is
-    /// yt-dlp's "<title> [<id>]".
+    /// yt-dlp's "<title> [<id>]". Both are someone else's words, from mpv's
+    /// media-title or yt-dlp, and are cleaned like any title the section
+    /// fetches.
     pub fn history(&self) -> Vec<Played> {
         let entries = self.history.borrow().clone();
         let mut played: Vec<Played> = Vec::new();
@@ -1031,7 +1111,7 @@ impl Session {
             let title = if entry.title == file_name {
                 String::new()
             } else {
-                entry.title
+                super::clean_text(&entry.title)
             };
             let name = if crate::util::is_url(&entry.path) {
                 String::new()
@@ -1040,8 +1120,8 @@ impl Session {
                     .file_stem()
                     .and_then(|stem| stem.to_str())
                     .and_then(|stem| stem.strip_suffix(&format!(" [{}]", id.as_str())))
+                    .map(super::clean_text)
                     .unwrap_or_default()
-                    .to_owned()
             };
             match at.get(&id) {
                 Some(&index) => {
@@ -1329,6 +1409,9 @@ impl Session {
         rows: Rows,
         skipped: usize,
     ) -> ImportReport {
+        // Read off the interface thread, the list may come back after the
+        // preferences it began with have changed.
+        let prefs = &self.newest_prefs(prefs);
         let report = |kind, added: Added| ImportReport {
             kind,
             added: added.added,
@@ -1735,6 +1818,148 @@ mod tests {
                 .last_ok
                 .is_some()
         );
+    }
+
+    /// Preferences changed during an update stop it, and the channels it
+    /// hadn't reached are asked as it winds down, from sources made with the
+    /// new ones rather than those it began with.
+    #[test]
+    fn changed_preferences_stop_an_update_and_ask_the_rest_with_the_new() {
+        let folder = Folder::new("update-prefs");
+        let made: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+        let making = made.clone();
+        let session = Session::with_sources(
+            &folder.paths(),
+            Box::new(move |prefs, _| {
+                making.borrow_mut().push(prefs.proxy().map(str::to_owned));
+                (
+                    Box::new(Stub::working()) as Box<dyn Source>,
+                    Box::new(Stub::working()) as Box<dyn Source>,
+                )
+            }),
+        );
+        session.limits.set(Limits {
+            batch_gap: Duration::ZERO,
+            ..Default::default()
+        });
+        let old = Preferences {
+            http_proxy: "http://127.0.0.1:1".into(),
+            ..Default::default()
+        };
+        let new = Preferences {
+            http_proxy: "http://127.0.0.1:2".into(),
+            ..Default::default()
+        };
+        session
+            .store()
+            .add_channels(vec![Channel::new(channel(A)), Channel::new(channel(B))]);
+        session.entered();
+        let cancel = Cancel::default();
+        *session.refresh.borrow_mut() = Some(cancel.clone());
+        session.checking.set(Some(now()));
+        session.took_outcome(answer_for(A, "aaaaaaaaaaa"));
+        session.config_changed(&new);
+        assert!(cancel.cancelled());
+        assert!(made.borrow().is_empty(), "still winding down");
+        session.refresh_finished(&old);
+        assert_eq!(*made.borrow(), [Some("http://127.0.0.1:2".to_owned())]);
+        assert!(
+            session
+                .channel_state(&channel(B))
+                .unwrap()
+                .last_ok
+                .is_some()
+        );
+    }
+
+    /// A list is read off the interface thread, and the preferences can
+    /// change meanwhile: what the import starts goes by the new ones, and
+    /// leaves them the newest known.
+    #[test]
+    fn an_import_that_ends_after_a_change_of_preferences_goes_by_the_new() {
+        let folder = Folder::new("import-prefs");
+        let made: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+        let making = made.clone();
+        let session = Session::with_sources(
+            &folder.paths(),
+            Box::new(move |prefs, _| {
+                making.borrow_mut().push(prefs.proxy().map(str::to_owned));
+                (
+                    Box::new(Stub::working()) as Box<dyn Source>,
+                    Box::new(Stub::working()) as Box<dyn Source>,
+                )
+            }),
+        );
+        let old = Preferences {
+            http_proxy: "http://127.0.0.1:1".into(),
+            ..Default::default()
+        };
+        let new = Preferences {
+            http_proxy: "http://127.0.0.1:2".into(),
+            ..Default::default()
+        };
+        session.entered();
+        session.config_changed(&new);
+        session.took_import(&old, Rows::Channels(vec![Channel::new(channel(A))]), 0);
+        assert_eq!(*made.borrow(), [Some("http://127.0.0.1:2".to_owned())]);
+        let latest = session.latest_prefs.borrow();
+        assert_eq!(
+            latest.as_ref().and_then(Preferences::proxy),
+            Some("http://127.0.0.1:2")
+        );
+    }
+
+    /// Update Now works whether or not an update is due, so one pressed soon
+    /// after the last check carries on after a change of preferences too.
+    #[test]
+    fn changed_preferences_carry_on_an_update_that_was_not_due() {
+        let folder = Folder::new("update-now-prefs");
+        let made: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+        let making = made.clone();
+        let session = Session::with_sources(
+            &folder.paths(),
+            Box::new(move |prefs, _| {
+                making.borrow_mut().push(prefs.proxy().map(str::to_owned));
+                (
+                    Box::new(Stub::working()) as Box<dyn Source>,
+                    Box::new(Stub::working()) as Box<dyn Source>,
+                )
+            }),
+        );
+        session.limits.set(Limits {
+            batch_gap: Duration::ZERO,
+            ..Default::default()
+        });
+        let old = Preferences {
+            http_proxy: "http://127.0.0.1:1".into(),
+            ..Default::default()
+        };
+        let new = Preferences {
+            http_proxy: "http://127.0.0.1:2".into(),
+            ..Default::default()
+        };
+        session
+            .store()
+            .add_channels(vec![Channel::new(channel(A)), Channel::new(channel(B))]);
+        // Both answered in a check that finished ten minutes ago, so no
+        // update is due.
+        let earlier = now() - 700;
+        session.feed().apply(answer_for(A, "aaaaaaaaaaa"), earlier);
+        session.feed().apply(answer_for(B, "bbbbbbbbbbb"), earlier);
+        session.feed().finished(now() - 600);
+        session.entered();
+        let began = now();
+        let cancel = Cancel::default();
+        *session.refresh.borrow_mut() = Some(cancel.clone());
+        session.checking.set(Some(began));
+        session.took_outcome(answer_for(A, "aaaaaaaaaaa"));
+        session.config_changed(&new);
+        assert!(cancel.cancelled());
+        session.refresh_finished(&old);
+        assert_eq!(*made.borrow(), [Some("http://127.0.0.1:2".to_owned())]);
+        let asked = session.channel_state(&channel(B)).unwrap().last_ok;
+        assert!(asked.is_some_and(|at| at >= began));
+        assert_eq!(session.last_refresh(), Some(began));
     }
 
     /// Stopped with no window back, an update doesn't count, and nothing runs.
@@ -2646,6 +2871,51 @@ esac
             session.fetch_details(&prefs);
             session.details_finished(&prefs);
             assert_eq!(fake.runs().len(), 3);
+        }
+
+        /// Preferences changed while a pass runs stop it, and what starts
+        /// again as it winds down goes by the new ones: another proxy for
+        /// every call after it, and no call at all once yt-dlp is off.
+        #[test]
+        fn changed_preferences_stop_the_titles_and_go_on_with_the_new() {
+            let folder = Folder::new("details-prefs");
+            let fake = answering(&folder, DETAILS);
+            let old = Preferences {
+                http_proxy: "http://127.0.0.1:1".into(),
+                ..prefs(&fake)
+            };
+            let new = Preferences {
+                http_proxy: "http://127.0.0.1:2".into(),
+                ..prefs(&fake)
+            };
+            let session = working(&folder);
+            session.entered();
+            let running = Cancel::default();
+            *session.details.borrow_mut() = Some(running.clone());
+            import_watch_later(&session, &old, &folder);
+            session.config_changed(&new);
+            assert!(running.cancelled());
+            assert_eq!(fake.runs().len(), 0, "the old pass is still winding down");
+            session.details_finished(&old);
+            assert_eq!(fake.runs().len(), 3);
+            for run in fake.runs() {
+                let proxy = run.iter().position(|arg| arg == "--proxy").unwrap();
+                assert_eq!(run[proxy + 1], "http://127.0.0.1:2", "{run:?}");
+            }
+
+            let folder = Folder::new("details-off");
+            let fake = answering(&folder, DETAILS);
+            let prefs = prefs(&fake);
+            let session = working(&folder);
+            session.entered();
+            *session.details.borrow_mut() = Some(Cancel::default());
+            import_watch_later(&session, &prefs, &folder);
+            session.config_changed(&Preferences {
+                ytdl: false,
+                ..prefs.clone()
+            });
+            session.details_finished(&prefs);
+            assert_eq!(fake.runs().len(), 0);
         }
 
         #[test]

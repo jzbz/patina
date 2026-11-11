@@ -1010,7 +1010,9 @@ export component LibraryView inherits Rectangle {
                 LibraryUi.typing = false;
                 return reject;
             }
-            if event.text == Key.Backspace && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && Library.can-go-back {
+            // Not while a sign-in step works, though its field has let the
+            // key through: going back would stop the step.
+            if event.text == Key.Backspace && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta && Library.can-go-back && !(Library.page == "sign-in" && Library.sign-in.working) {
                 Library.back();
                 return accept;
             }

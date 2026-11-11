@@ -208,6 +208,7 @@ impl App {
         if let Some(downloads) = self.existing_downloads() {
             downloads.ytdl_changed();
         }
+        self.youtube.config_changed(&self.prefs());
     }
 
     /// Makes the yt-dlp choice again, before a web address opens, and hands it
@@ -253,6 +254,14 @@ impl App {
             if prefs.auto_switch_to_music_mode != old.auto_switch_to_music_mode {
                 window.reset_music_override();
             }
+        }
+        // The YouTube section's updates and title passes took yt-dlp and the
+        // proxy as they began, and would go on with the old ones.
+        if prefs.ytdl != old.ytdl
+            || prefs.ytdl_path != old.ytdl_path
+            || prefs.proxy() != old.proxy()
+        {
+            self.youtube.config_changed(&prefs);
         }
         if prefs.media_keys != old.media_keys {
             if prefs.media_keys {
@@ -1315,15 +1324,19 @@ impl App {
     }
 
     /// The window used last of those with something in their playlist,
-    /// other than `except`: where Play Next and Add to Queue from the
-    /// library in `except` go.
+    /// other than `except` and those started with a request's own mpv
+    /// options: where Play Next and Add to Queue from the library in
+    /// `except` go.
     pub fn queue_window(&self, except: &PlayerController) -> Option<Rc<PlayerController>> {
         let windows = self.windows.borrow();
-        used_last(
+        queue_target(
             windows
                 .iter()
                 .filter(|window| !std::ptr::eq(Rc::as_ptr(window), except))
-                .map(|window| (window, window.is_idle(), window.focus_serial())),
+                .map(|window| {
+                    let (idle, own) = (window.is_idle(), window.has_own_options());
+                    (window, idle, own, window.focus_serial())
+                }),
         )
         .cloned()
     }
@@ -1518,6 +1531,14 @@ impl App {
         self.history.borrow().entries.clone()
     }
 
+    pub fn in_history(&self, path: &str) -> bool {
+        self.history
+            .borrow()
+            .entries
+            .iter()
+            .any(|entry| entry.path == path)
+    }
+
     pub fn remove_from_history(&self, path: &str) {
         self.history
             .borrow_mut()
@@ -1564,30 +1585,28 @@ impl App {
         }
     }
 
-    /// Recent files as (title, path), and the title offered for resuming.
-    pub fn recent_items(&self) -> (Vec<(String, String)>, String) {
+    /// Recent files as (title, path), and the title offered for resuming
+    /// with its file's path (empty when there is none).
+    pub fn recent_items(&self) -> (Vec<(String, String)>, (String, String)) {
         let history = self.history.borrow();
         let limit = self.prefs().recent_limit;
         let items: Vec<_> = history
             .recent(limit)
             .map(|entry| (entry.title.clone(), entry.path.clone()))
             .collect();
-        let resume = history
-            .entries
-            .first()
-            .map(|entry| {
-                if entry.position > 1.0 {
-                    format!(
-                        "{} — {}",
-                        entry.title,
-                        crate::util::format_time(entry.position)
-                    )
-                } else {
-                    entry.title.clone()
-                }
-            })
-            .unwrap_or_default();
-        (items, resume)
+        let resume = history.entries.first().map(|entry| {
+            let title = if entry.position > 1.0 {
+                format!(
+                    "{} — {}",
+                    entry.title,
+                    crate::util::format_time(entry.position)
+                )
+            } else {
+                entry.title.clone()
+            };
+            (title, entry.path.clone())
+        });
+        (items, resume.unwrap_or_default())
     }
 
     /// Whether the history has this as sent by the YouTube section, which then
@@ -1603,14 +1622,6 @@ impl App {
                 .name_source(path.to_owned(), entry.title.clone());
         }
         entry.section
-    }
-
-    pub fn recent_path(&self, index: usize) -> Option<String> {
-        self.history
-            .borrow()
-            .entries
-            .get(index)
-            .map(|entry| entry.path.clone())
     }
 
     // ---- File dialogs ---------------------------------------------------
@@ -1659,7 +1670,12 @@ impl App {
                 .map(|file| file.path().to_string_lossy().into_owned())
                 .collect();
             paths.sort_by(|a, b| crate::window::natural_cmp(a, b));
-            match (target, app.upgrade()) {
+            let app = app.upgrade();
+            // The owner may have closed while the dialog was up, and its
+            // player with it; the files then go where they would without one.
+            let target =
+                target.filter(|target| app.as_ref().is_some_and(|app| app.find(target).is_some()));
+            match (target, app) {
                 (Some(target), _) if append || target.is_idle() => target.open(paths, append),
                 (_, Some(app)) => {
                     app.open_sources(paths, append);
@@ -1715,10 +1731,7 @@ impl App {
             let Some(file) = dialog.save_file().await else {
                 return;
             };
-            let mut text = String::from("#EXTM3U\n");
-            for (title, path) in entries {
-                text.push_str(&format!("#EXTINF:-1,{title}\n{path}\n"));
-            }
+            let text = crate::playlist::m3u(&entries);
             if let Err(error) = std::fs::write(file.path(), text) {
                 log::warn!("could not save {}: {error}", file.path().display());
             }
@@ -1808,9 +1821,24 @@ fn used_last<T>(windows: impl IntoIterator<Item = (T, bool, u64)>) -> Option<T> 
         .map(|(window, _, _)| window)
 }
 
+/// Of `windows`, each with whether it is idle, whether it started with a
+/// request's own mpv options and its focus serial, the one queued items go
+/// to: the window used last of those playing, but never one with options
+/// of its own, since the core's options would carry over to the items (a
+/// link's `mpv_end` would cut every one short). With none, the library's
+/// own window plays them.
+fn queue_target<T>(windows: impl IntoIterator<Item = (T, bool, bool, u64)>) -> Option<T> {
+    used_last(
+        windows
+            .into_iter()
+            .filter(|(_, _, own, _)| !own)
+            .map(|(window, idle, _, serial)| (window, idle, serial)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{sets_audio_output, used_last};
+    use super::{queue_target, sets_audio_output, used_last};
 
     #[test]
     fn an_mpv_conf_that_sets_ao_is_told_from_one_that_does_not() {
@@ -1835,5 +1863,20 @@ mod tests {
         // None plays: the caller takes the active window.
         assert_eq!(used_last([("a", true, 3), ("b", true, 5)]), None);
         assert_eq!(used_last::<&str>([]), None);
+    }
+
+    #[test]
+    fn the_queue_skips_a_window_with_its_own_mpv_options() {
+        // The window a link opened with its own options was used last, but
+        // what is queued goes to the other window playing.
+        assert_eq!(
+            queue_target([("plain", false, false, 3), ("linked", false, true, 7)]),
+            Some("plain")
+        );
+        // With only that window playing, the library's window plays them.
+        assert_eq!(
+            queue_target([("linked", false, true, 7), ("idle", true, false, 9)]),
+            None
+        );
     }
 }

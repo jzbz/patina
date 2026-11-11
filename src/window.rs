@@ -667,12 +667,14 @@ impl PlayerController {
             .collect()
     }
 
-    /// The playlist as (title, path) pairs.
+    /// The playlist as (title, path) pairs, for Save Playlist: only the
+    /// entries that may open again elsewhere, since the file saved opens as
+    /// the user's own playlist (see `reopenable_entries`).
     pub fn playlist_paths(&self) -> Vec<(String, String)> {
-        self.state
-            .borrow()
-            .playlist
-            .iter()
+        let links = self.app().link_sources();
+        let state = self.state.borrow();
+        reopenable_entries(&state.playlist, &links)
+            .into_iter()
             .map(|entry| (self.entry_label(entry), entry.filename.clone()))
             .collect()
     }
@@ -915,7 +917,9 @@ impl PlayerController {
     }
 
     fn open_at(&self, sources: Vec<String>, placement: Placement) {
-        if sources.is_empty() {
+        // A closed window has no player to load into, and something that
+        // finished after it closed (a dialog it showed) may still ask.
+        if sources.is_empty() || self.closed.get() {
             return;
         }
         if placement != Placement::Append {
@@ -2111,9 +2115,12 @@ impl PlayerController {
             this.mark_user_action();
             this.player().set("chapter", index as i64);
         });
-        handler!(on_open_recent, |this, index| {
-            let path = this.app().recent_path(index as usize);
-            if let Some(path) = path {
+        // By path, not by row: history moves on while a menu shows the
+        // rows it had when it opened. A row whose entry has gone since opens
+        // nothing, as it can no longer say whether the section sent it.
+        handler!(on_open_recent, |this, path| {
+            let path = String::from(path);
+            if this.app().in_history(&path) {
                 this.open_again(path);
             }
         });
@@ -3978,24 +3985,14 @@ impl PlayerController {
         }
     }
 
-    /// The entries that may open again elsewhere (see
-    /// PlaylistEntry::may_reopen). Those of a link's playlist stay a link's
-    /// wherever they open, so that playlists they name are screened too.
+    /// The entries that may open again elsewhere, by path (see
+    /// `reopenable_entries`).
     fn reopenable(&self, entries: &[(usize, PlaylistEntry)]) -> Vec<String> {
         let links = self.app().link_sources();
-        let paths: Vec<String> = entries
-            .iter()
-            .filter(|(_, entry)| entry.may_reopen(&links))
-            .map(|(_, entry)| entry.filename.clone())
-            .collect();
-        let linked: Vec<String> = entries
-            .iter()
-            .filter(|(_, entry)| crate::scheme::from_link(&links, &entry.playlist))
-            .map(|(_, entry)| entry.filename.clone())
-            .filter(|path| paths.contains(path))
-            .collect();
-        crate::scheme::note_link_sources(&links, &linked);
-        paths
+        reopenable_entries(entries.iter().map(|(_, entry)| entry), &links)
+            .into_iter()
+            .map(|entry| entry.filename.clone())
+            .collect()
     }
 
     /// Adds sources to the playlist right after the last selected row, or
@@ -4242,6 +4239,7 @@ impl PlayerController {
             let position = self.jellyfin_position.get();
             session.report(
                 &playing.server_id,
+                &playing.user_id,
                 Report::Stopped(playing.stopped(position, never_played)),
             );
             self.jellyfin_stopping.set(true);
@@ -4260,6 +4258,7 @@ impl PlayerController {
             Some((entry, Ok(playing))) if entry == path => {
                 session.report(
                     &playing.server_id,
+                    &playing.user_id,
                     Report::Stopped(playing.stopped(0.0, true)),
                 );
                 None
@@ -4306,17 +4305,25 @@ impl PlayerController {
     /// The account the file playing comes from is being signed out (in
     /// another window): playback reports where it stopped, while the token
     /// still works, and stops, since nothing more of it would reach the
-    /// server and what the playlist holds of it couldn't open.
+    /// server and what the playlist holds of it couldn't open. A load still
+    /// asking that server stops too: it has no playback to report yet, and
+    /// would start one as the user signing out.
     pub fn jellyfin_signing_out(&self, server_id: &str) {
         let playing = self
             .jellyfin
             .borrow()
             .as_ref()
             .is_some_and(|playing| playing.server_id == server_id);
-        if !playing {
+        let loading = !playing
+            && self.loading.get()
+            && session::parse_entry(&self.state.borrow().path)
+                .is_some_and(|(server, _)| server == server_id);
+        if !playing && !loading {
             return;
         }
-        self.jellyfin_ended();
+        if playing {
+            self.jellyfin_ended();
+        }
         self.player().command(&["stop"]);
         let name = self
             .app()
@@ -4364,7 +4371,9 @@ impl PlayerController {
         } else {
             Report::Progress(progress)
         };
-        self.app().jellyfin().report(&playing.server_id, report);
+        self.app()
+            .jellyfin()
+            .report(&playing.server_id, &playing.user_id, report);
         self.jellyfin_pacer.borrow_mut().sent(Instant::now());
     }
 
@@ -4411,6 +4420,7 @@ impl PlayerController {
                     let position = self.jellyfin_position.get();
                     self.app().jellyfin().report(
                         &playing.server_id,
+                        &playing.user_id,
                         Report::Stopped(playing.stopped(position, false)),
                     );
                 }
@@ -5892,7 +5902,9 @@ impl PlayerController {
             })
             .collect();
         media.set_recent(ModelRc::new(VecModel::from(items)));
-        media.set_resume_title(resume.into());
+        let (title, path) = resume;
+        media.set_resume_title(title.into());
+        media.set_resume_path(path.into());
     }
 
     // ---- Shutdown -------------------------------------------------------
@@ -5950,6 +5962,30 @@ enum PipPending {
     Asked,
     /// Its file has started: enter on its video, forget at its end.
     Opening,
+}
+
+/// Of `entries`, those that may open again elsewhere, copied, played in
+/// another window or saved as a playlist (see PlaylistEntry::may_reopen).
+/// Those of a link's playlist stay a link's wherever they open, so that
+/// playlists they name are screened too.
+fn reopenable_entries<'a>(
+    entries: impl IntoIterator<Item = &'a PlaylistEntry>,
+    links: &crate::scheme::LinkSources,
+) -> Vec<&'a PlaylistEntry> {
+    let entries: Vec<&PlaylistEntry> = entries.into_iter().collect();
+    let kept: Vec<&PlaylistEntry> = entries
+        .iter()
+        .copied()
+        .filter(|entry| entry.may_reopen(links))
+        .collect();
+    let linked: Vec<String> = entries
+        .iter()
+        .filter(|entry| crate::scheme::from_link(links, &entry.playlist))
+        .map(|entry| entry.filename.clone())
+        .filter(|path| kept.iter().any(|entry| entry.filename == *path))
+        .collect();
+    crate::scheme::note_link_sources(links, &linked);
+    kept
 }
 
 /// DEFAULT_SIZE, shrunk in its shape to SCREEN_SHARE of a screen too small
@@ -7541,6 +7577,58 @@ mod tests {
         assert!(press_ctrl_q(&window, &keys), "after the menu");
     }
 
+    /// A card's menu acts on the video it was opened on, though an update
+    /// refills the lines in place under it and puts another video in that
+    /// card.
+    #[test]
+    fn a_cards_menu_keeps_its_video_through_a_refill() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let youtube = window.global::<YouTube>();
+        let played: Rc<RefCell<Vec<String>>> = Rc::default();
+        let seen = played.clone();
+        youtube.on_play(move |id| seen.borrow_mut().push(id.to_string()));
+        let copied: Rc<RefCell<Vec<String>>> = Rc::default();
+        let seen = copied.clone();
+        youtube.on_copy_link(move |id| seen.borrow_mut().push(id.to_string()));
+        show_page(&window, "youtube", "feed");
+        for _ in 0..12 {
+            press_key(&window, Key::Tab);
+            press_key(&window, Key::Return);
+            if !played.borrow().is_empty() {
+                break;
+            }
+        }
+        assert_eq!(played.borrow().len(), 1, "no card took the focus");
+        let refill = |id: &str| {
+            // As fill does in place: the same lines, their cards' data replaced.
+            let lines = youtube.get_lines();
+            for l in 0..lines.row_count() {
+                let cards = lines.row_data(l).unwrap().cards;
+                for c in 0..cards.row_count() {
+                    let mut card = cards.row_data(c).unwrap();
+                    card.id = id.into();
+                    cards.set_row_data(c, card);
+                }
+            }
+            i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
+        };
+        press_key(&window, Key::Menu);
+        refill("bbbbbbbbbbb");
+        // Copy Link, past the separator, as in a_cards_menu_copies_its_link.
+        for _ in 0..6 {
+            press_key(&window, Key::DownArrow);
+        }
+        press_key(&window, Key::Return);
+        assert_eq!(*copied.borrow(), ["aaaaaaaaaaa"]);
+        // Play, the first item, on a card refilled again under its menu.
+        press_key(&window, Key::Menu);
+        refill("ccccccccccc");
+        press_key(&window, Key::DownArrow);
+        press_key(&window, Key::Return);
+        assert_eq!(played.borrow().last().unwrap(), "bbbbbbbbbbb");
+    }
+
     /// The Channels page tells the controller what of its list is in sight,
     /// with the heights its lines have, so that pictures reach the channels
     /// far down it: a channel's line is a third as tall as a line of videos.
@@ -7762,6 +7850,47 @@ mod tests {
         }
         press_key(window, Key::Return);
         assert!(chosen.get(), "the menu's item wasn't chosen");
+    }
+
+    /// Open Recent opens the file its row shows, though a file loading while
+    /// the menu is open moves the history on under it.
+    #[test]
+    fn open_recent_opens_the_row_chosen_after_history_moves_on() {
+        use slint::platform::Key;
+        let window = window_for_keys();
+        let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+        let seen = opened.clone();
+        window
+            .global::<Actions>()
+            .on_open_recent(move |chosen| seen.borrow_mut().push(chosen.to_string()));
+        let recent = |paths: &[&str]| {
+            let items: Vec<RecentItem> = paths
+                .iter()
+                .map(|path| RecentItem {
+                    title: path.trim_start_matches('/').into(),
+                    path: (*path).into(),
+                    ..Default::default()
+                })
+                .collect();
+            window
+                .global::<Media>()
+                .set_recent(ModelRc::new(VecModel::from(items)));
+        };
+        show_page(&window, "player", "");
+        recent(&["/a.mkv", "/b.mkv"]);
+        window.invoke_show_menu_at(10.0, 10.0);
+        // b.mkv loads in another window: the history has it first now.
+        recent(&["/b.mkv", "/a.mkv"]);
+        // File, its sixth entry (Open Recent), and that menu's first.
+        press_key(&window, Key::DownArrow);
+        press_key(&window, Key::RightArrow);
+        for _ in 0..6 {
+            press_key(&window, Key::DownArrow);
+        }
+        press_key(&window, Key::RightArrow);
+        press_key(&window, Key::DownArrow);
+        press_key(&window, Key::Return);
+        assert_eq!(*opened.borrow(), ["/a.mkv"]);
     }
 
     /// Every key but Tab reached nothing after a choice from a submenu, in the
@@ -8359,6 +8488,11 @@ mod tests {
         let cancelled = Rc::new(Cell::new(false));
         let seen = cancelled.clone();
         library.on_cancel_sign_in(move || seen.set(true));
+        // Back goes a step back, stopping the one working.
+        let gone_back = Rc::new(Cell::new(false));
+        let seen = gone_back.clone();
+        library.on_back(move || seen.set(true));
+        library.set_can_go_back(true);
         for name in ["address", "users", "password"] {
             let step = |working: bool| {
                 library.set_sign_in(crate::LibrarySignIn {
@@ -8378,8 +8512,10 @@ mod tests {
             assert_eq!(window.get_dialog(), "", "{name}");
             // The keyboard stays off the buttons, or Enter would cancel.
             press_key(&window, "q");
+            press_key(&window, Key::Backspace);
             press_key(&window, Key::Return);
             assert!(!cancelled.get(), "{name}");
+            assert!(!gone_back.get(), "{name}");
             assert!(keys.borrow().is_empty(), "{name}: {:?}", keys.borrow());
             step(false);
             settle();
@@ -8642,6 +8778,45 @@ mod tests {
         assert_eq!(queueing(false, false, Some(3)), Queueing::End);
         // Opening, before mpv says what plays: after what is on its way.
         assert_eq!(queueing(false, true, None), Queueing::End);
+    }
+
+    /// Saved, copied or played elsewhere, an entry opens as the user's own:
+    /// what a playlist from the network named goes only if mpv would open it
+    /// from there, and a link's entry that goes stays a link's.
+    #[test]
+    fn only_entries_that_may_reopen_are_saved_or_copied() {
+        let entry = |filename: &str, playlist: &str| PlaylistEntry {
+            filename: filename.into(),
+            playlist: playlist.into(),
+            from_network: util::is_remote(playlist),
+            ..Default::default()
+        };
+        let links = crate::scheme::LinkSources::default();
+        crate::scheme::note_link_sources(&links, &["https://a/link.m3u".into()]);
+        let entries = [
+            entry("/home/a.mkv", ""),
+            entry("/home/b.mkv", "/home/list.m3u"),
+            entry("/home/c.mkv", "https://a/list.m3u"),
+            entry(r"\\evil\share\d.mkv", "https://a/list.m3u"),
+            entry("https://a/e.mp4", "https://a/list.m3u"),
+            entry("https://a/f.m3u", "https://a/link.m3u"),
+            entry("udp://@239.0.0.1:1234", "https://a/link.m3u"),
+        ];
+        let kept: Vec<&str> = reopenable_entries(&entries, &links)
+            .into_iter()
+            .map(|entry| entry.filename.as_str())
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                "/home/a.mkv",
+                "/home/b.mkv",
+                "https://a/e.mp4",
+                "https://a/f.m3u"
+            ]
+        );
+        assert!(crate::scheme::from_link(&links, "https://a/f.m3u"));
+        assert!(!crate::scheme::from_link(&links, "https://a/e.mp4"));
     }
 
     #[test]

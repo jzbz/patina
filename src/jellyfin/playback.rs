@@ -255,6 +255,9 @@ pub struct Version {
 pub struct Playing {
     pub entry: String,
     pub server_id: String,
+    /// The user it plays as. Its reports go to the server only while that
+    /// user is the one signed in there.
+    pub user_id: String,
     pub item_id: String,
     pub title: String,
     pub audio_only: bool,
@@ -697,6 +700,7 @@ pub fn plan(
     let playing = Playing {
         entry: asked.entry.to_owned(),
         server_id: asked.server_id.to_owned(),
+        user_id: client.user_id().unwrap_or_default().to_owned(),
         item_id: item.id.clone(),
         title,
         audio_only: audio,

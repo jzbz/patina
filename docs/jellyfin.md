@@ -87,7 +87,8 @@ times out; a load whose page was left meanwhile skips its request. The
 keyring has one thread of its own, which does what it is asked in order
 (`session::keyring`): a token saved and then deleted, by signing out while
 the keyring waits to be unlocked, must not be deleted first and saved
-after. Reports go out on a thread of their own too (see Reporting), the
+after; the OpenSubtitles password in the preferences takes the same
+thread. Reports go out on a thread of their own too (see Reporting), the
 image cache has its own workers, and the load hook's requests run on a
 thread each (see What the hook sets).
 
@@ -156,7 +157,12 @@ what any window plays from that server, after reporting where it
 stopped, then calls `/Sessions/Logout` (once the reports on their way
 have gone, or five seconds have passed, since they carry the same token)
 and deletes the token. Playing on would report nothing more, and the
-episodes queued after it couldn't open.
+episodes queued after it couldn't open. Signing in to a server as another
+user signs the account there out the same way, once the new one can be
+added, so that what plays from it doesn't go on reporting under the new
+account's token. A load still asking the server stops too, and each
+playback keeps the user it was asked as: a report of it that comes after
+another user has signed in is dropped (`Session::report`).
 
 **Certificates.** Requests trust what the system trusts (ureq's platform
 verifier). A server can instead be given a CA file, whose certificates are
@@ -475,13 +481,15 @@ Shuffle does, so that the playlist says it is shuffled and turning that
 off puts the songs back in order. Play Next and Add to Queue, on a song, a
 card or the "…" button of an item's page, insert into the queue of the
 window used last of those playing something, since the library shows only
-in a window that plays nothing, and the library says "Playing Next" or
-"Added to Queue"; with nothing playing elsewhere they play in the
-library's window, as Play would. A Jellyfin song in the playlist has Go to
-Album and Go to Artist in its menu, which open that page in an idle
-window, or a new one. The desktop's media controls and media keys follow
-the window used last of those playing something too, so that browsing or
-queueing in the library's window leaves them with the music.
+in a window that plays nothing (but not one started with a request's own
+mpv options, whose core would pass them on to what is queued), and the
+library says "Playing Next" or "Added to Queue"; with nothing playing
+elsewhere they play in the library's window, as Play would. A Jellyfin
+song in the playlist has Go to Album and Go to Artist in its menu, which
+open that page in an idle window, or a new one. The desktop's media
+controls and media keys follow the window used last of those playing
+something too, so that browsing or queueing in the library's window
+leaves them with the music.
 
 Songs play through the same `jellyfin://` entries and hook, in Patina's
 music mode (whether an item is audio is the server's to say, since the
@@ -668,7 +676,10 @@ makes a small library with that ffmpeg (movies, a show with two seasons
 and subtitles, an album with lyrics), starts the server on 127.0.0.1 with
 all its state in one folder (its discovery and UPnP off, its outgoing
 requests sent nowhere), completes its setup through the API with a random
-admin password, and waits for the scan, trickplay images included.
+admin password (which, like its tokens and the Quick Connect secret, it
+keeps off the command lines of the curl and jq it runs, where other users
+of the computer could read it), and waits for the scan, trickplay images
+included.
 `start` prints the variables above, for `eval`; development.md has the
 commands. CI's Linux job runs the same server after the rest of the
 suite, with its downloads cached by their digests, and the Jellyfin tests

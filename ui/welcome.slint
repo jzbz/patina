@@ -121,7 +121,7 @@ export component WelcomeView inherits Rectangle {
                         title: "Resume Last Playback";
                         detail: Media.resume-title;
                         clicked => {
-                            Actions.open-recent(0);
+                            Actions.open-recent(Media.resume-path);
                         }
                     }
                     WelcomeAction {
@@ -209,7 +209,7 @@ export component WelcomeView inherits Rectangle {
                 }
                 if Media.recent.length > 0: ListView {
                     vertical-stretch: 1;
-                    for item[index] in Media.recent: Rectangle {
+                    for item in Media.recent: Rectangle {
                         height: 44px;
                         border-radius: Theme.control-radius;
                         background: touch.has-hover ? Theme.hover : transparent;
@@ -240,7 +240,7 @@ export component WelcomeView inherits Rectangle {
                         }
                         touch := TouchArea {
                             clicked => {
-                                Actions.open-recent(index);
+                                Actions.open-recent(item.path);
                             }
                         }
                     }

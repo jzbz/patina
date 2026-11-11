@@ -397,10 +397,10 @@ export component PlayerWindow inherits Window {
             }
             Menu {
                 title: "Open Recent";
-                for item[index] in Media.recent: MenuItem {
+                for item in Media.recent: MenuItem {
                     title: item.title;
                     activated => {
-                        Actions.open-recent(index);
+                        Actions.open-recent(item.path);
                     }
                 }
                 MenuSeparator { }

@@ -23,8 +23,12 @@
 # password is made at random at the first start and kept in
 # DIR/admin-password, which only this user can read, and every start has the
 # server allow cross-origin requests from its own address only, so that no
-# other page can send it a token or read its answers. viewer, whose password
-# is no secret, can see the generated library and nothing else.
+# other page can send it a token or read its answers. Nor does patina's
+# password, a token or the Quick Connect secret go on a command line, which
+# every user here can read with ps: jq takes them from its environment, which
+# only this user can read, and curl its Authorization header from a pipe.
+# viewer, whose password is no secret, can see the generated library and
+# nothing else.
 #
 # Jellyfin 12.4 makes no media segments by itself (its segment providers are
 # all plugins, and /MediaSegments lists only what an installed provider made),
@@ -318,26 +322,29 @@ stop() {
 
 # api METHOD PATH [BODY]: prints the answer and fails on an HTTP error, or
 # when none has come in a minute. BODY is JSON, or "-" for JSON on stdin.
-# AUTH and TOKEN make the Authorization header.
+# AUTH and TOKEN make the Authorization header, which curl reads from a
+# pipe rather than its command line, since it carries the token.
 AUTH=$TOOL_AUTH
 TOKEN=
 api() {
   local auth=$AUTH
   [ -z "$TOKEN" ] || auth+=", Token=\"$TOKEN\""
-  local -a args=(-sS --fail-with-body --max-time 60 -A Patina-dev -X "$1" -H "Authorization: $auth")
+  local -a args=(-sS --fail-with-body --max-time 60 -A Patina-dev -X "$1")
   if [ $# -gt 2 ]; then
     args+=(-H 'Content-Type: application/json')
     if [ "$3" = - ]; then args+=(--data-binary @-); else args+=(--data-binary "$3"); fi
   elif [ "$1" = POST ]; then
     args+=(-H 'Content-Length: 0')
   fi
-  curl "${args[@]}" "$URL$2"
+  # The pipe is opened here, on curl's own line, so that it is still open
+  # when curl reads it.
+  curl "${args[@]}" -H @<(printf 'Authorization: %s\n' "$auth") "$URL$2"
 }
 
 # sign_in USER PASSWORD: sets TOKEN.
 sign_in() {
   TOKEN=
-  TOKEN=$(jq -nc --arg u "$1" --arg p "$2" '{Username: $u, Pw: $p}' |
+  TOKEN=$(PW=$2 jq -nc --arg u "$1" '{Username: $u, Pw: env.PW}' |
     api POST /Users/AuthenticateByName - | jq -er .AccessToken)
 }
 
@@ -368,9 +375,11 @@ sign_in_admin() {
   say "replacing the administrator's published password with a random one"
   sign_in "$ADMIN_USER" "$PUBLISHED_ADMIN_PASSWORD"
   make_admin_password
+  local password
+  password=$(admin_password)
   # The token this request carries outlives the change; patina's others don't.
-  jq -nc --arg old "$PUBLISHED_ADMIN_PASSWORD" --arg new "$(admin_password)" \
-    '{CurrentPw: $old, NewPw: $new}' | api POST /Users/Password -
+  PW=$password jq -nc --arg old "$PUBLISHED_ADMIN_PASSWORD" '{CurrentPw: $old, NewPw: env.PW}' |
+    api POST /Users/Password -
 }
 
 # Run at every start: signs in as patina, and has the server allow
@@ -480,7 +489,9 @@ first_start() {
     jq -nc --arg name "$SERVER_NAME" '{ServerName: $name, UICulture: "en-US",
       MetadataCountryCode: "US", PreferredMetadataLanguage: "en"}' |
       api POST /Startup/Configuration -
-    jq -nc --arg n "$ADMIN_USER" --arg p "$(admin_password)" '{Name: $n, Password: $p}' |
+    local password
+    password=$(admin_password)
+    PW=$password jq -nc --arg n "$ADMIN_USER" '{Name: $n, Password: env.PW}' |
       api POST /Startup/User -
     api POST /Startup/RemoteAccess '{"EnableRemoteAccess": false}'
     api POST /Startup/Complete
@@ -622,10 +633,10 @@ DEVICE_PROFILE='{
 # path from this machine or a credential.
 SECRET=
 save() {
-  jq --arg dir "$DIR" --arg token "$TOKEN" --arg secret "$SECRET" '
+  TOKEN=$TOKEN SECRET=$SECRET jq --arg dir "$DIR" '
     def replace($from; $to): if $from == "" then . else split($from) | join($to) end;
     walk(if type == "string"
-      then replace($dir; "/srv/jellyfin") | replace($token; "TOKEN") | replace($secret; "SECRET")
+      then replace($dir; "/srv/jellyfin") | replace(env.TOKEN; "TOKEN") | replace(env.SECRET; "SECRET")
       else . end)' >"$OUT/$1.json"
 }
 
@@ -645,8 +656,9 @@ fixtures() {
   SECRET=$(jq -er .Secret <<<"$qc")
   save quick_connect_initiate <<<"$qc"
 
-  local auth
-  auth=$(jq -nc --arg u "$ADMIN_USER" --arg p "$(admin_password)" '{Username: $u, Pw: $p}' |
+  local auth password
+  password=$(admin_password)
+  auth=$(PW=$password jq -nc --arg u "$ADMIN_USER" '{Username: $u, Pw: env.PW}' |
     api POST /Users/AuthenticateByName -)
   TOKEN=$(jq -er .AccessToken <<<"$auth")
   save authenticate_by_name <<<"$auth"

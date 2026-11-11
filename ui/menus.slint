@@ -43,10 +43,10 @@ export component MainMenu inherits ContextMenuArea {
             }
             Menu {
                 title: "Open Recent";
-                for item[index] in MenuMedia.recent: MenuItem {
+                for item in MenuMedia.recent: MenuItem {
                     title: item.title;
                     activated => {
-                        Actions.open-recent(index);
+                        Actions.open-recent(item.path);
                     }
                 }
                 MenuSeparator { }

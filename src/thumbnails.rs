@@ -17,6 +17,12 @@ use std::time::{Duration, Instant, SystemTime};
 /// Thumbnails per file.
 pub const COUNT: usize = 100;
 const CACHE_MAGIC: &[u8; 8] = b"PATTHMB1";
+/// The largest cache file written or read back. Real video at the widest
+/// setting and the tallest shape [`height_for`] allows stays under it; only
+/// frames of pure noise come close. A set of thumbnails past it isn't
+/// cached, and a file past it isn't read, since reading it would only cost
+/// memory.
+const CACHE_FILE_LIMIT: u64 = 256 << 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Thumbnail {
@@ -211,7 +217,7 @@ fn generate(
         return Err("the file has no video".into());
     }
     let width = request.width.max(16);
-    let height = ((width as f64 * dh as f64 / dw as f64).round() as u32).max(8) & !1;
+    let height = height_for(width, dw, dh);
 
     let mut thumbnails = vec![None; COUNT];
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
@@ -263,6 +269,19 @@ fn generate(
     drop(context);
     let _ = mpv.command(&["quit"]);
     Ok(thumbnails)
+}
+
+/// The height of a thumbnail `width` pixels wide, for a video displayed at
+/// `dw` × `dh`. A file decides its own shape, and an absurd one (a frame
+/// thousands of times taller than wide, or a sample aspect ratio of 1:64)
+/// would ask for gigabytes per thumbnail, more than mpv's scaler survives.
+/// So the height stops at twice the width, which still fits a portrait
+/// phone video; mpv letterboxes anything taller inside it.
+fn height_for(width: u32, dw: i64, dh: i64) -> u32 {
+    let height = (f64::from(width) * dh as f64 / dw as f64)
+        .round()
+        .min(f64::from(width) * 2.0);
+    (height as u32).max(8) & !1
 }
 
 /// Waits for a seek (or the initial load) to finish. Frames that arrive in
@@ -350,6 +369,16 @@ fn write_cache(file: &Path, thumbnails: &[Option<Thumbnail>]) {
         data.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
         data.extend_from_slice(&jpeg);
     }
+    // read_cache would turn it down, and writing it would only push other
+    // files out of the cache.
+    if data.len() as u64 > CACHE_FILE_LIMIT {
+        log::info!(
+            "not caching thumbnails in {}: {} bytes is past the cache file limit",
+            file.display(),
+            data.len()
+        );
+        return;
+    }
     let result = (|| -> std::io::Result<()> {
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir)?;
@@ -364,11 +393,18 @@ fn write_cache(file: &Path, thumbnails: &[Option<Thumbnail>]) {
 }
 
 fn read_cache(file: &Path) -> Option<Vec<Option<Thumbnail>>> {
+    let handle = std::fs::File::open(file).ok()?;
+    if handle.metadata().ok()?.len() > CACHE_FILE_LIMIT {
+        return None;
+    }
     let mut data = Vec::new();
-    std::fs::File::open(file)
-        .ok()?
+    handle
+        .take(CACHE_FILE_LIMIT + 1)
         .read_to_end(&mut data)
         .ok()?;
+    if data.len() as u64 > CACHE_FILE_LIMIT {
+        return None;
+    }
     let rest = data.strip_prefix(CACHE_MAGIC.as_slice())?;
     let (count, mut rest) = rest.split_first_chunk::<4>()?;
     let count = u32::from_le_bytes(*count) as usize;
@@ -439,14 +475,15 @@ pub fn cache_size(dir: &Path) -> u64 {
 mod tests {
     use super::*;
 
-    fn test_video(dir: &Path) -> Option<PathBuf> {
-        // A short clip made on the fly, so the test needs no fixtures.
+    /// A short clip of `source`, a lavfi graph, made on the fly so the
+    /// tests need no fixtures.
+    fn test_video(dir: &Path, name: &str, source: &str) -> Option<PathBuf> {
         crate::mpv::testing::headless()?;
-        let path = dir.join("clip.mkv");
+        let path = dir.join(name);
         let made = std::process::Command::new("ffmpeg")
             .stdin(std::process::Stdio::null())
             .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i"])
-            .arg("testsrc2=size=320x180:rate=10:duration=6")
+            .arg(source)
             .args(["-c:v", "libx264", "-g", "5", "-pix_fmt", "yuv420p"])
             .arg(&path)
             .status()
@@ -462,7 +499,8 @@ mod tests {
     fn thumbnails_are_generated_then_served_from_the_cache() {
         let dir = std::env::temp_dir().join(format!("patina-thumbs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let Some(path) = test_video(&dir) else {
+        let Some(path) = test_video(&dir, "clip.mkv", "testsrc2=size=320x180:rate=10:duration=6")
+        else {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         };
@@ -512,6 +550,68 @@ mod tests {
 
         evict(&dir.join("cache"), 0);
         assert_eq!(cache_size(&dir.join("cache")), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn thumbnails_follow_the_video_shape_up_to_twice_their_width() {
+        assert_eq!(height_for(240, 1920, 1080), 134);
+        assert_eq!(height_for(240, 1080, 1920), 426);
+        assert_eq!(height_for(240, 64, 4_194_304), 480);
+        assert_eq!(height_for(240, 4_194_304, 64), 8);
+    }
+
+    #[test]
+    fn a_video_of_an_absurd_shape_gets_thumbnails_of_a_bounded_size() {
+        let dir = std::env::temp_dir().join(format!("patina-thumbs-tall-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A 64x64 picture with a sample aspect ratio of 1:64, which mpv
+        // displays 64 times taller than wide.
+        let source = "testsrc2=size=64x64:rate=10:duration=2,setsar=1/64";
+        let Some(path) = test_video(&dir, "tall.mkv", source) else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        let (_job, receiver) = start(Request {
+            path,
+            duration: 2.0,
+            width: 64,
+            cache_dir: None,
+            cache_limit_bytes: 0,
+        });
+        let mut made = 0;
+        while let Ok(update) = receiver.recv_blocking() {
+            match update {
+                Update::Ready(_, thumbnail) => {
+                    assert_eq!((thumbnail.width, thumbnail.height), (64, 128));
+                    assert_eq!(thumbnail.rgba.len(), 64 * 128 * 4);
+                    made += 1;
+                }
+                Update::Finished => break,
+            }
+        }
+        assert!(made > 0, "made no thumbnails");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_oversized_cache_file_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("patina-thumbs-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A well-formed file, but past the limit: its first entry claims the
+        // limit's worth of bytes, and the rest are empty. Sparse, so making
+        // it writes almost nothing.
+        let file = dir.join("big.thumbs");
+        let mut data = CACHE_MAGIC.to_vec();
+        data.extend_from_slice(&(COUNT as u32).to_le_bytes());
+        data.extend_from_slice(&(CACHE_FILE_LIMIT as u32).to_le_bytes());
+        let handle = std::fs::File::create(&file).unwrap();
+        (&handle).write_all(&data).unwrap();
+        handle
+            .set_len(data.len() as u64 + CACHE_FILE_LIMIT + 4 * (COUNT as u64 - 1))
+            .unwrap();
+        drop(handle);
+        assert!(read_cache(&file).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -268,8 +268,13 @@ pub fn clean_text(text: &str) -> String {
     let mut count = 0;
     let mut space = false;
     for c in text.trim().chars() {
-        if matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}')
-            || (c.is_control() && !c.is_whitespace())
+        // Every character of Unicode's Bidi_Control: the embeddings and
+        // overrides, the isolates, and the three marks (the Arabic letter
+        // mark, U+061C, being a format character that is_control misses).
+        if matches!(
+            c,
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}' | '\u{061c}'
+        ) || (c.is_control() && !c.is_whitespace())
         {
             continue;
         }
@@ -773,6 +778,7 @@ mod tests {
         assert_eq!(clean_text("  a\t b\r\n\nc  "), "a b c");
         assert_eq!(clean_text("a\u{0}b\u{7f}c\u{1b}[31m"), "abc[31m");
         assert_eq!(clean_text("safe\u{202e}txt.exe\u{2066}"), "safetxt.exe");
+        assert_eq!(clean_text("a\u{061c}b\u{200f}c"), "abc");
         assert_eq!(clean_text("名前 ok, \"quoted\""), "名前 ok, \"quoted\"");
         assert_eq!(clean_text(""), "");
         assert_eq!(clean_text(&"x".repeat(9000)).len(), TITLE_LIMIT);

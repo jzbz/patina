@@ -204,7 +204,10 @@ export global Media {
     in property <bool> lyrics-timed;
     in property <int> lyric: -1;
     in property <[RecentItem]> recent;
+    // The file played last, which the recent files leave out when they are
+    // limited to none.
     in property <string> resume-title;
+    in property <string> resume-path;
     in property <[DeviceItem]> audio-devices;
 }
 
@@ -331,7 +334,9 @@ export global Actions {
     // The title bar and controller faded in or out.
     callback chrome-visible(bool);
     callback select-chapter(int);
-    callback open-recent(int);
+    // A recent file, by the path its row shows: a menu open shows the
+    // entries as they were when it opened, and history may have moved on.
+    callback open-recent(string);
     callback set-eq(int, float);
     // Any pointer or keyboard activity from the user.
     callback activity();

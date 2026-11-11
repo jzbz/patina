@@ -480,7 +480,7 @@ impl PreferencesController {
         else {
             return;
         };
-        let value = (value.clamp(*min, *max) / step).round() * step;
+        let value = snapped(value, *min, *max, *step);
         // Integer preferences must stay integers in JSON.
         let current = serde_json::to_value(&*self.app().prefs())
             .ok()
@@ -529,8 +529,10 @@ impl PreferencesController {
     }
 
     /// Saves the OpenSubtitles password in the system's store (or removes
-    /// it, when empty), on a thread of its own: the store can block, or
-    /// ask to be unlocked.
+    /// it, when empty), on the keyring's own thread: the store can block,
+    /// or ask to be unlocked. That thread does what it is asked in order,
+    /// so a password saved and then cleared while the store waits to be
+    /// unlocked can't be removed first and saved after.
     fn save_password(self: &Rc<Self>, password: &str) {
         let username = self.app().prefs().opensubtitles_username.trim().to_owned();
         if username.is_empty() {
@@ -540,10 +542,9 @@ impl PreferencesController {
             return;
         }
         let password = password.to_owned();
-        let (sender, receiver) = async_channel::bounded(1);
-        let spawned = std::thread::Builder::new()
-            .name("password".into())
-            .spawn(move || {
+        let weak = Rc::downgrade(self);
+        crate::jellyfin::session::keyring(
+            move || {
                 let service = crate::opensubtitles::PASSWORD_SERVICE;
                 let result = if password.is_empty() {
                     crate::credentials::delete(service, &username).map(|()| false)
@@ -551,31 +552,21 @@ impl PreferencesController {
                     crate::credentials::set(service, &username, &password).map(|()| true)
                 };
                 crate::opensubtitles::forget_shared();
-                let _ = sender.send_blocking(result);
-            });
-        if let Err(error) = spawned {
-            log::warn!("could not save the password: {error}");
-            return;
-        }
-        let weak = Rc::downgrade(self);
-        let spawned = slint::spawn_local(async move {
-            let Ok(result) = receiver.recv().await else {
-                return;
-            };
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            let store = crate::credentials::STORE_NAME;
-            *this.password_note.borrow_mut() = Some(match result {
-                Ok(true) => format!("Saved in {store}."),
-                Ok(false) => format!("Removed from {store}."),
-                Err(error) => format!("Could not save it in {store}: {error}"),
-            });
-            this.refresh();
-        });
-        if let Err(error) = spawned {
-            log::warn!("{error}");
-        }
+                result
+            },
+            move |result| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let store = crate::credentials::STORE_NAME;
+                *this.password_note.borrow_mut() = Some(match result {
+                    Ok(true) => format!("Saved in {store}."),
+                    Ok(false) => format!("Removed from {store}."),
+                    Err(error) => format!("Could not save it in {store}: {error}"),
+                });
+                this.refresh();
+            },
+        );
     }
 
     fn browse(self: &Rc<Self>, key: &str) {
@@ -899,6 +890,14 @@ fn strings<'a>(values: impl Iterator<Item = &'a str>) -> ModelRc<SharedString> {
     ))
 }
 
+/// `value` kept within `min` and `max` and rounded to a multiple of `step`.
+/// Rounding comes before the last clamp: a bound that isn't a multiple of
+/// the step would otherwise round past itself, as 1 to 4 seconds of cache
+/// did to 0, which turns mpv's readahead off.
+fn snapped(value: f64, min: f64, max: f64, step: f64) -> f64 {
+    ((value.clamp(min, max) / step).round() * step).clamp(min, max)
+}
+
 /// The JSON value behind a key, including the settings stored inside lists.
 fn value_of(json: &Value, prefs: &Preferences, key: &str) -> Value {
     if let Some(button) = key.strip_prefix("toolbar.") {
@@ -968,6 +967,22 @@ mod tests {
         // Wrong types and unknown keys are refused.
         assert!(with_value(&prefs, "osd-font-size", Value::from("big")).is_none());
         assert!(with_value(&prefs, "no-such-setting", Value::Bool(true)).is_none());
+    }
+
+    #[test]
+    fn numbers_snap_to_their_step_within_their_range() {
+        let range = |key| match PreferencesController::item(key).map(|item| item.control) {
+            Some(Control::Number { min, max, step, .. }) => (min, max, step),
+            _ => panic!("{key} is no number"),
+        };
+        let (min, max, step) = range("cache-secs");
+        assert_eq!(snapped(1.0, min, max, step), 1.0);
+        assert_eq!(snapped(4.0, min, max, step), 1.0);
+        assert_eq!(snapped(26.0, min, max, step), 30.0);
+        let (min, max, step) = range("demuxer-max-mb");
+        assert_eq!(snapped(4096.0, min, max, step), 4096.0);
+        assert_eq!(snapped(1e9, min, max, step), 4096.0);
+        assert_eq!(snapped(-5.0, min, max, step), 1.0);
     }
 
     #[test]

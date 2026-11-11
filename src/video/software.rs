@@ -72,23 +72,15 @@ enum Message {
 /// context, which has to happen before the core is destroyed.
 pub struct SoftwareVideo {
     shared: Arc<Shared>,
+    /// The thread's end of the frame queue, kept so that dropping can close
+    /// it: see the `Drop` impl.
+    sender: async_channel::Sender<Message>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl SoftwareVideo {
     pub fn start(mpv: Arc<Mpv>, width: u32, height: u32, hooks: Hooks) -> Result<Self, String> {
-        let shared = Arc::new(Shared::default());
-        shared.update(|state| {
-            state.width = width;
-            state.height = height;
-        });
-        // Bounded, so the thread draws no faster than the window shows.
-        let (sender, receiver) = async_channel::bounded::<Message>(2);
-        let thread_shared = shared.clone();
-        let thread = std::thread::Builder::new()
-            .name("video".into())
-            .spawn(move || run(&mpv, &thread_shared, &sender))
-            .map_err(|error| format!("could not start the video thread: {error}"))?;
+        let (video, receiver) = Self::spawn(mpv, width, height)?;
         slint::spawn_local(async move {
             while let Ok(message) = receiver.recv().await {
                 match message {
@@ -99,10 +91,35 @@ impl SoftwareVideo {
             }
         })
         .map_err(|error| error.to_string())?;
-        Ok(Self {
+        Ok(video)
+    }
+
+    /// Starts the render thread, which sends what it has for the window to
+    /// the receiver returned.
+    fn spawn(
+        mpv: Arc<Mpv>,
+        width: u32,
+        height: u32,
+    ) -> Result<(Self, async_channel::Receiver<Message>), String> {
+        let shared = Arc::new(Shared::default());
+        shared.update(|state| {
+            state.width = width;
+            state.height = height;
+        });
+        // Bounded, so the thread draws no faster than the window shows.
+        let (sender, receiver) = async_channel::bounded::<Message>(2);
+        let thread_shared = shared.clone();
+        let thread_sender = sender.clone();
+        let thread = std::thread::Builder::new()
+            .name("video".into())
+            .spawn(move || run(&mpv, &thread_shared, &thread_sender))
+            .map_err(|error| format!("could not start the video thread: {error}"))?;
+        let video = Self {
             shared,
+            sender,
             thread: Some(thread),
-        })
+        };
+        Ok((video, receiver))
     }
 
     /// The window's size in physical pixels changed.
@@ -120,6 +137,11 @@ impl SoftwareVideo {
 impl Drop for SoftwareVideo {
     fn drop(&mut self) {
         self.shared.update(|state| state.stop = true);
+        // The thread may be waiting to send a frame into a full queue, which
+        // only the window's task empties, on this thread, which is about to
+        // wait for it: closing the queue ends that send, and the thread with
+        // it.
+        self.sender.close();
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
@@ -194,4 +216,59 @@ fn run(mpv: &Arc<Mpv>, shared: &Arc<Shared>, sender: &async_channel::Sender<Mess
     // The context goes before the thread does, while the core is alive: it
     // holds a reference to it.
     drop(context);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn dropping_ends_a_thread_waiting_for_room_in_the_frame_queue() {
+        let builder = match Mpv::builder() {
+            Ok(builder) => builder,
+            Err(error) => {
+                crate::mpv::testing::skip("PATINA_TEST_REQUIRE_MPV", &error);
+                return;
+            }
+        };
+        for (name, value) in [
+            ("vo", "libmpv"),
+            ("ao", "null"),
+            ("idle", "yes"),
+            ("config", "no"),
+            ("terminal", "no"),
+        ] {
+            builder.set_option(name, value).unwrap();
+        }
+        let mpv = Arc::new(builder.initialize().unwrap());
+        // The render context comes first, as in the window: mpv's video output
+        // fails to start without one, and the file then plays with no video.
+        let (video, receiver) = SoftwareVideo::spawn(mpv.clone(), 64, 36).unwrap();
+        assert!(matches!(receiver.recv_blocking(), Ok(Message::Ready)));
+        mpv.command(&["loadfile", "av://lavfi:testsrc2=size=64x36:rate=60"])
+            .unwrap();
+        // Nothing receives, as when the window's task can't run because the
+        // interface thread is busy closing windows: the queue fills, and the
+        // thread waits to send the next frame.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !receiver.is_full() {
+            assert!(Instant::now() < deadline, "the frame queue never filled");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Time for the thread to draw one more frame and wait with it.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (dropped, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(video);
+            let _ = dropped.send(());
+        });
+        assert!(
+            done.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "dropping the video waited forever for its thread"
+        );
+        drop(receiver);
+        let _ = mpv.command(&["quit"]);
+    }
 }

@@ -232,6 +232,11 @@ pub struct YouTubeController {
     lines: Rc<PageLines>,
     /// What of the list is in sight, as the view last said.
     sight: Cell<Sight>,
+    /// The lines that have their pictures, as `update_images` last worked
+    /// them out. A picture asked for while its line was near can arrive
+    /// after a scroll has taken it far away; it is dropped then, as the line
+    /// would only hold it until the next scroll.
+    pictured: RefCell<std::ops::Range<usize>>,
     /// Where each video and channel on the page is: `(line, column)`.
     places: RefCell<HashMap<String, (usize, usize)>>,
     /// Pictures asked for since the page showed, or since they last went.
@@ -385,6 +390,7 @@ impl YouTubeController {
             large: Cell::new(0),
             lines: PageLines::new(),
             sight: Cell::new(Sight::default()),
+            pictured: RefCell::new(0..0),
             places: RefCell::new(HashMap::new()),
             asked: RefCell::new(HashSet::new()),
             avatars: RefCell::new(HashMap::new()),
@@ -1312,6 +1318,7 @@ impl YouTubeController {
         let (first, last) = self.shown();
         let wanted = pictured(first, last);
         self.lines.draw_around(first, last, wanted.clone());
+        *self.pictured.borrow_mut() = wanted.clone();
         let mut asks: Vec<(String, Option<String>)> = Vec::new();
         for (index, line) in self.lines.iter().enumerate() {
             let near = wanted.contains(&index);
@@ -1376,7 +1383,10 @@ impl YouTubeController {
     }
 
     fn thumbnail_arrived(&self, id: &str, image: Image) {
-        self.set_card_image(id, image);
+        // A card scrolled far away by now has no use for the large one.
+        if !self.set_card_image(id, image) {
+            return;
+        }
         let width = self.large.get();
         if width == 0 {
             return;
@@ -1401,18 +1411,37 @@ impl YouTubeController {
         }
     }
 
-    fn set_card_image(&self, id: &str, image: Image) {
+    /// Gives a card its picture, if it is still on the page and near the
+    /// screen; whether it did.
+    fn set_card_image(&self, id: &str, image: Image) -> bool {
         let place = self.places.borrow().get(id).copied();
-        let Some((line, column)) = place else {
-            return;
+        let Some((index, column)) = place else {
+            return false;
         };
-        if let Some(line) = self.lines.row_data(line)
+        if !self.keeps_picture(index, id) {
+            return false;
+        }
+        if let Some(line) = self.lines.row_data(index)
             && let Some(mut card) = line.cards.row_data(column)
             && card.id == id
         {
             card.image = image;
             line.cards.set_row_data(column, card);
+            return true;
         }
+        false
+    }
+
+    /// Whether a picture that has just arrived for the line at `index` is
+    /// kept. Far from the screen it is not, and it is no longer counted as
+    /// asked for, so that it is asked for again (from memory, most often)
+    /// once the line comes near.
+    fn keeps_picture(&self, index: usize, id: &str) -> bool {
+        if self.pictured.borrow().contains(&index) {
+            return true;
+        }
+        self.asked.borrow_mut().remove(id);
+        false
     }
 
     /// A channel's picture, in its line and at the head of its page. The address
@@ -1445,6 +1474,7 @@ impl YouTubeController {
         }
         let place = self.places.borrow().get(id).copied();
         if let Some((index, _)) = place
+            && self.keeps_picture(index, id)
             && let Some(mut line) = self.lines.row_data(index)
             && line.channel.id == id
         {
@@ -3090,6 +3120,93 @@ mod tests {
         }
     }
 
+    /// A picture asked for while its line was near can arrive once a scroll
+    /// has taken the line far away, as a drag of the scrollbar leaves many
+    /// behind it. The line doesn't keep it, nor is the large picture fetched
+    /// for it; it is asked for again when the line comes back near.
+    #[test]
+    fn a_picture_that_arrives_far_from_the_screen_is_not_kept() {
+        let folder = Folder::new("late-pictures");
+        let (_window, session, controller) = section(&folder);
+        let fetched: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let fetching = fetched.clone();
+        session.set_pictures(Box::new(move |_| {
+            let fetching = fetching.clone();
+            Arc::new(move |url: &str| {
+                fetching.lock().unwrap().push(url.to_owned());
+                Err("no pictures".to_owned())
+            })
+        }));
+        controller.open();
+        controller.search.borrow_mut().query = "words".to_owned();
+        controller.search.borrow_mut().results = Some(SearchResults {
+            videos: (0..120)
+                .map(|n| video(&format!("v{n:010}"), &format!("Video {n}")))
+                .collect(),
+            channels: (0..5)
+                .map(|n| {
+                    let mut info =
+                        ChannelInfo::new(ChannelId::parse(&format!("UC{n:022}")).unwrap());
+                    info.title = format!("Channel {n}");
+                    info.avatar = Some(format!("https://yt3.ggpht.com/picture-{n}"));
+                    info
+                })
+                .collect(),
+        });
+        controller.navigate("search");
+        controller.large.set(LARGE_PIXELS);
+        let at = |top: f32| Sight {
+            top,
+            bottom: top + 400.0,
+            videos: 214.0,
+            heading: 34.0,
+            channel: 66.0,
+        };
+        // A heading, five channels and another heading, then a video to a
+        // line: "Video 0" is line 7, at the top, and "Video 92" line 99,
+        // in sight 20,000 pixels down.
+        let (top, lower, channel) = ("v0000000000", "v0000000092", "UC0000000000000000000000");
+        controller.lines_shown(at(0.0));
+        assert!(controller.asked.borrow().contains(top));
+        assert!(controller.asked.borrow().contains(channel));
+        controller.lines_shown(at(20_000.0));
+        let picture = Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1));
+        controller.thumbnail_arrived(top, picture.clone());
+        controller.avatar_arrived(channel, picture.clone());
+        let has_picture = |id: &str| {
+            controller.lines.iter().any(|line| {
+                (line.channel.id == id && line.channel.image.size().width > 0)
+                    || line
+                        .cards
+                        .iter()
+                        .any(|card| card.id == id && card.image.size().width > 0)
+            })
+        };
+        assert!(!has_picture(top), "a far card kept its picture");
+        assert!(!has_picture(channel), "a far channel kept its picture");
+        assert!(!controller.asked.borrow().contains(top));
+        assert!(!controller.asked.borrow().contains(channel));
+        // One that arrives where it is wanted is kept, and its large one is
+        // fetched; the far card's large one is not.
+        controller.thumbnail_arrived(lower, picture.clone());
+        assert!(has_picture(lower));
+        let large_url = |id: &str| VideoId::parse(id).unwrap().large_thumbnail_url();
+        let start = std::time::Instant::now();
+        while !fetched.lock().unwrap().contains(&large_url(lower)) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "no large picture"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!fetched.lock().unwrap().contains(&large_url(top)));
+        // Back near, they are asked for again.
+        controller.lines_shown(at(0.0));
+        assert!(controller.asked.borrow().contains(top));
+        assert!(controller.asked.borrow().contains(channel));
+    }
+
     /// The channel feeds say nothing of a channel's picture: what its page
     /// heard from yt-dlp is kept, if it is followed.
     #[test]
@@ -3201,6 +3318,39 @@ mod tests {
             played(&watch("aaaaaaaaaaa"), "One", 120),
         ]);
         assert_eq!(titles(&controller), ["Three, as saved", "One"]);
+    }
+
+    /// A title from the history is someone else's words, from mpv's
+    /// media-title or yt-dlp, and a downloaded file's name is yt-dlp's
+    /// making from one: each is cleaned like any title the section fetches,
+    /// with no direction override or line break left in it.
+    #[test]
+    fn the_history_pages_titles_are_cleaned() {
+        let folder = Folder::new("history-cleaned");
+        let (_window, session, controller) = section(&folder);
+        let file = folder.0.join("Two\u{202e}\nlines [bbbbbbbbbbb].mp4");
+        std::fs::write(&file, b"video").unwrap();
+        let two = VideoId::parse("bbbbbbbbbbb").unwrap();
+        session.set_download(&two, &file);
+        let watch = |id: &str| VideoId::parse(id).unwrap().watch_url();
+        session.set_history(&[
+            played(
+                &watch("aaaaaaaaaaa"),
+                "safe\u{202e}txt.exe\nsecond line",
+                60,
+            ),
+            played(
+                file.to_str().unwrap(),
+                file.file_name().unwrap().to_str().unwrap(),
+                120,
+            ),
+        ]);
+        controller.open();
+        controller.navigate("history");
+        assert_eq!(
+            titles(&controller),
+            ["safetxt.exe second line", "Two lines"]
+        );
     }
 
     /// Clearing the page clears its videos from the player's history and
@@ -3830,7 +3980,9 @@ mod tests {
                 wrong.push(format!("notch {notch}: scroll-offset {offset}"));
             }
         }
-        // A line far above the screen that kept its pictures is seen to.
+        // A line far above the screen that kept its pictures is seen to. The
+        // picture goes straight into the card, as set_card_image keeps none
+        // so far away.
         let kinds: Vec<SharedString> = controller.lines.iter().map(|line| line.kind).collect();
         let (first, last) = controller
             .sight
@@ -3842,9 +3994,12 @@ mod tests {
             .expect("no line far above");
         let line = controller.lines.row_data(far).unwrap();
         let card = line.cards.row_data(0).unwrap();
-        controller.set_card_image(
-            &card.id,
-            Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1)),
+        line.cards.set_row_data(
+            0,
+            YouTubeCard {
+                image: Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1)),
+                ..card.clone()
+            },
         );
         if !pictures_wrong(&window, &controller)
             .iter()
@@ -3852,7 +4007,7 @@ mod tests {
         {
             wrong.push(format!("line {far}, far above, kept its pictures unseen"));
         }
-        controller.set_card_image(&card.id, Image::default());
+        line.cards.set_row_data(0, card);
         // Back from playing, the same line is at the same place.
         let before = (controller.sight.get(), drawn_lines(&window, &controller));
         let playback = window.global::<crate::Playback>();

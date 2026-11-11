@@ -129,11 +129,25 @@ reaches it as an ordinary image. Patina gets there in one of these ways:
 - OpenGL works, but it is Apple's software renderer (a Mac without a GPU),
   which draws mpv's video in the wrong colors and streaked. The video
   renderer ends the loop when it sees it.
+- OpenGL works for Slint, but mpv can't make its render context with it
+  (or no GL library can be loaded to resolve mpv's functions). The window
+  would never become ready to open files, so the video renderer ends the
+  loop, unless another window of the process already draws video with
+  OpenGL: then this one only shows the error, rather than interrupting
+  the other.
 - Any other error ends the event loop.
 
-In the last three, Patina starts itself again with
+In the last four, Patina starts itself again with
 `PATINA_RENDERER=software`, since Slint chooses its renderer once per
 process (`video::software::restart`).
+
+The software renderer's thread hands frames to the window through a queue
+two frames deep, which a task on the interface thread empties. Stopping the
+thread, which the interface thread does as a window closes, also closes
+that queue: the thread may be waiting for room in it, and the only thread
+that could make room is the one now waiting for it to end. Quitting with
+several windows open makes that likely, because the windows close one
+after another without the event loop running in between.
 
 ## macOS
 
@@ -226,7 +240,9 @@ The application menu reads `MenuPlayback` and `MenuMedia` rather than
 changes, and an open submenu asking for its entries by an old number gets
 none; a player's state changes all the time (tracks and chapters as a file
 plays), which left submenus empty where Slint draws the menus itself, as on
-Linux. The copies don't change while the menu is open.
+Linux. The copies don't change while the menu is open, so what a choice
+does can't depend on a row's place: Open Recent hands over the path of the
+row chosen, since a file loading meanwhile moves the history on.
 
 The library's lists are ListViews, which make only the rows in sight, and go
 back to where a page was scrolled to (`Library.scroll-offset`) as the page
@@ -358,7 +374,10 @@ with a second, headless mpv core: the file is opened paused, and for each
 thumbnail mpv seeks to the nearest keyframe and renders it through the
 software render API at twice the display width. Frames are rendered as soon
 as mpv announces them, because mpv holds a seek back until the previous
-frame has been drawn. Thumbnails reach the window as they are made, and are
+frame has been drawn. A thumbnail keeps the video's shape up to twice as
+tall as it is wide; a file can claim any shape, and mpv letterboxes a
+taller one inside that, so an absurd aspect ratio can't make a thumbnail
+gigabytes in size. Thumbnails reach the window as they are made, and are
 cached as JPEGs keyed by path, size and modification time, with the least
 recently used files evicted past a size limit.
 
@@ -551,17 +570,20 @@ Patina that was killed goes when a later download wants its name.
 API, shared by the windows so a sign-in is made once. Each user supplies
 their own API key; an account is optional and allows more downloads a day,
 and its password lives in the system's password store (`credentials.rs`,
-over the keyring crates), never in the settings. A search sends the file's
-OpenSubtitles hash (its size plus its first and last 64 KiB as 64-bit
-words) and its name, in the preferred languages turned into OpenSubtitles'
-codes; results that matched the hash come first. Downloading is two steps:
-the API hands out a link with the day's remaining quota, and the file comes
-from the link. Requests follow OpenSubtitles' best practices: the rate
-limit headers are honoured, a sign-in that has run out is renewed once,
-and Patina signs out when it quits. The window runs each search and
-download on a thread of its own; a newer one makes an older one's answer
-moot. Downloads go to the data folder's `online-subtitles` and are added
-with `sub-add`.
+over the keyring crates), never in the settings. The preferences save and
+remove it on the keyring's one thread, which the Jellyfin tokens use too
+(`session::keyring`), so that a password saved and then cleared while the
+store waits to be unlocked isn't removed first and saved after. A search
+sends the file's OpenSubtitles hash (its size plus its first and last 64
+KiB as 64-bit words) and its name, in the preferred languages turned into
+OpenSubtitles' codes; results that matched the hash come first. Downloading
+is two steps: the API hands out a link with the day's remaining quota, and
+the file comes from the link. Requests follow OpenSubtitles' best
+practices: the rate limit headers are honoured, a sign-in that has run out
+is renewed once, and Patina signs out when it quits. The window runs each
+search and download on a thread of its own; a newer one makes an older
+one's answer moot. Downloads go to the data folder's `online-subtitles` and
+are added with `sub-add`.
 
 ## Jellyfin
 
@@ -620,7 +642,12 @@ leaves the machine and what the terms say; this is how it sits among the rest.
   wanted, the threads requests run on, and the picture cache. Nothing in it
   asks the network as Patina starts. Windows subscribe as `Listener`s, and
   count themselves in and out with `entered` and `left`: when the last has
-  left, what is on its way stops. Quitting stops it too.
+  left, what is on its way stops. Quitting stops it too. An update or a pass
+  over saved videos takes yt-dlp and the proxy as it begins, so `App` calls
+  `config_changed` when the preferences turn yt-dlp on or off, name another
+  copy or another proxy, and when the yt-dlp chosen changes by itself: what
+  runs stops, and starts again with the new preferences while a window shows
+  the section.
 - **The view.** Each player window has a `YouTubeController`
   (`youtube/view.rs`), which makes no thread or request until the section
   opens. It fills the window's `YouTube` global and answers its callbacks. The
@@ -725,15 +752,16 @@ join its playlist, as IINA batches Finder's opens (Explorer starts one
 process per selected file). `-e` appends, `-w` gives each source an idle or
 new window (a window counts as busy from the moment a load is asked of it),
 `--mpv-*` options from a launch (and a link's `mpv_` options) are set as a
-new window's core starts, and that window is kept from other opens, which
-would inherit them. `-f` and `--music-mode` apply to the window that
-opened, `--pip` once its video shows, and a launch with nothing to open brings the active window
-forward. Coming to the front needs the desktop's consent: on Wayland the
-launch passes on `XDG_ACTIVATION_TOKEN` and `wayland.rs` hands it to
+new window's core starts, and that window is kept from other opens and from
+the library's Play Next and Add to Queue, which would inherit them. `-f`
+and `--music-mode` apply to the window that opened, `--pip` once its video
+shows, and a launch with nothing to open brings the active window forward.
+Coming to the front needs the desktop's consent: on Wayland the launch
+passes on `XDG_ACTIVATION_TOKEN` and `wayland.rs` hands it to
 xdg_activation_v1 on winit's connection (winit 0.30's `focus_window` does
 nothing there; a new window is raised once it first draws); on Windows the
-launch lets the primary take the foreground with `AllowSetForegroundWindow`;
-on macOS winit activates the app.
+launch lets the primary take the foreground with
+`AllowSetForegroundWindow`; on macOS winit activates the app.
 
 ### patina:// links
 

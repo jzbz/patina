@@ -139,7 +139,13 @@ export component VideoCard inherits Rectangle {
         }
     }
 
+    // The video the open menu is about, as it was when the menu opened. Lines
+    // are refilled in place while an update comes in, so a new upload can
+    // move another video into this card under an open menu; its items act on
+    // the one that was chosen, never on whatever the card shows by then.
+    property <YouTubeCard> menu-of;
     function show-menu(x: length, y: length) {
+        root.menu-of = root.card;
         LibraryUi.menu-card = root.card.id;
         menu.show({ x: x, y: y });
     }
@@ -375,42 +381,42 @@ export component VideoCard inherits Rectangle {
                 title: "Play";
                 activated => {
                     LibraryUi.menu-card = "";
-                    root.play();
+                    YouTube.play(root.menu-of.id);
                 }
             }
             MenuItem {
                 title: "Play From Here";
                 activated => {
                     LibraryUi.menu-card = "";
-                    YouTube.play-from(root.card.id);
+                    YouTube.play-from(root.menu-of.id);
                 }
             }
             MenuItem {
-                title: root.card.saved ? "Remove from Watch Later" : "Save to Watch Later";
+                title: root.menu-of.saved ? "Remove from Watch Later" : "Save to Watch Later";
                 activated => {
                     LibraryUi.menu-card = "";
-                    YouTube.set-saved(root.card.id, !root.card.saved);
+                    YouTube.set-saved(root.menu-of.id, !root.menu-of.saved);
                 }
             }
-            if !root.card.downloaded && root.card.live == "": MenuItem {
+            if !root.menu-of.downloaded && root.menu-of.live == "": MenuItem {
                 title: "Download";
                 activated => {
                     LibraryUi.menu-card = "";
-                    YouTube.download(root.card.id);
+                    YouTube.download(root.menu-of.id);
                 }
             }
-            if root.card.downloaded: MenuItem {
+            if root.menu-of.downloaded: MenuItem {
                 title: "Move Download to Trash";
                 activated => {
                     LibraryUi.menu-card = "";
-                    YouTube.remove-download(root.card.id);
+                    YouTube.remove-download(root.menu-of.id);
                 }
             }
             MenuItem {
-                title: root.card.watched ? "Mark as Unwatched" : "Mark as Watched";
+                title: root.menu-of.watched ? "Mark as Unwatched" : "Mark as Watched";
                 activated => {
                     LibraryUi.menu-card = "";
-                    YouTube.set-watched(root.card.id, !root.card.watched);
+                    YouTube.set-watched(root.menu-of.id, !root.menu-of.watched);
                 }
             }
             MenuSeparator { }
@@ -418,14 +424,14 @@ export component VideoCard inherits Rectangle {
                 title: "Copy Link";
                 activated => {
                     LibraryUi.menu-card = "";
-                    YouTube.copy-link(root.card.id);
+                    YouTube.copy-link(root.menu-of.id);
                 }
             }
-            if root.card.channel-id != "": MenuItem {
+            if root.menu-of.channel-id != "": MenuItem {
                 title: "Go to Channel";
                 activated => {
                     LibraryUi.menu-card = "";
-                    YouTubeUi.open-channel(root.card.channel-id);
+                    YouTubeUi.open-channel(root.menu-of.channel-id);
                 }
             }
         }

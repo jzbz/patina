@@ -182,6 +182,23 @@ pub fn series_prefixes(names: &[&str]) -> Vec<usize> {
         .collect()
 }
 
+/// The text of an M3U playlist of (title, path) pairs, for Save Playlist.
+/// A line ends where a title or path breaks: a title's line breaks become
+/// spaces, and a path with one is left out, since it would be read back as
+/// other entries.
+pub fn m3u(entries: &[(String, String)]) -> String {
+    let mut text = String::from("#EXTM3U\n");
+    for (title, path) in entries {
+        if path.contains(['\r', '\n']) {
+            log::warn!("leaving {path:?} out of the playlist: an M3U can't hold its line break");
+            continue;
+        }
+        let title = title.replace(['\r', '\n'], " ");
+        text.push_str(&format!("#EXTINF:-1,{title}\n{path}\n"));
+    }
+    text
+}
+
 /// The sources in pasted text: one per line, as paths, file:// URIs or
 /// URLs; blank lines and anything else are skipped.
 pub fn pasted_sources(text: &str) -> Vec<String> {
@@ -201,6 +218,12 @@ pub fn pasted_sources(text: &str) -> Vec<String> {
 
 /// The local path of a file:// URI, percent-decoded.
 pub fn file_uri_path(uri: &str) -> Option<String> {
+    uri_path(uri, cfg!(windows))
+}
+
+/// [`file_uri_path`], with `windows` saying whether paths are Windows ones,
+/// so each platform's are tested everywhere.
+fn uri_path(uri: &str, windows: bool) -> Option<String> {
     let rest = uri.strip_prefix("file://")?;
     // file:///path, or file://localhost/path.
     let path = rest.strip_prefix("localhost").unwrap_or(rest);
@@ -218,8 +241,13 @@ pub fn file_uri_path(uri: &str) -> Option<String> {
         }
     }
     let path = String::from_utf8(bytes).ok()?;
-    // file:///C:/Videos on Windows.
-    if cfg!(windows) && path.len() > 2 && path.as_bytes()[2] == b':' {
+    // file:///C:/Videos on Windows: a slash, an ASCII drive letter and a
+    // colon. Looking at the bytes keeps the slice on a character boundary,
+    // whatever the URI decoded to.
+    if windows
+        && let [b'/', drive, b':', ..] = path.as_bytes()
+        && drive.is_ascii_alphabetic()
+    {
         return Some(path[1..].replace('/', "\\"));
     }
     Some(path)
@@ -347,6 +375,53 @@ mod tests {
         assert_eq!(
             pasted_sources(&text),
             [&*path, "/media/c d.mkv", "https://example.com/v"]
+        );
+    }
+
+    #[test]
+    fn windows_file_uris_become_drive_paths_and_nothing_else_does() {
+        assert_eq!(
+            uri_path("file:///C:/Videos/a%20b.mkv", true).as_deref(),
+            Some("C:\\Videos\\a b.mkv")
+        );
+        assert_eq!(
+            uri_path("file://localhost/d:/x.mkv", true).as_deref(),
+            Some("d:\\x.mkv")
+        );
+        assert_eq!(
+            uri_path("file:///C:/x.mkv", false).as_deref(),
+            Some("/C:/x.mkv")
+        );
+        // A first character that takes more than one byte, before a colon.
+        assert_eq!(
+            uri_path("file://\u{e9}:x", true).as_deref(),
+            Some("\u{e9}:x")
+        );
+        assert_eq!(
+            uri_path("file://%C3%A9:C:/x", true).as_deref(),
+            Some("\u{e9}:C:/x")
+        );
+        // Two letters before the colon are no drive.
+        assert_eq!(uri_path("file://ab:x", true).as_deref(), Some("ab:x"));
+    }
+
+    #[test]
+    fn a_saved_playlist_has_a_line_for_each_title_and_path() {
+        let entries = [
+            ("Song".to_owned(), "/music/song.flac".to_owned()),
+            // A server's title with line breaks, which would have made
+            // lines of their own and been read back as entries.
+            (
+                "Episode\n/etc/passwd\r\nTwo".to_owned(),
+                "https://a/v.mp4".to_owned(),
+            ),
+            ("Odd".to_owned(), "/videos/a\n/etc/passwd".to_owned()),
+        ];
+        assert_eq!(
+            m3u(&entries),
+            "#EXTM3U\n\
+             #EXTINF:-1,Song\n/music/song.flac\n\
+             #EXTINF:-1,Episode /etc/passwd  Two\nhttps://a/v.mp4\n"
         );
     }
 }

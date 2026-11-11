@@ -357,6 +357,24 @@ fn native_display(window: &slint::Window) -> NativeDisplay {
         .unwrap_or(NativeDisplay::None)
 }
 
+/// Whether a window of this process has drawn video with OpenGL.
+static OPENGL_DREW: AtomicBool = AtomicBool::new(false);
+
+/// A window's video can't be drawn with OpenGL, for `reason`. Until one
+/// has been, Patina starts again without OpenGL, as it does when Slint
+/// can't use it: otherwise the window would never become ready, and what
+/// it was asked to open would wait for good. Once a window has drawn with
+/// OpenGL, starting again would interrupt it, so this window only says why
+/// it shows nothing.
+fn unusable_opengl(reason: String, hooks: &Hooks) {
+    log::warn!("OpenGL video output failed: {reason}");
+    if OPENGL_DREW.load(Ordering::Relaxed) || software::enabled() {
+        (hooks.error)(format!("Could not start video output: {reason}"));
+    } else {
+        software::restart(format!("OpenGL video output failed: {reason}"));
+    }
+}
+
 /// Starts drawing `mpv`'s video in `component`'s window.
 pub fn attach<C: ComponentHandle + 'static>(
     component: &C,
@@ -372,7 +390,7 @@ pub fn attach<C: ComponentHandle + 'static>(
         .set_rendering_notifier(move |state, api| match state {
             RenderingState::RenderingSetup => {
                 let GraphicsAPI::NativeOpenGL { get_proc_address } = api else {
-                    (hooks.error)("Patina needs an OpenGL renderer to show video.".into());
+                    unusable_opengl("the window is not drawn with OpenGL".into(), &hooks);
                     return;
                 };
                 // SAFETY: Slint's loader is valid during this callback, and glow
@@ -417,9 +435,10 @@ pub fn attach<C: ComponentHandle + 'static>(
                 match Renderer::new(gl, mpv.clone(), display, redraw) {
                     Ok(new) => {
                         renderer = Some(new);
+                        OPENGL_DREW.store(true, Ordering::Relaxed);
                         (hooks.ready)();
                     }
-                    Err(error) => (hooks.error)(format!("Could not start video output: {error}")),
+                    Err(error) => unusable_opengl(error, &hooks),
                 }
             }
             RenderingState::BeforeRendering => {
@@ -450,4 +469,45 @@ pub fn attach<C: ComponentHandle + 'static>(
             }
             _ => {}
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn opengl_failing_starts_again_without_it_until_a_window_has_drawn_with_it() {
+        if software::enabled() {
+            return;
+        }
+        let shown = Rc::new(RefCell::new(Vec::new()));
+        let hooks = Hooks {
+            set_frame: Box::new(|_| {}),
+            target_size: Box::new(|| None),
+            ready: Box::new(|| {}),
+            error: Box::new({
+                let shown = shown.clone();
+                move |message| shown.borrow_mut().push(message)
+            }),
+        };
+
+        // No window has drawn: the window would never become ready, so
+        // Patina ends the loop to start again without OpenGL.
+        unusable_opengl("mpv rejected the context".into(), &hooks);
+        assert_eq!(
+            software::restart_reason(),
+            Some("OpenGL video output failed: mpv rejected the context")
+        );
+        assert!(shown.borrow().is_empty());
+
+        // Another window draws: this one only says why it shows nothing.
+        OPENGL_DREW.store(true, Ordering::Relaxed);
+        unusable_opengl("mpv rejected the context".into(), &hooks);
+        assert_eq!(
+            *shown.borrow(),
+            ["Could not start video output: mpv rejected the context"]
+        );
+    }
 }

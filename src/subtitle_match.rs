@@ -178,14 +178,19 @@ fn rank(
     languages: &[String],
     single: bool,
 ) -> Vec<PathBuf> {
+    // Each name is read once: every subtitle is scored against every video,
+    // and a long series in one folder makes that a great many pairs.
+    let video = Name::video(video);
+    let videos: Vec<Name> = videos.iter().map(|other| Name::video(other)).collect();
     let mut matches: Vec<(usize, f64, PathBuf)> = candidates
         .into_iter()
         .filter_map(|subtitle| {
-            let mine = score(video, &subtitle, single);
+            let name = Name::subtitle(&subtitle);
+            let mine = score(&video, &name, single);
             // Only the video the subtitle fits best gets it.
             let best = videos
                 .iter()
-                .map(|other| score(other, &subtitle, single))
+                .map(|other| score(other, &name, single))
                 .fold(mine, f64::max);
             (mine > 0.0 && mine >= best)
                 .then(|| (language_rank(&subtitle, languages), mine, subtitle))
@@ -199,34 +204,66 @@ fn rank(
     matches.into_iter().map(|(_, _, path)| path).collect()
 }
 
+/// What scoring needs of a file's name.
+struct Name {
+    /// The file name without its extension, in lowercase.
+    stem: String,
+    /// The words that name the video: all of a video's, and a subtitle's
+    /// but its trailing language codes and tags.
+    words: Vec<String>,
+    /// The episode the name has once its bracketed parts are left out, and
+    /// the series name before it.
+    episode: Option<(Episode, String)>,
+}
+
+impl Name {
+    fn video(path: &Path) -> Self {
+        let stem = stem(path);
+        let words = words(&stem);
+        Self::new(stem, words)
+    }
+
+    fn subtitle(path: &Path) -> Self {
+        let stem = stem(path);
+        let (words, _) = split_tags(&stem);
+        Self::new(stem, words)
+    }
+
+    fn new(stem: String, words: Vec<String>) -> Self {
+        let name = without_brackets(&stem);
+        let episode = episode(&name).map(|found| (found, series(&name, &found)));
+        Self {
+            stem,
+            words,
+            episode,
+        }
+    }
+}
+
 /// How well `subtitle` fits `video` (0 = not at all). `single` says the
 /// folder holds only one video, which then takes subtitles nothing else
 /// claims, as IINA does.
-fn score(video: &Path, subtitle: &Path, single: bool) -> f64 {
-    let video_stem = stem(video);
-    let subtitle_stem = stem(subtitle);
-    let video_words = words(&video_stem);
-    let (subtitle_words, _) = split_tags(&subtitle_stem);
-    if subtitle_words == video_words {
+fn score(video: &Name, subtitle: &Name, single: bool) -> f64 {
+    if subtitle.words == video.words {
         return 100.0;
     }
-    if subtitle_stem.starts_with(&video_stem) {
+    if subtitle.stem.starts_with(&video.stem) {
         return 95.0;
     }
-    if !video_words.is_empty()
-        && subtitle_words
-            .windows(video_words.len())
-            .any(|window| window == video_words)
+    if !video.words.is_empty()
+        && subtitle
+            .words
+            .windows(video.words.len())
+            .any(|window| window == video.words)
     {
         return 85.0;
     }
-    let video_name = without_brackets(&video_stem);
-    let subtitle_name = without_brackets(&subtitle_stem);
-    if let (Some(v), Some(s)) = (episode(&video_name), episode(&subtitle_name))
+    if let (Some((v, video_series)), Some((s, subtitle_series))) =
+        (&video.episode, &subtitle.episode)
         && v.number == s.number
         && (v.season.is_none() || s.season.is_none() || v.season == s.season)
     {
-        let likeness = similarity(&series(&video_name, &v), &series(&subtitle_name, &s));
+        let likeness = similarity(video_series, subtitle_series);
         if likeness >= 0.5 || single {
             return 60.0 + 30.0 * likeness;
         }
