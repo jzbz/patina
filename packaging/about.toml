@@ -1,0 +1,170 @@
+# cargo-about's configuration for packaging/THIRD-PARTY-rust.txt, the
+# licences of the Rust crates compiled into patina. packaging/rust-licenses.sh
+# runs it with packaging/about.hbs; its header says when and how.
+
+# The licences Patina accepts a crate under, most preferred first. Where a
+# crate offers a choice ("MIT OR Apache-2.0"), the first of these it offers is
+# the one the notice names and gives the text of. MIT comes first because most
+# crates' own copy of it carries their copyright line, where Apache-2.0's
+# text carries none. A crate whose licence is not on this list, here or in
+# its own section below, fails the script: a new licence is a decision to
+# make, not something to pass on unread.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    # Slint is under the GPL 3.0, its royalty-free licence or its commercial
+    # one, and Patina takes the royalty-free licence (README.md, under
+    # License). cargo-about 0.9.3 can't attach a licence of this kind to the
+    # text each Slint crate ships in LICENSES/, even when told where it is:
+    # it warns that the licence has no file and leaves it out. So the
+    # template names the Slint crates by their licence expression, and
+    # packaging/rust-licenses.sh adds the text from Slint's own crate.
+    "LicenseRef-Slint-Royalty-free-2.0",
+]
+
+# Every platform a package is built for: the Flatpak's two architectures,
+# both halves of the universal Patina.app, and the Windows folder. A crate
+# that only some of them compile is in the one file all three packages carry.
+# cargo-about judges a dependency's cfg against all of them at once, so a few
+# crates that no single target builds are named as well (windows_x86_64_gnu,
+# say, whose cfg asks for x86_64 and the GNU environment, which x86_64 Linux
+# has): one licence too many, never one too few.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# Build scripts' dependencies and slint-build run on the build machine and
+# none of their code ends up in patina, nor does anything only the tests use.
+# Proc macros stay in, since cargo counts them as normal dependencies: their
+# code isn't in the binary either, but the code they generate is.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Crate by crate, from here to the end of the file, as cargo-about requires.
+#
+# Two licences only one crate each uses, accepted for that crate alone.
+# webpki-roots is Mozilla's list of root certificates, the data rustls checks
+# a server against. option-ext is under the MPL 2.0, whose section 3.2 asks
+# that whoever receives the program be told where its source is: the notice
+# gives each crate's repository, and the crate is on crates.io unmodified.
+[webpki-roots]
+accepted = ["CDLA-Permissive-2.0"]
+
+[option-ext]
+accepted = ["MPL-2.0"]
+
+# Crates that ship their licence texts in a form cargo-about doesn't
+# recognise, pointed at them so the notice carries the crate's own copy, with
+# its copyright line, rather than the licence's standard text. Each checksum
+# is the SHA-256 of the file (sha256sum), or of the part from `start` to the
+# end of `end`, both included, where only part of a file is the licence.
+#
+# windows-rs indents its MIT text by four spaces, which defeats the match.
+# The crates share one copy of it, and versions so far share it too.
+[windows]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-collections]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-core]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-future]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-implement]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-interface]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-link]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-numerics]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-result]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-strings]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-sys]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-targets]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-threading]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows_x86_64_gnu]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows_x86_64_msvc]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# Apache-2.0 texts the match misses, for no reason the files show.
+[ab_glyph]
+clarify.license = "Apache-2.0"
+clarify.files = [{ path = "LICENSE", checksum = "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9" }]
+
+[ab_glyph_rasterizer]
+clarify.license = "Apache-2.0"
+clarify.files = [{ path = "LICENSE", checksum = "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9" }]
+
+[owned_ttf_parser]
+clarify.license = "Apache-2.0"
+clarify.files = [{ path = "LICENSE", checksum = "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9" }]
+
+[ryu]
+clarify.license = "Apache-2.0 OR BSL-1.0"
+clarify.files = [
+    { path = "LICENSE-APACHE", license = "Apache-2.0", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+    { path = "LICENSE-BOOST", license = "BSL-1.0", checksum = "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566" },
+]
+
+# Under both licences at once, one file each.
+[dpi]
+clarify.license = "Apache-2.0 AND MIT"
+clarify.files = [
+    { path = "LICENSE", license = "Apache-2.0", checksum = "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a" },
+    { path = "LICENSE-LIBM-MIT", license = "MIT", checksum = "9eff396a99bafd208e7126602420d6864f6066c08b84485a5b032320a9c01997" },
+]
+
+# One file holding both of the crate's licences, MIT first; the MIT part is
+# taken from the top, so chrono's copyright line above it comes too.
+[chrono]
+clarify.license = "MIT OR Apache-2.0"
+clarify.files = [{ path = "LICENSE.txt", license = "MIT", end = "THE SOFTWARE.", checksum = "8f62e89f5d579c48175357a870e1e8096ad2c3ef95b0655d9344d1e112a4d207" }]
+
+[libm]
+clarify.license = "MIT"
+clarify.files = [{ path = "LICENSE.txt", end = "SOFTWARE.\n", checksum = "9e2041d9dd3fda7a7d215385844a9d398f05b68a038b93d5a28fe4fffc3957f0" }]

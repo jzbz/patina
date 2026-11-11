@@ -75,6 +75,22 @@ explains the design.
   in `ui/globals.slint`, which `open-menu` in `ui/app.slint` fills in from
   `Playback` and `Media` when the menu opens: state a menu item needs goes
   in all three.
+- `packaging/THIRD-PARTY-rust.txt` is the licence of every Rust crate
+  compiled into Patina, with its text, which every package carries. After
+  anything that changes `Cargo.lock` (a dependency added, bumped or
+  dropped, a `cargo update`), run `packaging/rust-licenses.sh` and commit
+  what it writes with the change. It needs cargo-about at the version
+  `packaging/rust-licenses.sh version` prints, installed with
+  `cargo install --locked --features cli cargo-about@<that version>`, or
+  named by `CARGO_ABOUT`; it fetches the crates, then reads only their
+  files. It stops on a licence `packaging/about.toml` doesn't accept, and on
+  any warning, such as a crate whose licence file has changed under the
+  checksum about.toml gives it: each is a decision to make there, with the
+  crate's licence read, before the file can be written. It also stops on
+  a crate under no licence's text, as Slint's would be after a release
+  that changes their licence expression from the one `packaging/about.hbs`
+  looks for. Moving to another cargo-about means changing the version in
+  the script and in nothing else, then writing the file again.
 - `packaging/media-types.tsv` is the one list of file types. After
   changing it, update the MimeType line of
   `packaging/linux/video.patina.Patina.desktop`; a test fails with the line
@@ -84,6 +100,8 @@ explains the design.
   tests against the test server above. Its comments explain each choice,
   including how to bump the Windows libmpv pin; the Jellyfin server's pins
   are in `tools/jellyfin-server.sh`, and CI caches its downloads by them.
+  On Ubuntu it also warns, without failing, when
+  `packaging/THIRD-PARTY-rust.txt` is stale for `Cargo.lock`.
 - `cargo clippy --all-targets -- -D warnings` must stay clean.
 - `cargo fmt` after editing Rust.
 - `cargo build` also compiles the Slint UI (`build.rs`); Slint errors show
@@ -124,7 +142,10 @@ The runbook is the header of `.github/workflows/release.yml` and
    Flatpak manifest's yt-dlp with it. The comment at the top of that file
    says how, and how FFmpeg's source pin moves. The version job fails a tag
    whose commit pins a yt-dlp older than the newest there was when the
-   commit was made, and warns on any other build.
+   commit was made, and warns on any other build. And
+   `packaging/THIRD-PARTY-rust.txt` current, as `packaging/rust-licenses.sh
+   check` says; the version job runs that check too, and fails a tag whose
+   file is stale.
 2. A signed `vX.Y.Z` tag starts `release.yml`, which attaches the Flatpaks,
    the Windows installer and the portable zip to a draft release.
 3. The macOS bundle comes from the run as an unsigned artifact; it is signed

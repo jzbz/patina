@@ -79,6 +79,9 @@ cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
 cp "$root/ui/icons/LICENSE" "$app/Contents/Resources/LICENSE-lucide"
 cp "$root/ui/fonts/LICENSE" "$app/Contents/Resources/LICENSE-ibm-plex"
 cp "$root/packaging/THIRD-PARTY.md" "$app/Contents/Resources/THIRD-PARTY.md"
+# The licences of the Rust crates compiled into the binary, as
+# packaging/rust-licenses.sh wrote them for this Cargo.lock.
+cp "$root/packaging/THIRD-PARTY-rust.txt" "$app/Contents/Resources/THIRD-PARTY-rust.txt"
 cp "$tools/THIRD-PARTY-yt-dlp.txt" "$tools/LICENSE-GPLv3.txt" "$tools/LICENSE-ffmpeg.txt" \
     "$app/Contents/Resources/"
 

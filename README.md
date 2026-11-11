@@ -327,8 +327,11 @@ dependencies keep their own licenses. mpv is GPL-licensed by default, and the
 Flatpak builds it so, which makes that package GPL; Patina.app and the Windows
 folder carry LGPL builds of libmpv (`-Dgpl=false`).
 [packaging/THIRD-PARTY.md](packaging/THIRD-PARTY.md) lists each package's
-libraries and licences. The icons, the logo's glyph included, are
-[Lucide](https://lucide.dev)'s, under the ISC license (a few derived from
+libraries and licences, and
+[packaging/THIRD-PARTY-rust.txt](packaging/THIRD-PARTY-rust.txt), which every
+package carries too, the Rust crates compiled into Patina and theirs. The
+icons, the logo's glyph included, are [Lucide](https://lucide.dev)'s,
+under the ISC license (a few derived from
 Feather, MIT); see [ui/icons/LICENSE](ui/icons/LICENSE). The typeface is
 [IBM Plex Sans](https://github.com/IBM/plex), under the SIL Open Font License
 1.1; see [ui/fonts/LICENSE](ui/fonts/LICENSE).

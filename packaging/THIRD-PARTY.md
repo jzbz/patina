@@ -13,6 +13,15 @@ each under its own license.
   Font Name "Plex" (the font files' own notice reads "Copyright 2018 IBM
   Corp. All rights reserved."); SIL Open Font License 1.1; see
   LICENSE-ibm-plex. <https://github.com/IBM/plex>
+- **The Rust crates compiled into Patina**, Slint, winit, rustls and the
+  rest of the program's dependencies on each platform, each under its own
+  licence: most MIT or Apache 2.0, others ISC, BSD, Unicode, Zlib or Boost,
+  webpki-roots (Mozilla's root certificates) the CDLA Permissive 2.0,
+  option-ext the MPL 2.0, and Slint its royalty-free licence.
+  THIRD-PARTY-rust.txt, beside this file, names every crate and version,
+  its source and the licence it is passed on under, with that licence's
+  text. It is generated from Cargo.lock by `packaging/rust-licenses.sh` in
+  Patina's repository.
 
 ## Flatpak (under /app)
 
@@ -29,7 +38,7 @@ each under its own license.
 
 Their license texts are installed under
 `/app/share/licenses/video.patina.Patina`, yt-dlp-ejs's with its Python
-package.
+package, and so are this file and THIRD-PARTY-rust.txt.
 
 ## Windows (the Patina folder)
 

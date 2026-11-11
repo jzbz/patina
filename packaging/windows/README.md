@@ -4,13 +4,15 @@
 the per-user installer each release carries beside the portable
 `patina-vX.Y.Z-windows-x86_64.zip`. It installs the folder that zip holds,
 file for file: `patina.exe`, the `libmpv-2.dll` it needs beside it and its
-licences, `LICENSE-libmpv.txt` and `LICENSE-LGPLv3.txt`, the `yt-dlp` folder (yt-dlp's folder build:
-`yt-dlp.exe` and its `_internal`) and `ffmpeg.exe` it runs for online video
-and downloads, `LICENSE.txt`, `LICENSE-lucide.txt`, `LICENSE-ibm-plex.txt`,
-`THIRD-PARTY.md`, and those two programs' notices, `THIRD-PARTY-yt-dlp.txt`,
-`LICENSE-GPLv3.txt` and `LICENSE-ffmpeg.txt`. To that it adds what an
-unpacked folder cannot have: a Start Menu entry, an Apps & Features entry,
-an uninstaller that removes both along with the file types Patina registered, and an App Paths entry so that
+licences, `LICENSE-libmpv.txt` and `LICENSE-LGPLv3.txt`, the `yt-dlp` folder
+(yt-dlp's folder build: `yt-dlp.exe` and its `_internal`) and `ffmpeg.exe` it
+runs for online video and downloads, `LICENSE.txt`, `LICENSE-lucide.txt`,
+`LICENSE-ibm-plex.txt`, `THIRD-PARTY.md`, `THIRD-PARTY-rust.txt` (the
+licences of the Rust crates compiled into `patina.exe`), and those two
+programs' notices, `THIRD-PARTY-yt-dlp.txt`, `LICENSE-GPLv3.txt` and
+`LICENSE-ffmpeg.txt`. To that it adds what an unpacked folder cannot have: a
+Start Menu entry, an Apps & Features entry, an uninstaller that removes both
+along with the file types Patina registered, and an App Paths entry so that
 Win+R `patina` finds the program from a normal, not elevated, Run box. It is
 what winget installs; `packaging/winget/README.md` covers that side.
 
@@ -195,7 +197,7 @@ same commit:
   it from the exe:
   `(Get-Item C:\scratch\zip\Patina\patina.exe).VersionInfo.ProductVersion`.
 - `SourceDir` is the folder, by its full path; a relative one is read from
-  `packaging\windows`, not from where ISCC was started. The twelve files
+  `packaging\windows`, not from where ISCC was started. The thirteen files
   and `yt-dlp\yt-dlp.exe` are named one by one in the script, and a missing
   one stops the compile; `yt-dlp\_internal` is taken whole.
 - `--output-dir` keeps the result out of the tree; without it ISCC writes

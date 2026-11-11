@@ -1,0 +1,60 @@
+{{!--
+  The template packaging/rust-licenses.sh fills in with cargo-about to make
+  packaging/THIRD-PARTY-rust.txt. Plain text, so every value is in triple
+  braces: double ones would escape <, > and & for HTML, and the e-mail
+  addresses in crates' authors with them. Patina itself is in what
+  cargo-about gathers and is left out here; its LICENSE goes beside this file
+  in every package. The Slint section has to stay last: the script adds the
+  licence's text after it.
+--}}
+Rust crates compiled into Patina
+================================
+
+Generated from Cargo.lock by packaging/rust-licenses.sh in Patina's
+repository, with cargo-about; not to be edited by hand.
+
+patina, the program, is built from the Rust crates listed below. The same
+list serves every package, though each platform compiles only some of them.
+Each crate is under its own licence or licences, named beside it as the
+crate states them. Where a crate offers a choice, Patina passes it on under
+the one its entry appears under in "Licence texts", where the text follows,
+in the crate's own copy wherever it ships one. Each crate's source is in its
+repository, given beside it, and on crates.io at that version. The rest of
+the software in Patina's packages is listed in THIRD-PARTY.md.
+
+Crates
+------{{#each crates}}{{#unless (eq package.name "patina")}}
+
+{{{package.name}}} {{{package.version}}}
+    {{{license}}}{{#if package.repository}}
+    {{{package.repository}}}{{/if}}{{/unless}}{{/each}}
+
+
+Licence texts
+-------------{{#each licenses}}{{#unless (and (eq (len used_by) 1) (eq used_by.[0].crate.name "patina"))}}
+
+================================================================================
+{{{name}}}
+
+Used by:{{#each used_by}}{{#unless (eq crate.name "patina")}}
+    {{{crate.name}}} {{{crate.version}}}{{#unless ../source_path}}{{#if crate.authors}}, by {{#each crate.authors}}{{#unless @first}}, {{/unless}}{{{this}}}{{/each}}{{/if}}{{/unless}}{{/unless}}{{/each}}
+{{#unless source_path}}
+
+The crates above ship no copy of this licence, so this is its standard
+text. Each one's copyright is held by its authors, named beside it where the
+crate names them.
+{{/unless}}
+
+{{{text}}}
+{{/unless}}{{/each}}
+
+================================================================================
+Slint Royalty-free Desktop, Mobile, and Web Applications License 2.0
+
+Used by:{{#each crates}}{{#if (eq license "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0")}}
+    {{{package.name}}} {{{package.version}}}{{/if}}{{/each}}
+
+Slint is under the GPL 3.0, this licence, or Slint's commercial licence, at
+the choice of whoever uses it. Patina uses it under this licence, whose
+attribution is the "Made with Slint" badge in Patina's README. Its text, as
+the slint crate ships it in LICENSES/:

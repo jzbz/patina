@@ -53,10 +53,11 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # Well above a cold build on the slowest runner plus, on Linux, the
-    # bounds of the Jellyfin steps (52 minutes together): one of those that
-    # hangs then fails as a step, and the build cache is still saved, which a
-    # job cancelled at its own timeout skips. A run still going at an hour and
-    # a half is wedged, not busy; GitHub's own ceiling is six.
+    # bounds of the licence check and the Jellyfin steps (62 minutes
+    # together): one of those that hangs then fails as a step, and the build
+    # cache is still saved, which a job cancelled at its own timeout skips. A
+    # run still going at an hour and a half is wedged, not busy; GitHub's own
+    # ceiling is six.
     timeout-minutes: 90
     strategy:
       # One platform failing should not hide what the others would have said.
@@ -260,6 +261,33 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+      # packaging/THIRD-PARTY-rust.txt, the Rust crates' licences that every
+      # package carries, made afresh by packaging/rust-licenses.sh and
+      # compared with the committed one. A warning rather than a failure: the
+      # file needs making again after any change to Cargo.lock, and holding
+      # every such change up for it is release.yml's job at a release tag,
+      # which refuses a stale one. Here it is a reminder, on the change that
+      # made it stale, so a step that times out warns too. On Linux alone,
+      # since the file is the same wherever it is made; it costs a build of
+      # cargo-about, with its own CARGO_HOME and outside target/, and so
+      # outside the cache.
+      - name: The Rust crates' licences (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        timeout-minutes: 10
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          version=$(packaging/rust-licenses.sh version)
+          if ! CARGO_HOME="$RUNNER_TEMP/cargo-about-home" cargo install --locked --features cli --root "$RUNNER_TEMP/cargo-about" "cargo-about@$version"; then
+            echo "::warning::cargo-about $version did not build, so packaging/THIRD-PARTY-rust.txt went unchecked"
+            exit 0
+          fi
+          # Its own CARGO_HOME here too: the check fetches every platform's
+          # crates, which the saved cache has no use for.
+          if ! CARGO_HOME="$RUNNER_TEMP/cargo-about-home" CARGO_ABOUT="$RUNNER_TEMP/cargo-about/bin/cargo-about" packaging/rust-licenses.sh check; then
+            echo "::warning::packaging/rust-licenses.sh check failed (above): run packaging/rust-licenses.sh and commit what it writes, or a release tag on this commit fails"
+          fi
 
       # The Jellyfin client's live tests need a Jellyfin server; without one
       # they skip. tools/jellyfin-server.sh runs a throwaway one on 127.0.0.1,

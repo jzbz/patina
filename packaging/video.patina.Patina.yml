@@ -345,6 +345,13 @@ modules:
         /app/share/licenses/video.patina.Patina/lucide/LICENSE
       - install -Dm644 ui/fonts/LICENSE
         /app/share/licenses/video.patina.Patina/ibm-plex/LICENSE
+      # The licences of the Rust crates compiled into Patina, committed for
+      # this build, which is offline, by packaging/rust-licenses.sh; and
+      # THIRD-PARTY.md, which says what else the bundle carries.
+      - install -Dm644 packaging/THIRD-PARTY-rust.txt
+        /app/share/licenses/video.patina.Patina/THIRD-PARTY-rust.txt
+      - install -Dm644 packaging/THIRD-PARTY.md
+        /app/share/licenses/video.patina.Patina/THIRD-PARTY.md
     sources:
       - type: git
         url: https://github.com/jzbz/patina.git

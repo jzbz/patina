@@ -159,6 +159,8 @@ CloseApplications=yes
 ; build is in yt-dlp\, where Patina looks for yt-dlp.exe (src/platform.rs,
 ; `bundled`); THIRD-PARTY-yt-dlp.txt, LICENSE-GPLv3.txt (yt-dlp's licence)
 ; and LICENSE-ffmpeg.txt (ffmpeg.exe's LGPL 2.1) are their notices.
+; THIRD-PARTY-rust.txt is patina.exe's own: the licences of the Rust crates
+; compiled into it (packaging/rust-licenses.sh).
 ;
 ; The one wildcard is yt-dlp\_internal, Python and the libraries yt-dlp.exe
 ; loads from it: what it holds is yt-dlp_win.zip's, pinned by its digest in
@@ -181,6 +183,7 @@ Source: "{#SourceDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion notim
 Source: "{#SourceDir}\LICENSE-lucide.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-ibm-plex.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\THIRD-PARTY.md"; DestDir: "{app}"; Flags: ignoreversion notimestamp
+Source: "{#SourceDir}\THIRD-PARTY-rust.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\THIRD-PARTY-yt-dlp.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-GPLv3.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
 Source: "{#SourceDir}\LICENSE-ffmpeg.txt"; DestDir: "{app}"; Flags: ignoreversion notimestamp
