@@ -3328,7 +3328,14 @@ mod tests {
     fn the_history_pages_titles_are_cleaned() {
         let folder = Folder::new("history-cleaned");
         let (_window, session, controller) = section(&folder);
-        let file = folder.0.join("Two\u{202e}\nlines [bbbbbbbbbbb].mp4");
+        // Windows allows no line break in a file's name; the direction mark
+        // is cleaned there all the same.
+        let name = if cfg!(windows) {
+            "Two\u{202e} lines [bbbbbbbbbbb].mp4"
+        } else {
+            "Two\u{202e}\nlines [bbbbbbbbbbb].mp4"
+        };
+        let file = folder.0.join(name);
         std::fs::write(&file, b"video").unwrap();
         let two = VideoId::parse("bbbbbbbbbbb").unwrap();
         session.set_download(&two, &file);

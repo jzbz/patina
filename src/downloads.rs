@@ -2244,10 +2244,14 @@ mod tests {
         let folder = Folder::new("stop");
         let unpacked = folder.0.join("unpacked");
         std::fs::write(&unpacked, b"").unwrap();
+        // The worker writes its own id, from a shell of its own that then
+        // becomes it: a shell forked from the launcher keeps the launcher's
+        // trap until it runs a program, and a request that came in between
+        // went unheard, the worker living on (seen on macOS).
         let (child, worker) = start_group(
             &folder,
             "trap 'rm -f \"${0%/pid}/unpacked\"; exit 0' TERM; \
-             sleep 30 & echo $! > \"$0\"; wait",
+             sh -c 'echo $$ > \"$1\"; exec sleep 30' sh \"$0\" & wait",
         );
         let started = Instant::now();
         stop_ytdl(&child);

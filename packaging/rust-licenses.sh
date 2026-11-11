@@ -86,7 +86,19 @@ print(dirs[0])
 # and the texts end in any number of blank lines. Plain line ends, and one
 # blank line at most, read the same everywhere and keep git's whitespace
 # checks quiet.
-sed 's/[[:space:]]*$//' "$work/generated.txt" | cat -s > "$work/THIRD-PARTY-rust.txt"
+sed 's/[[:space:]]*$//' "$work/generated.txt" | cat -s > "$work/squeezed.txt"
+
+# The list of crates is laid out here rather than left to cargo-about,
+# which on GitHub's Ubuntu runner once left out the blank line between two
+# entries that it writes everywhere else: one blank line before each
+# crate's name and before the heading that follows the list.
+awk '
+    /^Crates$/ { list = 1; print; next }
+    list && /^-+$/ { print; next }
+    list && /^Licence texts$/ { list = 0; print ""; print; next }
+    list && /^$/ { next }
+    list && /^[^ ]/ { print "" }
+    { print }' "$work/squeezed.txt" > "$work/THIRD-PARTY-rust.txt"
 
 # Every crate listed has to be under some licence's text. about.hbs finds
 # Slint's crates by their whole licence expression, and one that changes
