@@ -134,7 +134,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <!-- What the libraries in Frameworks are built for. -->
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <!-- Video plays on the integrated GPU of a two-GPU Mac, as IINA's does. -->
+  <!-- Video plays on the integrated GPU of a two-GPU Mac, which saves power. -->
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>CFBundleDocumentTypes</key>
   <array>

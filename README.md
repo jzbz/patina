@@ -1,27 +1,28 @@
 # Patina
 
-[Patina](https://patina.video/) is a media player for Linux, macOS and Windows, written in Rust with a
-[Slint](https://slint.dev) interface on top of [mpv](https://mpv.io). It
-follows [IINA](https://iina.io)'s design and behaviour, and its goal is
-feature parity with IINA on all three platforms.
+[Patina](https://patina.video/) is a media player for Linux, macOS and
+Windows, written in Rust with a [Slint](https://slint.dev) interface on top
+of [mpv](https://mpv.io). Besides your own files and streams, it has a
+Jellyfin client for your server's films, shows and music, and a YouTube
+client with no account.
 
 ![Patina playing a video, with the floating controller](docs/images/player.png)
 
 ![The preferences window](docs/images/preferences.png)
 
-Patina is at an early stage. Playback, the IINA-style window and controls,
-the sidebars, menus, key bindings and history work today; much of IINA is
-still to come. [docs/parity.md](docs/parity.md) tracks every IINA feature
-and its state in Patina.
+Patina is at an early stage. Playback, the window and controls, the
+sidebars, menus, key bindings, history, the Jellyfin client and the YouTube
+section work today, and more is to come. [docs/parity.md](docs/parity.md)
+tracks each feature and its state.
 
 ## What works
 
 - Video through mpv's OpenGL render API, with hardware decoding
   (VA-API tested; mpv picks the decoder)
-- IINA's window: video edge to edge, a title bar and floating controller
+- The window: video edge to edge, a title bar and floating controller
   that fade out together, a draggable controller, and a welcome view with
   resume, open and recent files
-- The controller: volume, play/pause, IINA's speed-ladder arrow buttons,
+- The controller: volume, play/pause, speed-ladder arrow buttons,
   toolbar buttons, a seek bar with buffered range, chapter ticks and A-B
   loop range, and a hover preview with a thumbnail, the time and the chapter
   (thumbnails are made in the background and cached)
@@ -30,26 +31,25 @@ and its state in Patina.
 - The playlist and chapters sidebar, with other files from the same folder
   added automatically, each file's length and how much of it you watched,
   title and artist for tagged music, multi-select, drag-and-drop
-  reordering, copy and paste, and IINA's row menu (play next, subtitles for
+  reordering, copy and paste, and a row menu (play next, subtitles for
   one file, move to trash, ...)
 - Quick settings for video (tracks, aspect ratio, crop, rotation, flip,
   mirror, speed, deinterlacing, hardware decoding, colour), audio (tracks,
   external audio, delay, 10-band equalizer, output device) and subtitles
   (primary and secondary tracks, external files, delay, scale, position)
-- Subtitle files found for you as IINA does: by name, by episode number
-  across a season folder, in subfolders such as `Subs/`, preferred
-  languages first
+- Subtitle files found for you: by name, by episode number across a
+  season folder, in subfolders such as `Subs/`, preferred languages first
 - An application menu (right click, or the title bar's menu button) with
-  IINA's File, Playback, Video, Audio, Subtitles, Window and Help menus
-- A preferences window with IINA's pages and a search field; changes
-  apply to running players immediately
-- Key bindings in mpv's `input.conf` format with IINA's defaults, edited in
-  the preferences with a key recorder; IINA's `#@iina` lines work as-is
+  File, Playback, Video, Audio, Subtitles, Window and Help menus
+- A preferences window with a page for each area and a search field;
+  changes apply to running players immediately
+- Key bindings in mpv's `input.conf` format, edited in the preferences
+  with a key recorder; binding files written for IINA, with their `#@iina`
+  lines, work as they are
 - Media keys and the desktop's player controls: MPRIS on Linux, the
   media panel on Windows, Now Playing on macOS (not yet tried there)
 - Mouse actions: click, double click, right and middle click, and the
-  scroll wheel for volume, seeking or speed, as in IINA's control
-  preferences
+  scroll wheel for volume, seeking or speed
 - Several windows at once, each with its own player, and one Patina at a
   time: files opened from a terminal, a file manager or a `patina://` link
   go to the running Patina, which comes to the front
@@ -58,8 +58,8 @@ and its state in Patina.
   Default apps, and uninstalling takes that out again); the macOS bundle
   declares its file types, and `packaging/linux` has the desktop entry,
   which the Flatpak installs for the system's own default-app settings
-- `patina://open?url=…` links for browser extensions and web pages, as
-  IINA's `iina://` scheme, limited to streams and to mpv options that are
+- `patina://open?url=…` links for browser extensions and web pages, in the
+  form `iina://` links take, limited to streams and to mpv options that are
   safe for a web page to set
 - Keeping the screen awake during playback (or for music only the
   computer)
@@ -71,27 +71,26 @@ and its state in Patina.
   language and format (a video's resolution, pixel format and colors, an
   audio track's sample rate, channels and sample format), following the
   file and its tracks as they change
-- Music mode, IINA's mini player: the cover with the title and artist (an
+- Music mode, a mini player: the cover with the title and artist (an
   album in one file by its chapters), compact controls and the playlist as
   a drawer below; it comes on for audio files and goes for video, and
   audio played out of it has a button back in the controller
 - Resuming where you left off, screenshots, URLs and network streams, A-B
   loops, and a compact always-on-top picture-in-picture window
-- Online video through yt-dlp, with what IINA's Online Media plugin adds:
-  a quality preference, Video Quality and Audio Quality menus for each
-  video that switch where it is playing, and downloads, with a Downloads
-  window that shows their progress
+- Online video through yt-dlp, with a quality preference, Video Quality
+  and Audio Quality menus for each video that switch where it is playing,
+  and downloads, with a Downloads window that shows their progress
 - Subtitles from OpenSubtitles.com, found by the file's hash and name in
   your languages, with your own API key and, if you like, your account,
   whose password stays in the system's password store
-- Your Jellyfin server's library in the player window, which IINA leaves
-  to a plugin: films, shows and music to browse and play, played straight
-  from the server or converted by it when you ask for a lower quality,
+- A Jellyfin client: your server's library in the player window, its
+  films, shows and music to browse and play, played straight from the
+  server or converted by it when you ask for a lower quality,
   with your place and what you've watched kept on the server, the next
   episode lined up, intros and credits skipped where the server marks
   them, its previews in the seek bar, and its files to download
   ([docs/jellyfin.md](docs/jellyfin.md))
-- A YouTube section, with no account and no sign-in: a feed of the channels
+- A YouTube client, with no account and no sign-in: a feed of the channels
   you follow, search, a Watch Later list, the videos played and downloads.
   The lists are Patina's own and don't appear on YouTube; they import from
   and export to the files of Google's data export, and the channels to
@@ -245,8 +244,8 @@ once.
 
 ## Controls
 
-The defaults follow IINA, with Ctrl in place of Command outside macOS.
-Help > Keyboard Shortcuts lists all of them.
+On macOS, Command takes the place of Ctrl. Help > Keyboard Shortcuts lists
+all of them.
 
 | Keys | Action |
 | --- | --- |
@@ -287,8 +286,9 @@ drag the controller to move it.
 - `settings.json` holds the preferences (Ctrl+, opens the window that
   edits them); any key left out takes its default.
 - `input_conf/` holds your key binding sets, one `.conf` file each in mpv's
-  syntax. Lines like `#@patina Ctrl+o open-file` (or IINA's `#@iina ...`)
-  run Patina actions, so IINA's binding files can be copied in as they are.
+  syntax. Lines like `#@patina Ctrl+o open-file` (or `#@iina ...`) run
+  Patina actions, so binding files written for IINA can be copied in as
+  they are.
 - An `mpv` folder holds mpv's own `mpv.conf`, `scripts/`, `script-opts/`
   and `fonts/`.
 - In the data folder, `jellyfin.json` lists the Jellyfin servers you've
@@ -321,8 +321,8 @@ cargo fmt
 
 ## License
 
-MIT. Patina is an independent project, not affiliated with IINA, YouTube or
-Google, and contains no IINA code or artwork. mpv, FFmpeg, Slint and the other
+MIT. Patina is an independent project, not affiliated with Jellyfin, IINA,
+YouTube or Google. mpv, FFmpeg, Slint and the other
 dependencies keep their own licenses. mpv is GPL-licensed by default, and the
 Flatpak builds it so, which makes that package GPL; Patina.app and the Windows
 folder carry LGPL builds of libmpv (`-Dgpl=false`).

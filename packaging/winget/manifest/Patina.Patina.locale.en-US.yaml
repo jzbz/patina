@@ -17,8 +17,8 @@ License: MIT
 # license 0.1.0 shipped under, whatever master does later.
 LicenseUrl: https://github.com/jzbz/patina/blob/v0.1.0/LICENSE
 Copyright: Copyright (c) 2026 Jonathan Zeppettini
-ShortDescription: A media player built on mpv that follows IINA's design
-Description: A media player for Linux, macOS and Windows, written in Rust with a Slint interface on top of mpv. It follows IINA's design and behaviour, and its goal is feature parity with IINA on all three platforms. Patina is at an early stage. Playback, the IINA-style window and controls, the sidebars, menus, key bindings and history work today; much of IINA is still to come.
+ShortDescription: A media player built on mpv, with a Jellyfin client and a YouTube client
+Description: A media player for Linux, macOS and Windows, written in Rust with a Slint interface on top of mpv. Besides your own files and streams, it has a Jellyfin client for your server's films, shows and music, and a YouTube client with no account, with a feed of the channels you follow, search, a Watch Later list and downloads. Patina is at an early stage.
 Moniker: patina
 Tags:
 - media-player
@@ -28,7 +28,8 @@ Tags:
 - audio
 - music
 - mpv
-- iina
+- jellyfin
+- youtube
 ReleaseNotesUrl: https://github.com/jzbz/patina/releases/tag/v0.1.0
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

@@ -23,7 +23,7 @@ cask "patina" do
   url "https://github.com/jzbz/patina/releases/download/v#{version}/patina-v#{version}-macos-universal.zip",
       verified: "github.com/jzbz/patina/"
   name "Patina"
-  desc "Media player powered by mpv"
+  desc "Media player powered by mpv, with Jellyfin and YouTube clients"
   homepage "https://patina.video/"
 
   livecheck do

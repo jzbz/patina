@@ -15,10 +15,10 @@
 
   <description>
     <p>
-      Patina is a media player for video and music, built on mpv. It follows
-      the design and behaviour of IINA, the macOS player: the video fills the
-      window edge to edge, and the title bar and a floating controller fade
-      out together while it plays.
+      Patina is a media player for video and music, built on mpv, with a
+      Jellyfin client and a YouTube client. The video fills the window edge
+      to edge, and the title bar and a floating controller fade out together
+      while it plays.
     </p>
     <p>
       Files opened from a file manager, a terminal or a patina:// link go to
@@ -37,12 +37,15 @@
       <li>Picture-in-picture, A-B loops, screenshots, resuming where you left
       off, and a playback history</li>
       <li>Online video through yt-dlp, with quality menus and downloads</li>
+      <li>A Jellyfin client: your server's films, shows and music to browse
+      and play, with your place and what you've watched kept on the
+      server</li>
       <li>A YouTube section with no account: a feed of the channels you follow,
       search, a Watch Later list and downloads, in lists of Patina's own that
       import from and export to the files of Google's data export</li>
       <li>Subtitles from OpenSubtitles.com, with your own API key</li>
-      <li>Key bindings in mpv's input.conf format with IINA's defaults, and the
-      desktop's media keys and player controls</li>
+      <li>Key bindings in mpv's input.conf format, and the desktop's media
+      keys and player controls</li>
     </ul>
     <p>
       The YouTube section never signs in, and its lists don't appear on
@@ -52,8 +55,8 @@
       sent before you open it.
     </p>
     <p>
-      Patina is at an early stage, and much of IINA is still to come. It is an
-      independent project, not affiliated with IINA, YouTube or Google.
+      Patina is at an early stage, and more is to come. It is an independent
+      project, not affiliated with Jellyfin, YouTube or Google.
     </p>
   </description>
 
@@ -112,7 +115,8 @@
     <keyword>music</keyword>
     <keyword>player</keyword>
     <keyword>mpv</keyword>
-    <keyword>IINA</keyword>
+    <keyword>Jellyfin</keyword>
+    <keyword>YouTube</keyword>
     <keyword>subtitles</keyword>
     <keyword>playlist</keyword>
     <keyword>streaming</keyword>
