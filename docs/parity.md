@@ -157,7 +157,7 @@ once and applied to running players, as IINA's option observers do
 | INP-04 | Dispatch through menus first | adapted: bindings are dispatched directly |
 | INP-05 | Intercepted commands | done: `quit`, `screenshot`, `show-progress`, `show-text`, `set window-scale` |
 | INP-06..08 | Readable binding list, editor, preset sets | done: Preferences > Key Bindings lists bindings with readable names, edits them with a key recorder and common actions, and keeps user sets; the built-in set is copied on first edit. Bundled mpv/VLC/Movist presets planned |
-| INP-11 | Click actions | done: single, double (with single-click delay), right, middle; all of IINA's actions plus the menu |
+| INP-11 | Click actions | done: single, double, right, middle; all of IINA's actions plus the menu. Unlike IINA, whose click shows or hides the controller (which moving the pointer does anyway), a click pauses or resumes by default, as in YouTube's player and most others, and at once: a double click's second click takes the first one's pause back before going full screen. Other single-click actions, and pausing when the double click pauses too, wait out a double click as in IINA. Settings saved with the old default move to pausing once; choosing it again afterwards sticks |
 | INP-12 | Scroll actions | done: volume, seek and speed |
 | INP-13..14, 16 | Pinch, Force Touch, haptics | planned where the platform offers them |
 | INP-17 | Media keys | done: MPRIS on Linux (tested); SMTC on Windows (tested on a Windows 11 VM: the media keys, and the media panel's title and state); MediaPlayer on macOS (written, not yet tried). Media keys go through `PLAYPAUSE`/`NEXT`/... bindings when present, as in IINA |

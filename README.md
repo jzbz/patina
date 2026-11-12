@@ -270,8 +270,8 @@ all of them.
 | Ctrl+Shift+I | Media info |
 | Ctrl+W, Ctrl+Q | Close the window, quit |
 
-With the mouse: double click toggles full screen, a click shows or hides the
-controls, right click opens the menu (pause on macOS), the wheel changes the
+With the mouse: a click pauses or resumes at once, double click toggles full
+screen, right click opens the menu (pause on macOS), the wheel changes the
 volume, and a horizontal scroll seeks. Drag the video to move the window, and
 drag the controller to move it.
 
@@ -284,7 +284,9 @@ drag the controller to move it.
 | Windows | `%APPDATA%\Patina\config` | `%APPDATA%\Patina\data` |
 
 - `settings.json` holds the preferences (Ctrl+, opens the window that
-  edits them); any key left out takes its default.
+  edits them); any key left out takes its default. Beside it,
+  `moved-defaults.json` notes which changed defaults your settings have
+  been given, so that each is given only once.
 - `input_conf/` holds your key binding sets, one `.conf` file each in mpv's
   syntax. Lines like `#@patina Ctrl+o open-file` (or `#@iina ...`) run
   Patina actions, so binding files written for IINA can be copied in as

@@ -78,6 +78,11 @@ export component PlayerWindow inherits Window {
     animate sidebar-shown { duration: 200ms; easing: ease-out; }
     property <bool> show-chrome: root.controls-visible || root.keep-controls;
     property <string> pending-click;
+    // A click pauses or resumes at once, without waiting to see whether it
+    // is a double click's first, as in YouTube's player: a double click's
+    // second click resumes or pauses again, before its own action. Not when
+    // the double click pauses too, which would then do nothing.
+    property <bool> click-pauses-at-once: Prefs.single-click == "pause" && Prefs.double-click != "pause";
     property <int> volume-shows;
     // A file is open: the library and the welcome view have gone, with the
     // keyboard's focus if one of them had it.
@@ -1138,9 +1143,21 @@ export component PlayerWindow inherits Window {
             return reject;
         }
 
-        menu := MainMenu {
-            enabled: false;
+        // The application menu, alone in a container of its own: a press
+        // that closes the menu goes to whatever holds it (Slint dispatches
+        // it from the menu's parent), and here that is nothing, so the
+        // click that closes the menu doesn't pause the video too. Slint
+        // would take out a container with no x or y that draws nothing.
+        Rectangle {
+            x: 0;
+            y: 0;
 
+            menu := MainMenu {
+                enabled: false;
+            }
+        }
+
+        Rectangle {
             // The video, drawn by mpv into a texture. Without a picture the
             // texture holds whatever was shown last.
             if Playback.has-media: Image {
@@ -1188,7 +1205,7 @@ export component PlayerWindow inherits Window {
                             return;
                         }
                         // Music mode has no double-click action but pausing.
-                        if Prefs.double-click == "none" || (root.music-mode && Prefs.double-click != "pause") {
+                        if Prefs.double-click == "none" || (root.music-mode && Prefs.double-click != "pause") || root.click-pauses-at-once {
                             root.run-mouse-action(Prefs.single-click);
                         } else {
                             root.pending-click = Prefs.single-click;
@@ -1197,6 +1214,8 @@ export component PlayerWindow inherits Window {
                         }
                     }
                     double-clicked => {
+                        // A first click that paused at once has been taken
+                        // back by this second one's own click.
                         click-timer.running = false;
                         if Playback.has-media {
                             root.run-mouse-action(Prefs.double-click);

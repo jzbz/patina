@@ -8098,6 +8098,224 @@ mod tests {
         }
     }
 
+    /// The mpv commands, with their arguments, and the Patina actions the
+    /// window is asked for, in order.
+    fn commands_asked(window: &PlayerWindow) -> Rc<RefCell<Vec<String>>> {
+        let asked: Rc<RefCell<Vec<String>>> = Rc::default();
+        let actions = window.global::<Actions>();
+        let seen = asked.clone();
+        actions.on_mpv(move |args| {
+            let args: Vec<_> = args.iter().map(|arg| arg.to_string()).collect();
+            seen.borrow_mut().push(args.join(" "));
+        });
+        let seen = asked.clone();
+        actions.on_patina(move |action| seen.borrow_mut().push(action.to_string()));
+        asked
+    }
+
+    /// A click on the video pauses or resumes at once, though a double click
+    /// has an action to wait for: the second click of a double click takes
+    /// the first one's pause back, and then the window goes full screen.
+    #[test]
+    fn a_click_on_the_video_pauses_at_once() {
+        let window = window_for_keys();
+        let asked = commands_asked(&window);
+        let prefs = window.global::<Prefs>();
+        // Long enough that the next click starts no double click.
+        let wait = || i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(600));
+        let asked_after = |clicks: usize| {
+            asked.borrow_mut().clear();
+            for _ in 0..clicks {
+                click(&window, 640.0, 300.0);
+            }
+            let at_once = asked.borrow().clone();
+            wait();
+            assert_eq!(*asked.borrow(), at_once, "nothing comes later");
+            at_once
+        };
+        show_page(&window, "player", "");
+        assert_eq!(prefs.get_single_click(), "pause", "by default");
+        assert_eq!(prefs.get_double_click(), "fullscreen", "by default");
+        assert_eq!(asked_after(1), ["cycle pause"]);
+        assert_eq!(asked_after(1), ["cycle pause"], "and resumes");
+        assert_eq!(
+            asked_after(2),
+            ["cycle pause", "cycle pause", "toggle-fullscreen"],
+            "a double click"
+        );
+
+        // A drag of the video moves the window, and pauses nothing.
+        {
+            use slint::platform::{PointerEventButton, WindowEvent};
+            asked.borrow_mut().clear();
+            let button = PointerEventButton::Left;
+            let window = window.window();
+            let from = slint::LogicalPosition::new(640.0, 300.0);
+            let to = slint::LogicalPosition::new(700.0, 340.0);
+            window.dispatch_event(WindowEvent::PointerMoved { position: from });
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position: from,
+                button,
+            });
+            window.dispatch_event(WindowEvent::PointerMoved { position: to });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position: to,
+                button,
+            });
+            wait();
+            assert!(asked.borrow().is_empty(), "a drag: {:?}", asked.borrow());
+        }
+
+        // Nothing on the controller reaches the video: its toolbar's first
+        // button, and its panel beside the buttons.
+        hover(&window, 640.0, 650.0);
+        let toolbar = (
+            (1280.0 - 460.0) / 2.0 + 460.0 - 10.0 - (4.0 * 24.0 + 3.0 * 2.0) + 12.0,
+            720.0 - 24.0 - 74.0 + 8.0 + 14.0,
+        );
+        for (x, y) in [toolbar, ((1280.0 - 460.0) / 2.0 + 4.0, 720.0 - 24.0 - 4.0)] {
+            asked.borrow_mut().clear();
+            click(&window, x, y);
+            wait();
+            assert!(
+                !asked
+                    .borrow()
+                    .iter()
+                    .any(|command| command == "cycle pause"),
+                "the controller at {x}, {y}: {:?}",
+                asked.borrow()
+            );
+        }
+
+        // Without media the click does nothing, the welcome screen's own
+        // controls apart.
+        show_page(&window, "welcome", "");
+        asked.borrow_mut().clear();
+        click(&window, 640.0, 40.0);
+        wait();
+        assert!(asked.borrow().is_empty(), "{:?}", asked.borrow());
+    }
+
+    /// The click waits as before where pausing at once wouldn't fit: for
+    /// another action, while a double click would wait out, and where the
+    /// double click pauses too, which would undo it. Without a double-click
+    /// action, and in music mode, which has none but pausing, it never
+    /// waited.
+    #[test]
+    fn other_clicks_wait_for_a_double_click_as_before() {
+        let window = window_for_keys();
+        let asked = commands_asked(&window);
+        let prefs = window.global::<Prefs>();
+        show_page(&window, "player", "");
+        // Over the video, and over music mode's cover, which is 300px tall.
+        let asked_after = |clicks: usize, wait_ms: u64| {
+            asked.borrow_mut().clear();
+            for _ in 0..clicks {
+                click(&window, 640.0, 150.0);
+            }
+            let at_once = asked.borrow().clone();
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(wait_ms));
+            (at_once, asked.borrow().clone())
+        };
+        let none: Vec<String> = Vec::new();
+
+        prefs.set_single_click("pip".into());
+        assert_eq!(
+            asked_after(1, 600),
+            (none.clone(), vec!["toggle-pip".into()])
+        );
+        assert_eq!(
+            asked_after(2, 600),
+            (
+                vec!["toggle-fullscreen".into()],
+                vec!["toggle-fullscreen".into()]
+            ),
+            "a double click"
+        );
+
+        prefs.set_single_click("pause".into());
+        prefs.set_double_click("pause".into());
+        assert_eq!(
+            asked_after(1, 600),
+            (none.clone(), vec!["cycle pause".into()])
+        );
+        assert_eq!(
+            asked_after(2, 600),
+            (vec!["cycle pause".into()], vec!["cycle pause".into()]),
+            "a double click pauses once"
+        );
+
+        prefs.set_double_click("none".into());
+        assert_eq!(
+            asked_after(1, 600),
+            (vec!["cycle pause".into()], vec!["cycle pause".into()])
+        );
+
+        prefs.set_double_click("fullscreen".into());
+        show_page(&window, "music", "");
+        assert_eq!(
+            asked_after(1, 600),
+            (vec!["cycle pause".into()], vec!["cycle pause".into()]),
+            "music mode"
+        );
+    }
+
+    /// The click that closes the application menu only closes it: the
+    /// menu opened by right-clicking the video, and from the title bar.
+    #[test]
+    fn a_click_that_closes_the_menu_pauses_nothing() {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let window = window_for_keys();
+        let asked = commands_asked(&window);
+        let wait = || i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(600));
+        let pauses = |asked: &Rc<RefCell<Vec<String>>>| {
+            asked
+                .borrow()
+                .iter()
+                .filter(|command| *command == "cycle pause")
+                .count()
+        };
+        // Where the menu shows, if it does.
+        let menu_at = || {
+            use i_slint_core::window::{PopupWindowLocation, WindowInner};
+            let popups = WindowInner::from_pub(window.window()).active_popups();
+            popups.last().map(|popup| match popup.location {
+                PopupWindowLocation::ChildWindow(at) => (at.x, at.y),
+                PopupWindowLocation::TopLevel(_) => (f32::NAN, f32::NAN),
+            })
+        };
+        show_page(&window, "player", "");
+        let right_click = |x: f32, y: f32| {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = PointerEventButton::Right;
+            let window = window.window();
+            window.dispatch_event(WindowEvent::PointerMoved { position });
+            window.dispatch_event(WindowEvent::PointerPressed { position, button });
+            window.dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+        for open in ["right click", "show-menu-at"] {
+            wait();
+            asked.borrow_mut().clear();
+            if open == "right click" {
+                right_click(300.0, 100.0);
+                assert_eq!(menu_at(), Some((300.0, 100.0)), "where it was opened");
+            } else {
+                window.invoke_show_menu_at(10.0, 10.0);
+                assert_eq!(menu_at(), Some((10.0, 10.0)), "where it was opened");
+            }
+            click(&window, 900.0, 200.0);
+            assert_eq!(menu_at(), None, "{open}: the click closes the menu");
+            wait();
+            assert_eq!(pauses(&asked), 0, "{open}: {:?}", asked.borrow());
+            // The next click pauses as before.
+            asked.borrow_mut().clear();
+            click(&window, 900.0, 200.0);
+            wait();
+            assert_eq!(pauses(&asked), 1, "{open}, then: {:?}", asked.borrow());
+            click(&window, 900.0, 200.0);
+        }
+    }
+
     /// A click of the left button at `x`, `y`.
     fn click(window: &PlayerWindow, x: f32, y: f32) {
         use slint::platform::{PointerEventButton, WindowEvent};

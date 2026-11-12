@@ -105,8 +105,9 @@ pub enum ResizeWindow {
     Never,
 }
 
-/// User preferences. Defaults follow IINA's. Every field is a plain JSON
-/// value so the preferences window can edit any of them by key.
+/// User preferences. Defaults follow IINA's, except where a comment at one
+/// says why. Every field is a plain JSON value so the preferences window can
+/// edit any of them by key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Preferences {
@@ -271,6 +272,9 @@ pub struct Preferences {
     pub inspector_watch: Vec<String>,
 }
 
+/// The number of changed defaults `Preferences::move_old_defaults` knows.
+const MOVED_DEFAULTS: u32 = 1;
+
 impl Default for Preferences {
     fn default() -> Self {
         Self {
@@ -368,7 +372,10 @@ impl Default for Preferences {
             jellyfin_transcode_hdr: false,
             jellyfin_transcode_over_1080p: false,
             jellyfin_image_cache_mb: 256,
-            single_click: "toggle-osc".into(),
+            // IINA shows or hides the controller, which the pointer does
+            // anyway; a click pauses, as in YouTube's player and most
+            // others, and at once (`run-mouse-action` in ui/app.slint).
+            single_click: "pause".into(),
             double_click: "fullscreen".into(),
             // IINA pauses on right click; without a global menu bar, Linux
             // and Windows use it for the application menu instead.
@@ -414,6 +421,21 @@ fn yes_no(value: bool) -> String {
 }
 
 impl Preferences {
+    /// Brings settings saved by a Patina that had made `moved` of the
+    /// changed defaults to the ones that have changed since. Every setting
+    /// is saved, so an old default can't be told from a choice; this runs
+    /// once, so that a choice made after the move is kept. True when it
+    /// changed anything.
+    fn move_old_defaults(&mut self, moved: u32) -> bool {
+        let mut changed = false;
+        // 1: a click pauses rather than showing or hiding the controller.
+        if moved < 1 && self.single_click == "toggle-osc" {
+            self.single_click = "pause".into();
+            changed = true;
+        }
+        changed
+    }
+
     /// Patina's title bar over the video beside macOS's own window buttons,
     /// in a transparent title bar: the default on macOS, as in IINA.
     pub fn transparent_titlebar(&self) -> bool {
@@ -986,8 +1008,38 @@ fn mpv_unescaped(text: &str) -> String {
 }
 
 /// Loads the preferences, keeping every setting that can still be read
-/// when others are invalid (say, after a setting changed type).
+/// when others are invalid (say, after a setting changed type). Settings
+/// from an older Patina get the defaults changed since
+/// (`Preferences::move_old_defaults`), once.
 pub fn load_preferences(path: &Path) -> Preferences {
+    let mut prefs = read_preferences(path);
+    // The count of changes made is kept in a file of its own rather than
+    // in the settings, because an older Patina rewrites the settings from
+    // its own fields and would drop it; the next move would then take back
+    // a choice made since. A missing or unreadable count is 0. Settings
+    // that don't exist yet are defaults, which the move leaves alone, and
+    // the count saved now keeps it from moving them once they do.
+    let count = moved_defaults_file(path);
+    let moved = std::fs::read(&count)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(0);
+    if moved < MOVED_DEFAULTS {
+        if prefs.move_old_defaults(moved) {
+            save_json(path, &prefs);
+        }
+        save_json(&count, &MOVED_DEFAULTS);
+    }
+    prefs
+}
+
+/// Where `load_preferences` keeps how many of the changed defaults the
+/// settings at `settings` have had: beside them, in a file only it uses.
+fn moved_defaults_file(settings: &Path) -> PathBuf {
+    settings.with_file_name("moved-defaults.json")
+}
+
+fn read_preferences(path: &Path) -> Preferences {
     let value: serde_json::Value = match std::fs::read(path) {
         Ok(bytes) => match serde_json::from_slice(&bytes) {
             Ok(value) => value,
@@ -1668,6 +1720,125 @@ mod tests {
         assert_eq!(prefs.osd_timeout, 3.0);
         assert_eq!(prefs.screenshot_dir, "");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_click_pauses_by_default() {
+        assert_eq!(Preferences::default().single_click, "pause");
+        let prefs: Preferences = serde_json::from_str(r#"{"volume": 60}"#).unwrap();
+        assert_eq!(prefs.single_click, "pause");
+    }
+
+    /// A settings directory of its own for the test `name`, empty.
+    fn moved_defaults_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "patina-moved-defaults-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The JSON in the file at `path`.
+    fn json_in(path: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// What `load_preferences` makes of `json` in a settings file, with a
+    /// count of changes made beside it if `moved` has one, and what it
+    /// leaves in the settings and in the count.
+    fn loaded_and_left(
+        name: &str,
+        json: &str,
+        moved: Option<u32>,
+    ) -> (Preferences, serde_json::Value, serde_json::Value) {
+        let dir = moved_defaults_dir(name);
+        let path = dir.join("settings.json");
+        std::fs::write(&path, json).unwrap();
+        if let Some(moved) = moved {
+            save_json(&moved_defaults_file(&path), &moved);
+        }
+        let prefs = load_preferences(&path);
+        let left = json_in(&path);
+        let count = json_in(&moved_defaults_file(&path));
+        std::fs::remove_dir_all(&dir).unwrap();
+        (prefs, left, count)
+    }
+
+    #[test]
+    fn the_old_default_click_moves_to_pausing_once() {
+        let (prefs, left, count) = loaded_and_left(
+            "old",
+            r#"{"single-click": "toggle-osc", "volume": 40}"#,
+            None,
+        );
+        assert_eq!(prefs.single_click, "pause");
+        assert_eq!(prefs.volume, 40.0);
+        assert_eq!(left["single-click"], "pause", "the move is saved");
+        assert_eq!(left["volume"], 40.0);
+        assert_eq!(count, MOVED_DEFAULTS);
+
+        // Chosen again after the move, which saved the count.
+        let (prefs, left, _) =
+            loaded_and_left("chosen", r#"{"single-click": "toggle-osc"}"#, Some(1));
+        assert_eq!(prefs.single_click, "toggle-osc");
+        assert_eq!(left["single-click"], "toggle-osc");
+
+        let (prefs, _, count) = loaded_and_left("other", r#"{"single-click": "pip"}"#, None);
+        assert_eq!(prefs.single_click, "pip");
+        assert_eq!(count, MOVED_DEFAULTS);
+    }
+
+    #[test]
+    fn a_click_chosen_after_the_move_survives_an_older_patina_saving() {
+        let dir = moved_defaults_dir("older");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"single-click": "toggle-osc", "volume": 40}"#).unwrap();
+        load_preferences(&path);
+        std::fs::write(&path, r#"{"single-click": "toggle-osc", "volume": 40}"#).unwrap();
+        assert_eq!(load_preferences(&path).single_click, "toggle-osc");
+
+        // An older Patina saves only the fields it has, and none of them
+        // says how many changes have been made.
+        std::fs::write(&path, r#"{"single-click": "toggle-osc", "volume": 55}"#).unwrap();
+        let prefs = load_preferences(&path);
+        assert_eq!(prefs.single_click, "toggle-osc");
+        assert_eq!(prefs.volume, 55.0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_click_chosen_in_new_settings_is_not_moved_later() {
+        let dir = moved_defaults_dir("new");
+        let path = dir.join("settings.json");
+        let mut prefs = load_preferences(&path);
+        assert_eq!(prefs.single_click, "pause");
+        assert!(!path.exists(), "nothing is moved, so nothing is saved");
+        prefs.single_click = "toggle-osc".into();
+        save_json(&path, &prefs);
+        assert_eq!(load_preferences(&path).single_click, "toggle-osc");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_old_default_click_moves_though_another_setting_is_unreadable() {
+        let (prefs, left, count) = loaded_and_left(
+            "lenient-old",
+            r#"{"single-click": "toggle-osc", "screenshot-dir": null, "volume": 40}"#,
+            None,
+        );
+        assert_eq!(prefs.single_click, "pause");
+        assert_eq!(prefs.volume, 40.0);
+        assert_eq!(left["single-click"], "pause");
+        assert_eq!(count, MOVED_DEFAULTS);
+
+        let (prefs, _, _) = loaded_and_left(
+            "lenient-chosen",
+            r#"{"single-click": "toggle-osc", "screenshot-dir": null}"#,
+            Some(1),
+        );
+        assert_eq!(prefs.single_click, "toggle-osc");
     }
 
     #[test]
