@@ -70,33 +70,33 @@
     <binary>patina</binary>
   </provides>
 
-  <!-- On master until the screenshots are committed. Then each URL is to
-       name the commit that last changed them, not a branch, as Flathub asks:
-       a later retake cannot then change what an older release shows.
-       Retaking them means pointing every URL at the new commit. -->
+  <!-- Each URL names the commit that last changed the screenshots, not a
+       branch, as Flathub asks: a later retake cannot then change what an
+       older release shows. Retaking them means pointing every URL at the
+       new commit. -->
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/01-video.png</image>
+      <image>https://raw.githubusercontent.com/jzbz/patina/1c75299ed0e603fe5d32c92488732be47392288f/packaging/screenshots/01-video.png</image>
       <caption>A film playing, with the title bar and the controller's chapter marks</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/02-youtube.png</image>
+      <image>https://raw.githubusercontent.com/jzbz/patina/1c75299ed0e603fe5d32c92488732be47392288f/packaging/screenshots/02-youtube.png</image>
       <caption>The YouTube section's feed of followed channels, with no account</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/03-playlist.png</image>
+      <image>https://raw.githubusercontent.com/jzbz/patina/1c75299ed0e603fe5d32c92488732be47392288f/packaging/screenshots/03-playlist.png</image>
       <caption>The playlist beside a playing film</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/04-quick-settings.png</image>
+      <image>https://raw.githubusercontent.com/jzbz/patina/1c75299ed0e603fe5d32c92488732be47392288f/packaging/screenshots/04-quick-settings.png</image>
       <caption>Subtitle tracks and settings in the quick settings sidebar</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/05-music-mode.png</image>
+      <image>https://raw.githubusercontent.com/jzbz/patina/1c75299ed0e603fe5d32c92488732be47392288f/packaging/screenshots/05-music-mode.png</image>
       <caption>Music mode, with the album cover and the playlist below</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/jzbz/patina/master/packaging/screenshots/06-welcome.png</image>
+      <image>https://raw.githubusercontent.com/jzbz/patina/1c75299ed0e603fe5d32c92488732be47392288f/packaging/screenshots/06-welcome.png</image>
       <caption>The welcome screen with recent media, YouTube and a Jellyfin server</caption>
     </screenshot>
   </screenshots>
