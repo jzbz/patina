@@ -181,7 +181,7 @@ and where its source is.
 
 ## Requirements
 
-- Rust 1.99.1, which `rust-toolchain.toml` selects automatically
+- Rust 1.100.0, which `rust-toolchain.toml` selects automatically
 - libmpv from mpv 0.39 or newer, built with Lua (developed against 0.41 and 0.42).
   Ubuntu 26.04 and Debian 13 ship a recent enough one; Ubuntu 24.04 (0.37)
   and Debian 12 (0.35) are too old
