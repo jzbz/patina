@@ -8,6 +8,8 @@ client with no account.
 
 ![Patina playing a film, with the title bar and the floating controller](docs/images/player.png)
 
+![A Jellyfin server's library, with Continue Watching and the latest films](docs/images/jellyfin.png)
+
 ![The YouTube section's feed of followed channels](docs/images/youtube.png)
 
 ![The preferences window](docs/images/preferences.png)
