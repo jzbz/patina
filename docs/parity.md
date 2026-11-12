@@ -31,7 +31,7 @@ have been run for playback, online video and downloads (see M5).
 | WIN-03 | One window per file or grouped | partial: multi-file opens go into one playlist, and so do opens that arrive within 0.2 s of each other (a file manager that starts Patina once per file); `-w` opens a window for each. IINA's preference for grouping planned |
 | WIN-04 | Welcome window with resume, open, open URL, recents | partial: shown inside the idle player window; no keyboard navigation of the list yet |
 | WIN-05 | Action after launch | done: welcome screen or an Open dialog |
-| WIN-06 | Fit window to video on open | done: fit the screen, 0.5×, 1×, 1.5× or 2×; always, on open or never (physical-resolution option planned). Idle again, the window takes back the size of the welcome screen, the library or the YouTube section, as IINA's separate welcome window keeps its own, or the size it opened at |
+| WIN-06 | Fit window to video on open | done: fit the screen, 0.5×, 1×, 1.5× or 2×; always, on open or never (physical-resolution option planned). Idle again, the window takes back the size of the welcome screen, the library or the YouTube section, as IINA's separate welcome window keeps its own, or the size it opened at. A fitted window that would run past the screen's bottom or right edge moves back onto it, short of a taskbar or dock, except on Wayland, where a window can't place itself. Stop and Home from full screen leave it for the welcome screen in a window |
 | WIN-07 | Initial geometry | planned |
 | WIN-08 | Lock window aspect ratio | planned |
 | WIN-09 | Edge-to-edge or docked controls | partial: edge-to-edge only |
@@ -196,7 +196,7 @@ once and applied to running players, as IINA's option observers do
 | PIP-01..04 | Picture in picture | adapted, partial: a small always-on-top window without the title bar |
 | HIS-01 | Resume through watch-later | done |
 | HIS-02 | History window | done: grouped by date or folder, search, watched progress, missing files dimmed; Play, Play in New Window, Show in File Manager, Remove; Return, Ctrl+Return, Delete, Ctrl+L, Ctrl+F |
-| HIS-03 | History store | adapted: JSON in the data folder, one entry per file with its position and length |
+| HIS-03 | History store | adapted: JSON in the data folder, one entry per file with its position and length: where Stop, Home, another file or quitting left it, which Resume goes back to, or its start once it played to its end |
 | HIS-04..05 | Recent files and resume button | done |
 | HIS-06 | Clearing data | done: Preferences > Utilities clears history, saved positions and thumbnails; clearing the history clears the YouTube section's watched marks too |
 | INS-01..03 | Inspector: General, Tracks, Status | done: follows the active window, refreshed every second with asynchronous property reads |

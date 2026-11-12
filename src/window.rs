@@ -10,7 +10,7 @@ use crate::jellyfin::{session, trickplay};
 use crate::mpv::{EndFileReason, Event, Mpv, Node, Secret};
 use crate::opensubtitles;
 use crate::player::state::{
-    AudioStatus, PlaybackState, PlaylistEntry, Track, TrackKind, file_name,
+    AudioStatus, LastPosition, PlaybackState, PlaylistEntry, Track, TrackKind, file_name,
 };
 use crate::player::{self, Player, Prop};
 use crate::settings::ResizeWindow;
@@ -282,6 +282,9 @@ pub struct PlayerController {
     /// end it says nothing, which the state reads as 0, the start of an
     /// intro or recap the file ending would be sent back to skip.
     position_known: Cell<bool>,
+    /// Where the file playing was when mpv last said, for History: Stop,
+    /// Home or another file ends it, when the state's position can be 0.
+    last_position: Cell<LastPosition>,
     /// The file reached its end, where mpv keeps it open: its stop was
     /// reported then, and playing on (a seek back) starts it again.
     jellyfin_at_end: Cell<bool>,
@@ -366,6 +369,7 @@ impl PlayerController {
             jellyfin_seeked: Cell::new(false),
             jellyfin_start_pending: Cell::new(false),
             position_known: Cell::new(false),
+            last_position: Cell::new(LastPosition::default()),
             jellyfin_at_end: Cell::new(false),
             jellyfin_stopping: Cell::new(false),
             jellyfin_segments: RefCell::new(Segments::default()),
@@ -476,6 +480,12 @@ impl PlayerController {
     /// so it would win over either. Both are checked here as well, for one
     /// still opening, before the load hook has said so.
     fn save_place(&self, player: &Player) {
+        // A file mpv keeps open at its end, as it does by default, would be
+        // saved there and open again on its last frame. It goes back to its
+        // start instead, as one mpv closed at its end does.
+        if self.state.borrow().eof {
+            return;
+        }
         let path = self.state.borrow().path.clone();
         let saves = matches!(
             player.mpv().get_property("save-position-on-quit"),
@@ -484,6 +494,22 @@ impl PlayerController {
         let section = self.from_section.get() && self.section_list.borrow().contains(&path);
         if saves && session::parse_entry(&path).is_none() && !section {
             player.command_quiet(&["write-watch-later-config"]);
+        }
+    }
+
+    /// Stops what plays, for Stop and Home, keeping where it was
+    /// (save_place) for Resume to go back to the place History says. From
+    /// full screen the welcome screen comes back in a window, at its own
+    /// size (`IdleSize`), which it takes as the window leaves full screen.
+    fn stop_keeping_place(&self, args: &[&str]) {
+        let stopping = !self.is_idle();
+        let player = self.player();
+        if !self.state.borrow().idle {
+            self.save_place(&player);
+        }
+        player.command(args);
+        if stopping && self.window.window().is_fullscreen() {
+            player.set("fullscreen", false);
         }
     }
 
@@ -1055,6 +1081,9 @@ impl PlayerController {
                     if userdata == Prop::TimePos as u64 {
                         let position = value.as_f64();
                         self.position_known.set(position.is_some());
+                        let mut last = self.last_position.get();
+                        last.heard(&value);
+                        self.last_position.set(last);
                         if let Some(position) = position
                             && self.jellyfin.borrow().is_some()
                         {
@@ -1065,6 +1094,11 @@ impl PlayerController {
                         {
                             sitting.at(position);
                         }
+                    }
+                    if userdata == Prop::EofReached as u64 {
+                        let mut last = self.last_position.get();
+                        last.heard_end(&value);
+                        self.last_position.set(last);
                     }
                     if userdata == Prop::Duration as u64
                         && let (Some(duration), Some(sitting)) =
@@ -1086,6 +1120,7 @@ impl PlayerController {
                         self.pip_pending.set(PipPending::Opening);
                     }
                     self.track.set(self.track.get() + 1);
+                    self.last_position.set(LastPosition::default());
                     self.reset_thumbnails();
                     self.set_online(None);
                     self.reset_segments();
@@ -1169,11 +1204,13 @@ impl PlayerController {
                     changed.insert(Prop::PausedForCache);
                     // A file that never opened (a Jellyfin item while
                     // signed out, a drive not mounted) keeps where History
-                    // says it was.
+                    // says it was. One that reached its end opens again at
+                    // its start, as mpv writes no watch-later file for it.
                     if opened {
                         let state = self.state.borrow();
+                        let position = self.last_position.get().at_end(reason);
                         self.app()
-                            .update_history(&state.path, state.position, state.duration);
+                            .update_history(&state.path, position, state.duration);
                     }
                     let failure = self.jellyfin_ended();
                     self.end_sitting();
@@ -2402,6 +2439,10 @@ impl PlayerController {
         match (name.as_str(), rest.as_slice()) {
             ("quit" | "quit-watch-later", _) => self.close(),
             ("show-progress", _) => self.osd_seek(),
+            ("stop", _) => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.stop_keeping_place(&args);
+            }
             ("show-text", [text, ..]) => {
                 if let Err(error) = self
                     .mpv
@@ -2558,15 +2599,10 @@ impl PlayerController {
                 if let Some(library) = self.library() {
                     library.leave();
                 }
+                // From full screen, where the controller bar has Home, the
+                // welcome screen comes back in the window.
                 if !self.is_idle() {
-                    let player = self.player();
-                    self.save_place(&player);
-                    player.command(&["stop"]);
-                    // From full screen, where the controller bar has Home,
-                    // the welcome screen comes back in the window.
-                    if self.window.window().is_fullscreen() {
-                        player.set("fullscreen", false);
-                    }
+                    self.stop_keeping_place(&["stop"]);
                 }
             }
             "close-window" => self.close(),
@@ -2649,7 +2685,7 @@ impl PlayerController {
             // Everything goes, what plays too, which mpv's playlist-clear keeps:
             // a playlist of one had a Clear that did nothing. Stopping ends it
             // as its end would, back to where it was opened from.
-            "clear-playlist" => self.player().command(&["stop"]),
+            "clear-playlist" => self.stop_keeping_place(&["stop"]),
             "playlist-select-all" => self.playlist_select_all(),
             "playlist-play-selected" => {
                 if let Some((index, _)) = self.selected_entries().first() {
@@ -2982,6 +3018,7 @@ impl PlayerController {
         let size = self.default_size();
         if size != DEFAULT_SIZE {
             log::debug!("fitting the new window to the screen at {size:?}");
+            self.keep_on_screen(size);
             self.resize_window(size);
         }
     }
@@ -3033,7 +3070,53 @@ impl PlayerController {
         }
         log::debug!("fitting the window to {width:.0}×{height:.0} for {w}×{h} video at {scale}×");
         self.note_size_before_video();
-        self.resize_window(slint::LogicalSize::new(width as f32, height as f32));
+        let size = slint::LogicalSize::new(width as f32, height as f32);
+        self.keep_on_screen(size);
+        self.resize_window(size);
+    }
+
+    /// Moves a window about to be resized to `size` back onto its screen,
+    /// should the new size run it past the screen's bottom or right edge:
+    /// Patina resizes from the window's top-left corner, which stays, so a
+    /// tall video's window opened low on the screen went down past a
+    /// taskbar, its controller out of reach. Those edges keep a margin for
+    /// a taskbar or dock (`on_screen`), whose size winit doesn't know. It
+    /// runs before the resize, as winit can report the new size as soon as
+    /// it is asked for, and the old one says where the window ended before.
+    /// Not full screen or maximized, where the system places the window,
+    /// nor on Wayland, where a window can't place itself and winit says it
+    /// is nowhere.
+    fn keep_on_screen(&self, size: slint::LogicalSize) {
+        let window = self.window.window();
+        if window.is_fullscreen() || window.is_maximized() {
+            return;
+        }
+        let wanted = size.to_physical(window.scale_factor());
+        window.with_winit_window(|winit| {
+            let position = winit.outer_position().ok()?;
+            let monitor = winit.current_monitor()?;
+            // The title bar and borders, which the size asked for leaves
+            // out and the window's place takes in.
+            let (outer, inner) = (winit.outer_size(), winit.inner_size());
+            let before = Rect {
+                x: position.x,
+                y: position.y,
+                width: outer.width,
+                height: outer.height,
+            };
+            let width = wanted.width + outer.width.saturating_sub(inner.width);
+            let height = wanted.height + outer.height.saturating_sub(inner.height);
+            let screen = Rect {
+                x: monitor.position().x,
+                y: monitor.position().y,
+                width: monitor.size().width,
+                height: monitor.size().height,
+            };
+            let (x, y) = on_screen(before, (width, height), screen)?;
+            log::debug!("moving the window from {position:?} to ({x}, {y}) to keep it on screen");
+            winit.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+            Some(())
+        });
     }
 
     fn resize_window(&self, size: slint::LogicalSize) {
@@ -3627,7 +3710,10 @@ impl PlayerController {
             Command::Play => player.set("pause", false),
             Command::Pause => player.set("pause", true),
             Command::PlayPause => player.command(&["cycle", "pause"]),
-            Command::Stop => player.command(&["stop"]),
+            Command::Stop => {
+                drop(player);
+                self.stop_keeping_place(&["stop"]);
+            }
             Command::Next => player.command(&["playlist-next"]),
             Command::Previous => player.command(&["playlist-prev"]),
             Command::Seek(seconds) => {
@@ -5986,9 +6072,14 @@ impl PlayerController {
         self.end_sitting();
         {
             let state = self.state.borrow();
-            if !state.idle {
-                self.app()
-                    .update_history(&state.path, state.position, state.duration);
+            // A file still opening keeps where History says it was, as at
+            // its end.
+            if !state.idle && !self.loading.get() {
+                self.app().update_history(
+                    &state.path,
+                    self.last_position.get().get(),
+                    state.duration,
+                );
             }
             self.app().update_prefs(|prefs| prefs.volume = state.volume);
         }
@@ -6154,6 +6245,37 @@ fn fit_default(screen: Option<(f64, f64)>) -> (f64, f64) {
         .min(1.0)
         .max((360.0 / width).max(220.0 / height));
     ((width * factor).round(), (height * factor).round())
+}
+
+/// A rectangle on the desktop, in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Rect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+/// Where a window `before` a resize to `size` goes, should the new size run
+/// it past the bottom or right edge of its `screen`: moved up and left, or
+/// None where it stays. Those edges keep a margin of half the room
+/// SCREEN_SHARE leaves, for a taskbar or dock: a window fitted to
+/// SCREEN_SHARE of the screen fits between the margins. Only the new size
+/// moves a window, so one that ended within the margin before, which the
+/// user put flush with an edge or above a taskbar, or past the edge, ends
+/// no further out than it did. A window too big for the screen keeps its
+/// top-left corner, and with it the title bar, on screen, as does one that
+/// was off the top or left.
+fn on_screen(before: Rect, size: (u32, u32), screen: Rect) -> Option<(i32, i32)> {
+    let along = |place: i32, old: u32, length: u32, start: i32, room: u32| {
+        let margin = (room as f64 * (1.0 - SCREEN_SHARE) / 2.0).round() as i64;
+        let end = (start as i64 + room as i64 - margin).max(place as i64 + old as i64);
+        let place = (place as i64).min(end - length as i64);
+        place.max(start as i64) as i32
+    };
+    let x = along(before.x, before.width, size.0, screen.x, screen.width);
+    let y = along(before.y, before.height, size.1, screen.y, screen.height);
+    ((x, y) != (before.x, before.y)).then_some((x, y))
 }
 
 /// Music mode's cover, where mpv draws in it, in physical pixels; None for
@@ -6708,6 +6830,103 @@ mod tests {
         // Never below the window's least size.
         assert_eq!(fit_default(Some((320.0, 240.0))), (391.0, 220.0));
         assert_eq!(fit_default(Some((0.0, 0.0))), (1280.0, 720.0));
+    }
+
+    fn rect(x: i32, y: i32, width: u32, height: u32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// A portrait video fitted on a 1280 by 800 screen with a 48 pixel
+    /// taskbar: 680 tall, and 39 more for the title bar and border, the
+    /// window's bottom went past the taskbar's top at 752.
+    #[test]
+    fn a_window_fitted_past_the_bottom_of_the_screen_moves_up_onto_it() {
+        let screen = rect(0, 0, 1280, 800);
+        // The bottom keeps 60 pixels, half of what 85% leaves.
+        assert_eq!(
+            on_screen(rect(78, 78, 1088, 651), (399, 719), screen),
+            Some((78, 21))
+        );
+        assert_eq!(
+            on_screen(rect(78, 300, 640, 399), (399, 719), screen),
+            Some((78, 21))
+        );
+        // Right, the same, by 96 of 1280.
+        assert_eq!(
+            on_screen(rect(800, 100, 360, 259), (600, 400), screen),
+            Some((584, 100))
+        );
+    }
+
+    #[test]
+    fn a_window_on_the_screen_stays_where_it_is() {
+        let screen = rect(0, 0, 1280, 800);
+        assert_eq!(on_screen(rect(78, 78, 640, 399), (399, 600), screen), None);
+        // Close to the top and left edges is on screen too.
+        assert_eq!(on_screen(rect(0, 0, 640, 399), (1088, 612), screen), None);
+        assert_eq!(on_screen(rect(5, 10, 640, 399), (1088, 700), screen), None);
+    }
+
+    /// The margin is for a window the new size would take past an edge: one
+    /// the user put flush with the screen's corner, or above a taskbar, or
+    /// partly off the bottom, and that keeps its size, stays where it is.
+    /// One that grows moves no further than to where it ended before.
+    #[test]
+    fn a_window_within_the_margin_moves_only_as_far_as_it_grows() {
+        let screen = rect(0, 0, 1280, 800);
+        assert_eq!(
+            on_screen(rect(640, 440, 640, 360), (640, 360), screen),
+            None
+        );
+        assert_eq!(
+            on_screen(rect(600, 353, 640, 399), (640, 399), screen),
+            None
+        );
+        assert_eq!(
+            on_screen(rect(100, 600, 640, 399), (640, 399), screen),
+            None
+        );
+        assert_eq!(
+            on_screen(rect(600, 353, 640, 399), (640, 500), screen),
+            Some((600, 252))
+        );
+    }
+
+    /// A window too big for the room between the margins, as one fitted to
+    /// the whole screen is, keeps its title bar on screen.
+    #[test]
+    fn a_window_bigger_than_the_screen_keeps_its_top_left_on_it() {
+        let screen = rect(0, 0, 1280, 800);
+        assert_eq!(
+            on_screen(rect(40, 40, 1088, 651), (1296, 839), screen),
+            Some((0, 0))
+        );
+        assert_eq!(
+            on_screen(rect(-30, -20, 400, 300), (400, 300), screen),
+            Some((0, 0))
+        );
+    }
+
+    /// The screen's place on the desktop counts: one to the right of
+    /// another, or above it.
+    #[test]
+    fn a_window_stays_on_its_own_screen_of_several() {
+        let right = rect(1920, 0, 1280, 800);
+        assert_eq!(
+            on_screen(rect(2000, 300, 640, 399), (399, 719), right),
+            Some((2000, 21))
+        );
+        assert_eq!(on_screen(rect(2000, 50, 640, 399), (399, 600), right), None);
+        let above = rect(0, -1080, 1920, 1080);
+        assert_eq!(
+            on_screen(rect(100, -500, 600, 300), (600, 800), above),
+            Some((100, -881))
+        );
     }
 
     const WELCOME: slint::LogicalSize = slint::LogicalSize::new(1000.0, 700.0);

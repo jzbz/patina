@@ -1562,11 +1562,11 @@ impl App {
         self.history
             .borrow_mut()
             .update_progress(path, position, duration);
-        settings::save_json(&self.paths.history_file(), &*self.history.borrow());
         // The section's History page shows the length, which a file that has
-        // only just loaded when it is recorded may not have had.
-        self.youtube.set_history(&self.history.borrow().entries);
-        self.refresh_history_window();
+        // only just loaded when it is recorded may not have had, and the
+        // welcome screen Stop and Home go back to offers to resume where it
+        // ended.
+        self.history_changed();
     }
 
     pub fn history_entries(&self) -> Vec<HistoryEntry> {

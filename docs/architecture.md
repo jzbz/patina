@@ -195,15 +195,23 @@ A new player window opens at 1280 by 720, the 16:9 shape of most video
 `ui/app.slint`), or in that shape at 85% of a screen too small for it,
 once the window knows its screen. A file opened in it fits it to the
 video, as the preference has it by default, and music mode has sizes of
-its own. When the window is idle again (the playlist's end, Stop, Home),
+its own. Either fit keeps the window's top-left corner where it was, and a
+window the new size would run past the screen's bottom or right edge moves
+up or left, keeping a margin there of half what 85% leaves, for a taskbar
+or dock, or ending where it ended before, should the user have put it
+closer to the edge (`on_screen` in `src/window.rs`): winit knows the
+screen's size, not the part of it the desktop's panels leave free. On
+Wayland, where a window can't place itself, it stays where the compositor
+put it. When the window is idle again (the playlist's end, Stop, Home),
 the welcome screen, the library or the YouTube section comes back at the
-size it had when something started playing from it, opened in its place
-or added to its playlist, and a window that opened straight into a file,
+size it had when something started playing from it, opened in its place or
+added to its playlist, and a window that opened straight into a file,
 never idle before, goes back to the size it opened at (`IdleSize` in
-`src/window.rs`). IINA's welcome screen is a window of its own, whose
-size no video changes. A window full screen, maximized or in
-picture-in-picture is not resized, and the size waits for it to be in a
-window of its own again. One that was full screen or maximized as
+`src/window.rs`). IINA's welcome screen is a window of its own, whose size
+no video changes. A window full screen, maximized or in picture-in-picture
+is not resized, and the size waits for it to be in a window of its own
+again; Stop and Home leave full screen, so that the idle screen comes back
+in a window, at its own size. One that was full screen or maximized as
 playback started goes back to the size it was given back out of that,
 before a video fitted it; leaving music mode or picture-in-picture idle,
 it goes straight to the idle screen's size rather than through its own
@@ -370,6 +378,17 @@ each core starts, and when preferences change, `App` sets the ones that
 changed on every running core, as IINA's option observers do. Resume
 positions use mpv's own watch-later files, except a Jellyfin item's, which
 the server keeps.
+
+A history entry's position is where its file stopped. Stop, Home and
+another file write mpv's watch-later file first (`save_place`), as
+quitting does, and History takes the last place mpv gave (`LastPosition`
+in `src/player/state.rs`), since by the time the window hears that a file
+ended mpv may have said it is nowhere, which the playback state reads as
+0. A file that played to its end goes back to its start, as mpv writes no
+watch-later file for it then, nor does `save_place` for one mpv keeps open
+on its last frame, as it does by default; one that never opened, or was
+still opening at a quit, keeps the position it had. The welcome screen's
+Resume and Recent show the new position at once.
 
 A history entry's title is none when it is empty, the file's name, or for an
 address mpv's stand-in, the address after its last '/', query and all

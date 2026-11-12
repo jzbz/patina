@@ -1,7 +1,7 @@
 //! A typed copy of the mpv state the interface displays.
 
 use super::Prop;
-use crate::mpv::Node;
+use crate::mpv::{EndFileReason, Node};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TrackKind {
@@ -837,6 +837,52 @@ pub fn language_name(code: &str) -> Option<&'static str> {
     })
 }
 
+/// Where the file playing was when mpv last said, for History. Stop, Home
+/// or another file ends it, and by the time the window hears that it ended
+/// the state's position can be 0 already: in the app mpv says the file is
+/// nowhere first (headless mpv says it ended first). This keeps the last
+/// place it did give either way, until the next file starts.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct LastPosition {
+    position: f64,
+    /// mpv said the file reached its end. Kept open there, as it is by
+    /// default, it ends for Stop, Home or another file rather than at its
+    /// end, and is still a file that played to its end.
+    ended: bool,
+}
+
+impl LastPosition {
+    /// A `time-pos` change: a place is kept, "unavailable" is not.
+    pub fn heard(&mut self, time_pos: &Node) {
+        if let Some(position) = time_pos.as_f64() {
+            self.position = position.max(0.0);
+        }
+    }
+
+    /// An `eof-reached` change: a seek back from the end plays on, and
+    /// "unavailable", as the file closes, says nothing.
+    pub fn heard_end(&mut self, eof_reached: &Node) {
+        if let Some(ended) = eof_reached.as_bool() {
+            self.ended = ended;
+        }
+    }
+
+    pub fn get(self) -> f64 {
+        self.position
+    }
+
+    /// Where History keeps a file that ended for `reason`. One that reached
+    /// its end opens again at its start, as mpv writes no watch-later file
+    /// for it; any other stopped where it last was.
+    pub fn at_end(self, reason: EndFileReason) -> f64 {
+        if reason == EndFileReason::Eof || self.ended {
+            0.0
+        } else {
+            self.position
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1044,5 +1090,54 @@ mod tests {
         assert_eq!(state.chapters[1].title, "Chapter 2");
         state.apply(Prop::Chapter, &Node::Int(1));
         assert_eq!(state.current_chapter().map(|c| c.time), Some(90.0));
+    }
+
+    /// What END_FILE finds after Stop, Home or another file: mpv has said
+    /// the file is nowhere, which the state reads as 0, and History is
+    /// given where it last was instead.
+    #[test]
+    fn history_keeps_where_the_file_was_once_mpv_says_it_is_nowhere() {
+        let mut state = PlaybackState::default();
+        let mut last = LastPosition::default();
+        for value in [Node::Double(3.0), Node::Double(8.6), Node::None] {
+            state.apply(Prop::TimePos, &value);
+            last.heard(&value);
+        }
+        assert_eq!(state.position, 0.0, "what History was given before");
+        assert_eq!(last.get(), 8.6);
+        assert_eq!(last.at_end(EndFileReason::Stop), 8.6);
+        assert_eq!(last.at_end(EndFileReason::Quit), 8.6);
+        let mut next = LastPosition::default();
+        next.heard(&Node::Double(-0.02));
+        assert_eq!(next.get(), 0.0, "a place before the start is the start");
+    }
+
+    /// A file that played to its end is reopened at its start, with no
+    /// watch-later file to say otherwise, so History says the same.
+    #[test]
+    fn a_file_that_reached_its_end_goes_back_to_its_start_in_history() {
+        let mut last = LastPosition::default();
+        last.heard(&Node::Double(59.9));
+        assert_eq!(last.at_end(EndFileReason::Eof), 0.0);
+    }
+
+    /// mpv keeps a file open at its end by default, and it ends for Stop,
+    /// Home or another file there, with no end of its own: it still played
+    /// to its end. A seek back from there plays on.
+    #[test]
+    fn a_file_kept_open_at_its_end_goes_back_to_its_start_in_history() {
+        let mut last = LastPosition::default();
+        for (time_pos, eof_reached) in [
+            (Node::Double(19.9), Node::Flag(false)),
+            (Node::Double(20.0), Node::Flag(true)),
+            (Node::None, Node::None),
+        ] {
+            last.heard(&time_pos);
+            last.heard_end(&eof_reached);
+        }
+        assert_eq!(last.at_end(EndFileReason::Stop), 0.0);
+        last.heard(&Node::Double(12.0));
+        last.heard_end(&Node::Flag(false));
+        assert_eq!(last.at_end(EndFileReason::Stop), 12.0);
     }
 }
