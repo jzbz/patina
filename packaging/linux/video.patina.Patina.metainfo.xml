@@ -163,14 +163,16 @@
        YouTube section is where that needs saying. A stream or a page goes to
        mpv or yt-dlp. A subtitle search sends a file's hash and name, only with
        the user's own OpenSubtitles API key. A Jellyfin server the user added
-       hears from Patina as it starts, and of what it plays. Opening the
-       YouTube section is itself asking: if its last check is over 30 minutes
-       old, it asks YouTube about every channel the user follows, and it
-       fetches thumbnails for what is on screen, and titles for saved videos
-       that lack them. Searching, playing and downloading go when the user does
-       them. So Google sees the address (or a proxy's) and those lists, though
-       with no account or cookie of the user's. Nothing goes before the section
-       is opened. docs/youtube.md says what each request carries.
+       hears from Patina when the user picks it or plays one of its entries,
+       and of what it plays. Opening the YouTube section is itself asking: if
+       its last check is over 30 minutes old, it asks YouTube about every
+       channel the user follows, and it fetches thumbnails for what is on
+       screen, and titles for saved videos and for the playback history's
+       YouTube videos that lack them, one every 15 seconds. Searching, playing
+       and downloading go when the user does them. So Google sees the address
+       (or a proxy's) and those lists, though with no account or cookie of the
+       user's. Nothing goes before the section is opened. docs/youtube.md says
+       what each request carries.
 
        social-info is left unset, as for a browser: those requests go to the
        service the user is reading and are what reading it takes, and nothing
