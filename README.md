@@ -10,10 +10,10 @@ client with no account.
 
 ![The preferences window](docs/images/preferences.png)
 
-Patina is at an early stage. Playback, the window and controls, the
-sidebars, menus, key bindings, history, the Jellyfin client and the YouTube
-section work today, and more is to come. [docs/parity.md](docs/parity.md)
-tracks each feature and its state.
+Playback, the window and controls, the sidebars, menus, key bindings,
+history, the Jellyfin client and the YouTube section work today, and more
+is to come. [docs/parity.md](docs/parity.md) tracks each feature and its
+state.
 
 ## What works
 
