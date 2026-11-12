@@ -203,7 +203,8 @@ Home. What plays from the library plays in its place; Escape (outside
 full screen, where it does nothing as bound by default) or Stop goes back
 to it, and so does the end of the playlist's last entry, rather than mpv's
 last frame. The window takes back the size it had in the library, which
-fitting it to a small video or a cover changed. Signing in, the keys typed
+fitting it to a small video or a cover changed, as the welcome screen and
+the YouTube section take back theirs. Signing in, the keys typed
 where no field has the keyboard are no shortcuts (a name typed there would
 quit at its first "q"), and the user name field has it even with the server's
 accounts listed. Each step's card is in the middle of the space under the

@@ -31,7 +31,7 @@ have been run for playback, online video and downloads (see M5).
 | WIN-03 | One window per file or grouped | partial: multi-file opens go into one playlist, and so do opens that arrive within 0.2 s of each other (a file manager that starts Patina once per file); `-w` opens a window for each. IINA's preference for grouping planned |
 | WIN-04 | Welcome window with resume, open, open URL, recents | partial: shown inside the idle player window; no keyboard navigation of the list yet |
 | WIN-05 | Action after launch | done: welcome screen or an Open dialog |
-| WIN-06 | Fit window to video on open | done: fit the screen, 0.5×, 1×, 1.5× or 2×; always, on open or never (physical-resolution option planned) |
+| WIN-06 | Fit window to video on open | done: fit the screen, 0.5×, 1×, 1.5× or 2×; always, on open or never (physical-resolution option planned). Idle again, the window takes back the size of the welcome screen, the library or the YouTube section, as IINA's separate welcome window keeps its own, or the size it opened at |
 | WIN-07 | Initial geometry | planned |
 | WIN-08 | Lock window aspect ratio | planned |
 | WIN-09 | Edge-to-edge or docked controls | partial: edge-to-edge only |

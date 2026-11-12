@@ -21,9 +21,9 @@ use crate::youtube::VideoId;
 use crate::youtube::playing::{self, Sitting};
 use crate::ytdl;
 use crate::{
-    Actions, ChapterItem, DeviceItem, Library, LyricItem, Media, OnlineSubs, OnlineSubtitle, Osd,
-    Platform, Playback, PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem,
-    Theme, TrackItem, YouTube,
+    Actions, ChapterItem, DeviceItem, LyricItem, Media, OnlineSubs, OnlineSubtitle, Osd, Platform,
+    Playback, PlayerWindow, PlaylistItem, Prefs, QualityItem, RecentItem, ShortcutItem, Theme,
+    TrackItem,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -107,7 +107,7 @@ const MUSIC_DRAWER: f32 = 300.0;
 const MUSIC_DRAWER_MIN: f32 = 200.0;
 /// The player window's size when it opens (its preferred size in app.slint),
 /// on a screen with room for it (`default_size`).
-const DEFAULT_SIZE: slint::LogicalSize = slint::LogicalSize::new(1280.0, 800.0);
+const DEFAULT_SIZE: slint::LogicalSize = slint::LogicalSize::new(1280.0, 720.0);
 /// The most of the screen a window opens to, leaving room for the desktop's
 /// panels; as much as a first fit to a video takes.
 const SCREEN_SHARE: f64 = 0.85;
@@ -304,10 +304,14 @@ pub struct PlayerController {
     preview_time: Cell<f64>,
     /// See `set_focus_serial`.
     focus_serial: Cell<u64>,
-    /// The window's size when it left the library to play something, which
-    /// it goes back to when it is idle again: fitted to a small video or a
-    /// cover, the library's bar would hide its tabs.
-    library_size: Cell<Option<slint::LogicalSize>>,
+    /// The size the window goes back to when it is idle again (see
+    /// `IdleSize`).
+    idle_size: Cell<IdleSize>,
+    /// Whether leaving music mode has asked for the window to be maximized
+    /// again and the window manager has yet to do it. Until then the window
+    /// is in no window of its own, though Slint, which takes the state again
+    /// from each `Resized`, may say it is not maximized.
+    maximizing: Cell<bool>,
     this: Weak<PlayerController>,
 }
 
@@ -370,7 +374,8 @@ impl PlayerController {
             jellyfin_lyrics: RefCell::new(None),
             lyric_line: Cell::new(None),
             preview_time: Cell::new(0.0),
-            library_size: Cell::new(None),
+            idle_size: Cell::new(IdleSize::Kept),
+            maximizing: Cell::new(false),
             focus_serial: Cell::new(0),
             app: Rc::downgrade(app),
             window,
@@ -843,6 +848,8 @@ impl PlayerController {
         self.ready.set(true);
         self.window.global::<Playback>().set_ready(true);
         let pending: Vec<_> = self.pending_open.borrow_mut().drain(..).collect();
+        self.idle_size
+            .set(self.idle_size.get().opened_with(!pending.is_empty()));
         for (sources, placement) in pending {
             self.load(&sources, placement);
         }
@@ -984,13 +991,7 @@ impl PlayerController {
 
     fn load(&self, sources: &[String], placement: Placement) {
         let append = placement == Placement::Append;
-        if !append
-            && self.is_idle()
-            && (self.window.global::<Library>().get_shown()
-                || self.window.global::<YouTube>().get_shown())
-        {
-            self.remember_library_size();
-        }
+        self.remember_idle_size();
         if sources.iter().any(|source| util::is_web(source)) {
             self.app().ytdl_current();
         }
@@ -1346,7 +1347,7 @@ impl PlayerController {
             self.music_override.set(false);
             self.clear_lyrics(false);
             self.leave_music_mode(false);
-            self.restore_library_size();
+            self.restore_idle_size();
             // What played may have moved on the server's progress, which
             // the library shows again now; after a Jellyfin item, once the
             // server has taken the report of its end. Deferred: it reads
@@ -2235,6 +2236,21 @@ impl PlayerController {
                         this.state.borrow_mut().fullscreen = fullscreen;
                         this.player().set("fullscreen", fullscreen);
                     }
+                    // A maximize music mode asked for is done once winit,
+                    // which asks the window manager, says so; Slint takes
+                    // the state from winit only after this.
+                    let window = this.window.window();
+                    if this.maximizing.get()
+                        && window.with_winit_window(|window| window.is_maximized()) != Some(false)
+                    {
+                        this.maximizing.set(false);
+                    }
+                    // An idle window that was full screen or maximized when
+                    // it went idle may be back in a window now, and Home
+                    // leaves full screen only as playback stops.
+                    if this.is_idle() {
+                        this.restore_idle_size();
+                    }
                 }
                 winit::event::WindowEvent::Occluded(true)
                     if this.app().prefs().pause_when_minimized && this.is_running() =>
@@ -3016,6 +3032,7 @@ impl PlayerController {
             height *= factor;
         }
         log::debug!("fitting the window to {width:.0}×{height:.0} for {w}×{h} video at {scale}×");
+        self.note_size_before_video();
         self.resize_window(slint::LogicalSize::new(width as f32, height as f32));
     }
 
@@ -3049,31 +3066,67 @@ impl PlayerController {
         });
     }
 
-    /// Notes the window's size as it leaves the library to play something.
-    fn remember_library_size(&self) {
+    /// The window's size while it is in a window of its own: None full
+    /// screen, maximized, in picture-in-picture or in music mode, whose
+    /// sizes are theirs.
+    fn own_size(&self) -> Option<slint::LogicalSize> {
         let window = self.window.window();
-        let size = (!window.is_fullscreen() && !window.is_maximized() && !self.in_music_mode())
-            .then(|| window.size().to_logical(window.scale_factor()));
-        self.library_size.set(size);
+        let framed = window.is_fullscreen()
+            || window.is_maximized()
+            || self.maximizing.get()
+            || self.window.get_pip()
+            || self.in_music_mode();
+        (!framed).then(|| window.size().to_logical(window.scale_factor()))
     }
 
-    /// The window is idle again after playing from the library: back to the
-    /// size it had there, after music mode's own restoring (which waits for
-    /// Slint to lift its size limits) and in its place.
-    fn restore_library_size(&self) {
-        let Some(size) = self.library_size.take() else {
+    /// Notes the idle screen's size as a load starts (`IdleSize::loaded`).
+    fn remember_idle_size(&self) {
+        let loaded = self.idle_size.get().loaded(self.is_idle(), self.own_size());
+        self.idle_size.set(loaded);
+    }
+
+    /// Notes the window's size, as a video fits or scales it, for an idle
+    /// screen that was left full screen or maximized (`IdleSize::Framed`).
+    fn note_size_before_video(&self) {
+        self.idle_size
+            .set(self.idle_size.get().fitting(self.own_size()));
+    }
+
+    /// The window is idle again, or idle and resized, which it is as it
+    /// leaves full screen: back to the idle screen's size (`IdleSize`).
+    /// After music mode's own restoring, which waits for Slint to lift its
+    /// size limits, and in its place; not if something is loading again
+    /// by then, which keeps the size for its own end.
+    fn restore_idle_size(&self) {
+        if self.idle_size.get() == IdleSize::Kept {
             return;
-        };
+        }
         let this = self.this.clone();
         Timer::single_shot(AFTER_LIMITS + Duration::from_millis(4), move || {
-            let Some(this) = this.upgrade() else {
-                return;
-            };
-            let window = this.window.window();
-            if this.is_idle() && !window.is_fullscreen() && !window.is_maximized() {
-                this.resize_window(size);
+            if let Some(this) = this.upgrade() {
+                this.back_to_idle_size();
             }
         });
+    }
+
+    /// Resizes an idle window to the idle screen's size now, if it has one
+    /// to go back to and is in a window of its own, and says whether it
+    /// did. Music mode and picture-in-picture, left while idle, go there
+    /// in place of their own sizes from before, which would only be a
+    /// second resize on the way.
+    fn back_to_idle_size(&self) -> bool {
+        if !self.is_idle() {
+            return false;
+        }
+        let framed = self.own_size().is_none();
+        let (size, left) = self.idle_size.get().back(framed, self.default_size());
+        self.idle_size.set(left);
+        let Some(size) = size else {
+            return false;
+        };
+        log::debug!("back to the idle screen's size, {size:?}");
+        self.resize_window(size);
+        true
     }
 
     /// Whether the window is `size` already, give or take a pixel or two.
@@ -3126,6 +3179,7 @@ impl PlayerController {
             return;
         }
         let size = window.size().to_logical(window.scale_factor());
+        self.note_size_before_video();
         self.resize_window(slint::LogicalSize::new(
             size.width * factor,
             size.height * factor,
@@ -3142,7 +3196,9 @@ impl PlayerController {
         }
         if let Some((size, ontop)) = self.pip_restore.take() {
             self.window.set_pip(false);
-            self.resize_window(size);
+            if !self.back_to_idle_size() {
+                self.resize_window(size);
+            }
             self.player().set("ontop", ontop);
             return;
         }
@@ -3343,7 +3399,12 @@ impl PlayerController {
                 return;
             };
             match size {
-                _ if maximized => this.window.window().set_maximized(true),
+                _ if maximized => {
+                    this.maximizing.set(true);
+                    this.window.window().set_maximized(true);
+                }
+                // Idle again: the idle screen's size, not this one first.
+                _ if this.back_to_idle_size() => {}
                 Some(size) => this.resize_window(size),
                 None if this.state.borrow().video.is_some() => this.fit_to_video(1.0, true),
                 None => this.resize_window(this.default_size()),
@@ -5972,6 +6033,90 @@ enum PipPending {
     Opening,
 }
 
+/// The size the window goes back to when it is idle again. A video fits
+/// the window to itself, and what comes back when it ends, the welcome
+/// screen, the library or the YouTube section, would otherwise keep that
+/// size: a Short's tall one, or one too small for the library's tabs.
+/// IINA's welcome screen is a window of its own, whose size no video
+/// changes; this window takes back the size it had before.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum IdleSize {
+    /// Nothing to go back to: the window has gone back already, or has
+    /// not left an idle screen yet.
+    Kept,
+    /// The window was full screen, maximized, in picture-in-picture or in
+    /// music mode when it left the idle screen, which had no size of its
+    /// own to note. Left by the user while something plays, the window
+    /// is in one of its own again, at the idle screen's size from before,
+    /// until a video fits or scales it (see `fitting`); staying so, it
+    /// has nothing to go back to.
+    Framed,
+    /// The window opened straight into something to play, from the
+    /// command line, a link or the system, so it never was idle at a size
+    /// of its own: the size a window opens to.
+    Opening,
+    /// The idle screen's size as it left it.
+    Size(slint::LogicalSize),
+}
+
+impl IdleSize {
+    /// What there is to go back to as a window starts playing what it was
+    /// opened with (`pending`): it has had no idle screen of its own to go
+    /// back to, whatever size it is at now.
+    fn opened_with(self, pending: bool) -> Self {
+        if pending { Self::Opening } else { self }
+    }
+
+    /// What there is to go back to as a load starts in a window that is
+    /// `idle` or not. Whatever the idle screen is, the welcome screen as
+    /// much as the library or the YouTube section, a load into an idle
+    /// window notes its size, appended to the playlist as much as in its
+    /// place: appended sources start a playlist from the idle screen as
+    /// surely (`append-play`), and fit the window to their video just the
+    /// same. A load into a window already playing notes nothing.
+    fn loaded(self, idle: bool, size: Option<slint::LogicalSize>) -> Self {
+        if idle { self.left(size) } else { self }
+    }
+
+    /// What there is to go back to once a load has replaced the idle
+    /// screen, whose size is `size` if the window is in a window of its
+    /// own, and None otherwise. A size still to be gone back to stays: it
+    /// is the idle screen's own, the window having not been at it again
+    /// yet (full screen, or a load right as the window went idle).
+    fn left(self, size: Option<slint::LogicalSize>) -> Self {
+        match (self, size) {
+            (Self::Kept | Self::Framed, Some(size)) => Self::Size(size),
+            (Self::Kept, None) => Self::Framed,
+            (kept, _) => kept,
+        }
+    }
+
+    /// A video is about to fit or scale the window, whose size is `size`
+    /// if the window is in a window of its own. After a load from a full
+    /// screen or maximized idle screen, that is the first size of its own
+    /// it has had since, and the last before the video changes it.
+    fn fitting(self, size: Option<slint::LogicalSize>) -> Self {
+        match (self, size) {
+            (Self::Framed, Some(size)) => Self::Size(size),
+            (kept, _) => kept,
+        }
+    }
+
+    /// The window is idle again: the size for it now, if any, and what is
+    /// left to go back to. Full screen, maximized, in picture-in-picture
+    /// or in music mode (`framed`), the window is not resized, and the
+    /// size waits for it to be in a window of its own again. `opening`
+    /// is the size a window opens to on its screen.
+    fn back(self, framed: bool, opening: slint::LogicalSize) -> (Option<slint::LogicalSize>, Self) {
+        match self {
+            Self::Kept | Self::Framed => (None, Self::Kept),
+            waiting if framed => (None, waiting),
+            Self::Opening => (Some(opening), Self::Kept),
+            Self::Size(size) => (Some(size), Self::Kept),
+        }
+    }
+}
+
 /// Of `entries`, those that may open again elsewhere, copied, played in
 /// another window or saved as a playlist (see PlaylistEntry::may_reopen).
 /// Those of a link's playlist stay a link's wherever they open, so that
@@ -6512,6 +6657,7 @@ pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Library, YouTube};
 
     #[test]
     fn a_video_is_over_at_its_end_however_it_got_there() {
@@ -6554,14 +6700,132 @@ mod tests {
 
     #[test]
     fn a_new_window_fits_a_small_screen_in_its_shape() {
-        assert_eq!(fit_default(None), (1280.0, 800.0));
-        assert_eq!(fit_default(Some((1920.0, 1080.0))), (1280.0, 800.0));
+        assert_eq!(fit_default(None), (1280.0, 720.0));
+        assert_eq!(fit_default(Some((1920.0, 1080.0))), (1280.0, 720.0));
         // 85% of 1366 by 768 is 653 tall, which sets the width.
-        assert_eq!(fit_default(Some((1366.0, 768.0))), (1044.0, 653.0));
-        assert_eq!(fit_default(Some((1024.0, 1280.0))), (870.0, 544.0));
+        assert_eq!(fit_default(Some((1366.0, 768.0))), (1161.0, 653.0));
+        assert_eq!(fit_default(Some((1024.0, 1280.0))), (870.0, 490.0));
         // Never below the window's least size.
-        assert_eq!(fit_default(Some((320.0, 240.0))), (360.0, 225.0));
-        assert_eq!(fit_default(Some((0.0, 0.0))), (1280.0, 800.0));
+        assert_eq!(fit_default(Some((320.0, 240.0))), (391.0, 220.0));
+        assert_eq!(fit_default(Some((0.0, 0.0))), (1280.0, 720.0));
+    }
+
+    const WELCOME: slint::LogicalSize = slint::LogicalSize::new(1000.0, 700.0);
+    const SHORT: slint::LogicalSize = slint::LogicalSize::new(748.0, 1331.0);
+    const OPENING: slint::LogicalSize = slint::LogicalSize::new(1161.0, 653.0);
+
+    /// A file opened from the welcome screen fitted the window to a Short,
+    /// and the welcome screen came back that tall when it ended.
+    #[test]
+    fn the_welcome_screen_takes_back_its_size_when_a_video_ends() {
+        let left = IdleSize::Kept.left(Some(WELCOME));
+        assert_eq!(left, IdleSize::Size(WELCOME));
+        assert_eq!(left.back(false, OPENING), (Some(WELCOME), IdleSize::Kept));
+        // Once only: the next load notes the welcome screen's size afresh.
+        assert_eq!(IdleSize::Kept.back(false, OPENING), (None, IdleSize::Kept));
+    }
+
+    /// From the command line, a link or the system, the window never showed
+    /// an idle screen of its own: idle, it has the size a window opens to.
+    #[test]
+    fn a_window_opened_straight_into_a_file_goes_back_to_its_opening_size() {
+        assert_eq!(
+            IdleSize::Opening.back(false, OPENING),
+            (Some(OPENING), IdleSize::Kept)
+        );
+        // Another file replacing the first while it plays changes nothing.
+        assert_eq!(IdleSize::Opening.left(Some(SHORT)), IdleSize::Opening);
+    }
+
+    /// Full screen, maximized or in picture-in-picture as it goes idle, the
+    /// window stays so, and takes back the idle screen's size once it is in
+    /// a window of its own again: Home leaves full screen as it stops.
+    #[test]
+    fn a_full_screen_or_maximized_window_is_not_resized_when_idle() {
+        let left = IdleSize::Kept.left(Some(WELCOME));
+        let (now, waiting) = left.back(true, OPENING);
+        assert_eq!(now, None);
+        assert_eq!(waiting, IdleSize::Size(WELCOME));
+        assert_eq!(
+            waiting.back(false, OPENING),
+            (Some(WELCOME), IdleSize::Kept)
+        );
+        let (now, waiting) = IdleSize::Opening.back(true, OPENING);
+        assert_eq!((now, waiting), (None, IdleSize::Opening));
+        // Another file opened meanwhile keeps the size for its own end.
+        assert_eq!(waiting.left(None), IdleSize::Opening);
+        assert_eq!(left.left(Some(SHORT)), IdleSize::Size(WELCOME));
+    }
+
+    /// The welcome screen, not only the library or the YouTube section,
+    /// notes its size as a load replaces it: a Short opened from it made it
+    /// that tall once the Short ended.
+    #[test]
+    fn a_load_from_the_welcome_screen_notes_its_size() {
+        assert_eq!(
+            IdleSize::Kept.loaded(true, Some(WELCOME)),
+            IdleSize::Size(WELCOME)
+        );
+    }
+
+    /// Appended to the playlist of an idle window (`patina -e`, a link's
+    /// enqueue, Add URL), a file starts playing from the idle screen as
+    /// surely as one opened in its place, and the idle screen's size is
+    /// noted the same. Loaded while something plays, appended or not, a
+    /// file replaces no idle screen, and the size the window has then is
+    /// the video's, not one to go back to.
+    #[test]
+    fn only_a_load_into_an_idle_window_notes_its_size() {
+        let appended = IdleSize::Kept.loaded(true, Some(WELCOME));
+        assert_eq!(
+            appended.back(false, OPENING),
+            (Some(WELCOME), IdleSize::Kept)
+        );
+        assert_eq!(IdleSize::Kept.loaded(false, Some(SHORT)), IdleSize::Kept);
+        assert_eq!(
+            IdleSize::Size(WELCOME).loaded(false, Some(SHORT)),
+            IdleSize::Size(WELCOME)
+        );
+    }
+
+    /// What a window opens with leaves it nothing idle to go back to but
+    /// the size a window opens to; a window opened empty keeps what it has.
+    #[test]
+    fn a_window_that_opens_with_something_to_play_goes_back_to_its_opening_size() {
+        assert_eq!(IdleSize::Kept.opened_with(true), IdleSize::Opening);
+        assert_eq!(IdleSize::Kept.opened_with(false), IdleSize::Kept);
+        // The load of what it opened with notes nothing over that.
+        assert_eq!(
+            IdleSize::Opening.loaded(true, Some(SHORT)),
+            IdleSize::Opening
+        );
+    }
+
+    /// Left full screen, maximized or in music mode, the idle screen had
+    /// no size of its own to note, and each of those has its own way back.
+    #[test]
+    fn an_idle_screen_left_full_screen_or_maximized_keeps_its_size() {
+        let left = IdleSize::Kept.left(None);
+        assert_eq!(left, IdleSize::Framed);
+        assert_eq!(left.back(false, OPENING), (None, IdleSize::Kept));
+        assert_eq!(left.back(true, OPENING), (None, IdleSize::Kept));
+        // Still full screen or maximized, a fit is skipped and notes nothing.
+        assert_eq!(left.fitting(None), IdleSize::Framed);
+    }
+
+    /// A maximized welcome screen played a file, the window was taken out
+    /// of maximized while it played and the next file fitted it to a
+    /// Short: the welcome screen came back that tall.
+    #[test]
+    fn a_window_taken_out_of_maximized_while_playing_goes_back_to_its_size() {
+        let left = IdleSize::Kept.left(None).fitting(Some(WELCOME));
+        assert_eq!(left, IdleSize::Size(WELCOME));
+        // Only the first fit notes a size: the next is the Short's.
+        assert_eq!(left.fitting(Some(SHORT)), IdleSize::Size(WELCOME));
+        assert_eq!(left.back(false, OPENING), (Some(WELCOME), IdleSize::Kept));
+        // Nothing else notes a size at a fit.
+        assert_eq!(IdleSize::Kept.fitting(Some(SHORT)), IdleSize::Kept);
+        assert_eq!(IdleSize::Opening.fitting(Some(SHORT)), IdleSize::Opening);
     }
 
     #[test]
@@ -6808,7 +7072,7 @@ mod tests {
         let resize = |width| {
             window
                 .window()
-                .set_size(slint::PhysicalSize::new(width, 800))
+                .set_size(slint::PhysicalSize::new(width, 720))
         };
         resize(1280);
         let press = |keys: &[SharedString]| press_keys(&window, keys);
@@ -6921,7 +7185,7 @@ mod tests {
         let window = PlayerWindow::new().unwrap();
         window
             .window()
-            .set_size(slint::PhysicalSize::new(1280, 800));
+            .set_size(slint::PhysicalSize::new(1280, 720));
         window.show().unwrap();
         let library = window.global::<Library>();
         let youtube = window.global::<YouTube>();
@@ -7107,7 +7371,7 @@ mod tests {
             ))
         };
         let mut boxes = Vec::new();
-        for (width, height) in [(1280, 800), (1280, 1000), (960, 800)] {
+        for (width, height) in [(1280, 720), (1280, 920), (960, 720)] {
             resize(width, height);
             // In the right half of a card 440 wide in the window's middle.
             let middle = width as f32 / 2.0;
@@ -7160,7 +7424,7 @@ mod tests {
         show_page(&window, "library", "sign-in");
         window
             .window()
-            .set_size(slint::PhysicalSize::new(1280, 800));
+            .set_size(slint::PhysicalSize::new(1280, 720));
         // The step is put in place, then measured a moment later.
         pass();
         pass();
@@ -7171,7 +7435,7 @@ mod tests {
         };
         // The top of Cancel, in the right half of the card.
         let cancel_top = || {
-            (76..800)
+            (76..720)
                 .find(|y| (640..860).step_by(6).any(|x| presses(x as f32, *y as f32)))
                 .expect("no Cancel") as f32
         };
@@ -7341,7 +7605,7 @@ mod tests {
         // tall 2px apart, and Home leads it before the three by default.
         let controller = (
             (1280.0 - 460.0) / 2.0 + 460.0 - 10.0 - (4.0 * 24.0 + 3.0 * 2.0) + 12.0,
-            800.0 - 24.0 - 74.0 + 8.0 + 14.0,
+            720.0 - 24.0 - 74.0 + 8.0 + 14.0,
         );
 
         show_page(&window, "player", "");
@@ -7399,7 +7663,7 @@ mod tests {
         // tall 2px apart, counted here from the end. Fast-forward is 34px
         // wide and ends 69px right of the middle, at the same height.
         let left = (1280.0 - 460.0) / 2.0;
-        let y = 800.0 - 24.0 - 74.0 + 8.0 + 14.0;
+        let y = 720.0 - 24.0 - 74.0 + 8.0 + 14.0;
         let slot = |from_end: f32| left + 460.0 - 10.0 - 12.0 - 26.0 * from_end;
         let fast_forward = left + 230.0 + 69.0 - 17.0;
         let press = |x: f32| {
@@ -7464,7 +7728,7 @@ mod tests {
         // in buttons 24px wide and 28px tall.
         let (x, y) = (
             (1280.0 - 460.0) / 2.0 + 460.0 - 10.0 - 12.0,
-            800.0 - 24.0 - 74.0 + 8.0 + 14.0,
+            720.0 - 24.0 - 74.0 + 8.0 + 14.0,
         );
         let last_button = || {
             hover(&window, x, y);
@@ -7518,7 +7782,7 @@ mod tests {
         click(&window, 1100.0, 140.0);
         // Clear, last in the bottom row, 12px in from the corner.
         actions.borrow_mut().clear();
-        click(&window, 1280.0 - 12.0 - 20.0, 800.0 - 12.0 - 14.0);
+        click(&window, 1280.0 - 12.0 - 20.0, 720.0 - 12.0 - 14.0);
         assert_eq!(*actions.borrow(), ["clear-playlist"]);
 
         // As the window does once mpv has stopped.
@@ -7544,7 +7808,7 @@ mod tests {
         let resize = |width| {
             window
                 .window()
-                .set_size(slint::PhysicalSize::new(width, 800))
+                .set_size(slint::PhysicalSize::new(width, 720))
         };
         resize(1280);
         let press = |keys: &[SharedString]| press_keys(&window, keys);
@@ -7963,7 +8227,7 @@ mod tests {
         let window = PlayerWindow::new().unwrap();
         window
             .window()
-            .set_size(slint::PhysicalSize::new(1280, 800));
+            .set_size(slint::PhysicalSize::new(1280, 720));
         window.show().unwrap();
         window
     }

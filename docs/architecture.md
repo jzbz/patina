@@ -190,11 +190,24 @@ The Slint files mirror IINA's window:
   `ui/theme.slint` (colours, metrics and the type sizes: 12, 14 and 16 px
   for small text, the rest and headings), `ui/globals.slint`.
 
-A new player window opens at 1280 by 800 (`DEFAULT_SIZE` in
-`src/window.rs`, the window's preferred size in `ui/app.slint`), or in that
-shape at 85% of a screen too small for it, once the window knows its
-screen. A file opened in it fits it to the video, as the preference has it
-by default, and music mode has sizes of its own.
+A new player window opens at 1280 by 720, the 16:9 shape of most video
+(`DEFAULT_SIZE` in `src/window.rs`, the window's preferred size in
+`ui/app.slint`), or in that shape at 85% of a screen too small for it,
+once the window knows its screen. A file opened in it fits it to the
+video, as the preference has it by default, and music mode has sizes of
+its own. When the window is idle again (the playlist's end, Stop, Home),
+the welcome screen, the library or the YouTube section comes back at the
+size it had when something started playing from it, opened in its place
+or added to its playlist, and a window that opened straight into a file,
+never idle before, goes back to the size it opened at (`IdleSize` in
+`src/window.rs`). IINA's welcome screen is a window of its own, whose
+size no video changes. A window full screen, maximized or in
+picture-in-picture is not resized, and the size waits for it to be in a
+window of its own again. One that was full screen or maximized as
+playback started goes back to the size it was given back out of that,
+before a video fitted it; leaving music mode or picture-in-picture idle,
+it goes straight to the idle screen's size rather than through its own
+size from before.
 
 Rust and Slint meet in the globals of `ui/globals.slint`: `Playback` and
 `Media` carry state into the interface; `Actions` carries user intent out,
@@ -321,10 +334,11 @@ window (`music-mode` in `PlayerWindow`), as picture-in-picture is:
   Slint has applied the mode's size limits (a zero-delay timer). Leaving
   puts back the window's size from before, unless something sized the
   window in the meantime, such as fitting it to the video that ended music
-  mode. Opening or closing the drawer, or hiding the cover, resizes the
-  window from Slint's `changed` handlers (`music-layout`), and a resize by
-  hand opens or shuts the drawer once it ends, which winit doesn't report:
-  300 ms after the last `Resized`.
+  mode; at the end of playback, the idle screen's size in its place
+  (`IdleSize`). Opening or closing the drawer, or hiding the cover,
+  resizes the window from Slint's `changed` handlers (`music-layout`),
+  and a resize by hand opens or shuts the drawer once it ends, which
+  winit doesn't report: 300 ms after the last `Resized`.
 - The automatic switch follows IINA's test (`PlaybackState::audio_status`):
   a stream is never music, a file whose tracks aren't known yet is left
   alone, and one is music when its only video tracks are covers. A switch
