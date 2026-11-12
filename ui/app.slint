@@ -1389,6 +1389,7 @@ export component PlayerWindow inherits Window {
                 osc := ControlBar {
                     width: parent.width;
                     fullscreen: root.full-screen;
+                    show-home: root.full-screen || !Platform.overlay-titlebar;
                     sidebar: root.sidebar-open ? root.sidebar-tab : "";
                     drag(dx, dy) => {
                         root.osc-offset-x += dx;
@@ -1474,8 +1475,8 @@ export component PlayerWindow inherits Window {
             }
         }
 
-        // Music mode: the strip under the cover, and close and back over it,
-        // all shown while the pointer is over the cover or the strip.
+        // Music mode: the strip under the cover, and close, back and home over
+        // it, all shown while the pointer is over the cover or the strip.
         if root.music-mode: Rectangle {
             property <bool> hover: video-touch.has-hover || music-panel.hovered || music-buttons.hovered;
 
@@ -1499,7 +1500,7 @@ export component PlayerWindow inherits Window {
             // At the right on macOS, clear of its window buttons.
             music-buttons := MusicWindowButtons {
                 x: Platform.macos ? parent.width - self.width - 8px : 8px;
-                y: 6px;
+                y: self.compact ? 2px : 6px;
                 compact: root.music-art-height < 40px;
                 opacity: parent.hover ? 1 : 0;
                 visible: self.opacity > 0;

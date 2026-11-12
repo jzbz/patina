@@ -13,6 +13,7 @@ component ToolbarButton inherits IconButton {
         : root.kind == "music" ? @image-url("icons/music.svg")
         : root.kind == "screenshot" ? @image-url("icons/camera.svg")
         : root.kind == "subtitles" ? @image-url("icons/captions.svg")
+        : root.kind == "home" ? @image-url("icons/house.svg")
         : @image-url("icons/ellipsis.svg");
     tooltip: root.kind == "pip" ? "Picture in Picture"
         : root.kind == "playlist" ? "Playlist"
@@ -21,6 +22,7 @@ component ToolbarButton inherits IconButton {
         : root.kind == "music" ? "Music Mode"
         : root.kind == "screenshot" ? "Screenshot"
         : root.kind == "subtitles" ? "Subtitles"
+        : root.kind == "home" ? "Welcome Screen"
         : root.kind;
     active: (root.kind == "playlist" && (root.sidebar == "playlist" || root.sidebar == "chapters" || root.sidebar == "lyrics"))
         || (root.kind == "settings" && (root.sidebar == "video" || root.sidebar == "audio"))
@@ -33,6 +35,9 @@ component ToolbarButton inherits IconButton {
 export component ControlBar inherits Rectangle {
     in property <bool> fullscreen;
     in property <string> sidebar;
+    // Patina's title bar, which holds Home, isn't over the video (full
+    // screen, or the system's title bar): the bar holds it instead.
+    in property <bool> show-home;
     out property <bool> seek-hovering: seek.hovering || seek.dragging;
     out property <length> seek-hover-x: seek.x + seek.hover-x;
     out property <float> seek-hover-time: seek.dragging ? -1 : seek.hover-time;
@@ -75,10 +80,12 @@ export component ControlBar inherits Rectangle {
         }
     }
 
+    // In a narrow bar the transport buttons come this far left, so the
+    // slider shortens to end where they begin rather than run under rewind.
     Slider {
         x: 42px;
         y: 14px;
-        width: 76px;
+        width: min(76px, transport.x - self.x);
         knob-size: 12px;
         value: Playback.volume;
         maximum: Playback.volume-max;
@@ -88,7 +95,7 @@ export component ControlBar inherits Rectangle {
         }
     }
 
-    Rectangle {
+    transport := Rectangle {
         x: (root.width - self.width) / 2;
         y: 4px;
         width: 150px;
@@ -135,7 +142,9 @@ export component ControlBar inherits Rectangle {
         }
 
         // IINA shows the current speed beside the button that changed it.
-        if Prefs.arrow-action == "speed" && Playback.speed != 1: Text {
+        // Hidden rather than left out, so that the toolbar can measure it.
+        speed-label := Text {
+            visible: Prefs.arrow-action == "speed" && Playback.speed != 1;
             x: Playback.speed < 1 ? -self.width + 6px : parent.width - 6px;
             y: 12px;
             text: (round(Playback.speed * 100) / 100) + "×";
@@ -144,28 +153,59 @@ export component ControlBar inherits Rectangle {
         }
     }
 
+    // The toolbar holds as many buttons as fit between the transport
+    // buttons and the bar's end, at 26px each with the gap before it: five
+    // at the controller's full 460px, fewer once a narrow window shrinks
+    // it, down to three at the narrowest.
+    // Past that the chosen buttons last in the list give way, as they
+    // otherwise drew over fast-forward, but Home and, for audio, a music
+    // button stay: the one after the others, or the toolbar's own. A
+    // speed above 1 is drawn past fast-forward, so while it shows the room
+    // starts at its end, or a long one such as 1.21x ran into the first
+    // button.
+    property <length> transport-end: transport.x + transport.width + (speed-label.visible && Playback.speed > 1 ? speed-label.width - 6px : 0);
+    property <int> toolbar-room: floor((root.width - 10px - root.transport-end + 2px) / 26px);
+    property <int> chosen-room: root.toolbar-room - (root.show-home ? 1 : 0) - (Playback.audio-only ? 1 : 0);
+
+    // Each button carries its gap before it, so that one that gives way
+    // leaves none; the first one's is left of the toolbar, where nothing is.
     toolbar := HorizontalLayout {
         x: root.width - self.width - 10px;
         y: 8px;
         width: self.preferred-width;
         height: 28px;
-        spacing: 2px;
-        for kind in Prefs.toolbar-buttons: ToolbarButton {
-            kind: kind;
-            fullscreen: root.fullscreen;
-            sidebar: root.sidebar;
-            clicked => {
-                Actions.patina("toolbar " + kind);
+        if root.show-home: HorizontalLayout {
+            padding-left: 2px;
+            ToolbarButton {
+                kind: "home";
+                clicked => {
+                    Actions.patina("welcome");
+                }
+            }
+        }
+        for kind[index] in Prefs.toolbar-buttons: slot := HorizontalLayout {
+            property <bool> shown: index < root.chosen-room || (kind == "music" && Playback.audio-only);
+            padding-left: self.shown ? 2px : 0;
+            if slot.shown: ToolbarButton {
+                kind: kind;
+                fullscreen: root.fullscreen;
+                sidebar: root.sidebar;
+                clicked => {
+                    Actions.patina("toolbar " + kind);
+                }
             }
         }
         // The way back into music mode for audio playing out of it, as music
         // mode has its way out. The toolbar's own music button is a
         // preference and off by default, which left only the menu and a
         // shortcut.
-        if Playback.audio-only && !Prefs.toolbar-music: ToolbarButton {
-            kind: "music";
-            clicked => {
-                Actions.patina("toolbar music");
+        if Playback.audio-only && !Prefs.toolbar-music: HorizontalLayout {
+            padding-left: 2px;
+            ToolbarButton {
+                kind: "music";
+                clicked => {
+                    Actions.patina("toolbar music");
+                }
             }
         }
     }

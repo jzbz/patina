@@ -2527,11 +2527,14 @@ impl PlayerController {
                     youtube.open();
                 }
             }
-            // The title bar's Home, shown wherever the window isn't on the
-            // welcome screen: the library and the YouTube section go, and a
-            // file playing stops, which the section or the library it was
-            // played from would otherwise come back for. Where it stopped
-            // is kept, as when another file takes its place (save_place).
+            // Home, in the title bar, on the controller bar where the title
+            // bar isn't over the video (full screen, the system's title bar),
+            // and with music mode's window buttons, though not in picture in
+            // picture, which has its own two: the library and the YouTube
+            // section go, and a file playing stops, which the section or the
+            // library it was played from would otherwise come back for. Where
+            // it stopped is kept, as when another file takes its place
+            // (save_place).
             "welcome" => {
                 if let Some(youtube) = self.youtube() {
                     youtube.hide();
@@ -2543,6 +2546,11 @@ impl PlayerController {
                     let player = self.player();
                     self.save_place(&player);
                     player.command(&["stop"]);
+                    // From full screen, where the controller bar has Home,
+                    // the welcome screen comes back in the window.
+                    if self.window.window().is_fullscreen() {
+                        player.set("fullscreen", false);
+                    }
                 }
             }
             "close-window" => self.close(),
@@ -7307,6 +7315,137 @@ mod tests {
             .window()
             .dispatch_event(WindowEvent::PointerMoved { position });
         i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(400));
+    }
+
+    /// Home is there in every view that plays but picture in picture: in
+    /// the title bar, on the controller bar where Patina's title bar isn't
+    /// over the video (full screen, the system's title bar), and with music
+    /// mode's buttons.
+    #[test]
+    fn home_is_there_wherever_something_plays() {
+        let window = window_for_keys();
+        let actions = actions_asked(&window);
+        let platform = window.global::<Platform>();
+        let press = |x: f32, y: f32| {
+            hover(&window, x, y);
+            actions.borrow_mut().clear();
+            click(&window, x, y);
+            actions.borrow().clone()
+        };
+        // The title bar ends in the window's buttons, 40px each after 4px,
+        // then Float on Top and Picture in Picture, 28px each after 6px; Home
+        // is before them.
+        let title_bar = (1280.0 - 124.0 - 3.0 * 34.0 + 14.0, 2.0 + 14.0);
+        // The controller is 460 wide at the bottom's middle, 24px up; its
+        // toolbar ends 10px in and 8px down, in buttons 24px wide and 28px
+        // tall 2px apart, and Home leads it before the three by default.
+        let controller = (
+            (1280.0 - 460.0) / 2.0 + 460.0 - 10.0 - (4.0 * 24.0 + 3.0 * 2.0) + 12.0,
+            800.0 - 24.0 - 74.0 + 8.0 + 14.0,
+        );
+
+        show_page(&window, "player", "");
+        assert_eq!(press(title_bar.0, title_bar.1), ["welcome"], "a window");
+        assert_ne!(press(controller.0, controller.1), ["welcome"], "a window");
+
+        // The system's title bar: Patina's isn't drawn.
+        platform.set_overlay_titlebar(false);
+        show_page(&window, "player", "");
+        assert_eq!(
+            press(controller.0, controller.1),
+            ["welcome"],
+            "the system's title bar"
+        );
+        platform.set_overlay_titlebar(true);
+
+        // Music mode's buttons, at the top on the left: close, back, and
+        // home, 13px each, 5px apart, inside 3px.
+        show_page(&window, "music", "");
+        assert_eq!(
+            press(8.0 + 3.0 + 6.0, 6.0 + 3.0 + 2.0 * 18.0 + 6.0),
+            ["welcome"],
+            "music mode"
+        );
+
+        // Without the cover they are 12px each, 2px apart, inside 2px, from
+        // 2px down, and end above the strip's elapsed time, whose digits
+        // begin 49px down: a click there reaches none of them.
+        window.set_music_art(false);
+        show_page(&window, "music", "");
+        assert_eq!(
+            press(8.0 + 2.0 + 6.0, 2.0 + 2.0 + 2.0 * 14.0 + 6.0),
+            ["welcome"],
+            "music mode without the cover"
+        );
+        assert!(
+            press(8.0 + 2.0 + 6.0, 50.0).is_empty(),
+            "the elapsed time under them"
+        );
+    }
+
+    /// The controller's toolbar stays clear of the transport buttons: five
+    /// fit at its full width (fewer in a narrow window), and past that the
+    /// chosen buttons last in the list give way, while Home and a music
+    /// button for audio stay.
+    #[test]
+    fn the_toolbar_gives_way_to_the_transport_buttons() {
+        let window = window_for_keys();
+        let actions = actions_asked(&window);
+        let playback = window.global::<Playback>();
+        let prefs = window.global::<Prefs>();
+        let platform = window.global::<Platform>();
+        // The controller is 460 wide at the bottom's middle, 24px up; its
+        // toolbar ends 10px in and 8px down, in buttons 24px wide and 28px
+        // tall 2px apart, counted here from the end. Fast-forward is 34px
+        // wide and ends 69px right of the middle, at the same height.
+        let left = (1280.0 - 460.0) / 2.0;
+        let y = 800.0 - 24.0 - 74.0 + 8.0 + 14.0;
+        let slot = |from_end: f32| left + 460.0 - 10.0 - 12.0 - 26.0 * from_end;
+        let fast_forward = left + 230.0 + 69.0 - 17.0;
+        let press = |x: f32| {
+            hover(&window, x, y);
+            actions.borrow_mut().clear();
+            click(&window, x, y);
+            actions.borrow().clone()
+        };
+        let choose = |buttons: &[&str]| {
+            let buttons: Vec<SharedString> = buttons.iter().map(|&b| b.into()).collect();
+            prefs.set_toolbar_music(buttons.iter().any(|b| b == "music"));
+            prefs.set_toolbar_buttons(ModelRc::new(VecModel::from(buttons)));
+        };
+        let all = [
+            "pip",
+            "playlist",
+            "settings",
+            "subtitles",
+            "screenshot",
+            "fullscreen",
+            "music",
+        ];
+
+        choose(&all);
+        show_page(&window, "player", "");
+        assert_eq!(press(slot(0.0)), ["toolbar screenshot"], "a window");
+        assert_eq!(press(slot(4.0)), ["toolbar pip"], "a window");
+        assert_eq!(press(fast_forward), ["osc-right"], "a window");
+
+        // The system's title bar: Home comes first, and four of them.
+        platform.set_overlay_titlebar(false);
+        show_page(&window, "player", "");
+        assert_eq!(press(slot(0.0)), ["toolbar subtitles"], "with Home");
+        assert_eq!(press(slot(4.0)), ["welcome"], "with Home");
+        assert_eq!(press(fast_forward), ["osc-right"], "with Home");
+
+        // Audio keeps a music button, the toolbar's own or the one after the
+        // others, and three of the rest.
+        playback.set_audio_only(true);
+        for (buttons, which) in [(&all[..], "its own"), (&all[..6], "the one after")] {
+            choose(buttons);
+            assert_eq!(press(slot(0.0)), ["toolbar music"], "audio, {which}");
+            assert_eq!(press(slot(1.0)), ["toolbar settings"], "audio, {which}");
+            assert_eq!(press(slot(4.0)), ["welcome"], "audio, {which}");
+            assert_eq!(press(fast_forward), ["osc-right"], "audio, {which}");
+        }
     }
 
     /// Audio played out of music mode has a button back into it in the

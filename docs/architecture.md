@@ -183,8 +183,8 @@ The Slint files mirror IINA's window:
   the YouTube section, shown there too (see YouTube section).
 - `ui/sidebar.slint`: the playlist, chapters and a Jellyfin song's
   lyrics, and the video, audio and subtitle quick settings.
-- `ui/music.slint`: music mode's strip of controls, its close and back
-  buttons, and the artwork for audio without a cover.
+- `ui/music.slint`: music mode's strip of controls, its close, back and
+  home buttons, and the artwork for audio without a cover.
 - `ui/menus.slint`: the application menu.
 - `ui/welcome.slint`, `ui/dialogs.slint`, `ui/widgets.slint`,
   `ui/theme.slint` (colours, metrics and the type sizes: 12, 14 and 16 px

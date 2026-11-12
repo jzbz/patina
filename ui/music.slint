@@ -404,23 +404,27 @@ export component MusicPanel inherits Rectangle {
     }
 }
 
-// Close and back, at the top of the window, shown with the controls.
+// Close, back and home, at the top of the window, shown with the controls.
 export component MusicWindowButtons inherits Rectangle {
-    // Smaller when there is no cover above the strip.
+    // Smaller and closer together when there is no cover above the strip,
+    // where the three have to end above the times: from 2px down they end
+    // 46px down, and the times' digits begin about 49px down. The volume
+    // button beside them leaves no room to lay them out in a row.
     in property <bool> compact;
     out property <bool> hovered: touch.has-hover;
     property <length> size: root.compact ? 12px : 13px;
-    property <length> gap: root.compact ? 4px : 5px;
+    property <length> gap: root.compact ? 2px : 5px;
+    property <length> inset: root.compact ? 2px : 3px;
 
-    width: root.size + 6px;
-    height: 2 * root.size + root.gap + 6px;
+    width: root.size + 2 * root.inset;
+    height: 3 * root.size + 2 * root.gap + 2 * root.inset;
     border-radius: 10px;
     background: Theme.osd-background;
 
     touch := TouchArea {
         IconButton {
-            x: 3px;
-            y: 3px;
+            x: root.inset;
+            y: root.inset;
             width: root.size;
             height: root.size;
             icon: @image-url("icons/circle-x.svg");
@@ -432,8 +436,8 @@ export component MusicWindowButtons inherits Rectangle {
         }
 
         IconButton {
-            x: 3px;
-            y: 3px + root.size + root.gap;
+            x: root.inset;
+            y: root.inset + root.size + root.gap;
             width: root.size;
             height: root.size;
             icon: @image-url("icons/undo-2.svg");
@@ -441,6 +445,21 @@ export component MusicWindowButtons inherits Rectangle {
             tooltip: "Exit Music Mode";
             clicked => {
                 Actions.patina("toggle-music-mode");
+            }
+        }
+
+        // The welcome screen, as the title bar's Home does: music mode has
+        // no title bar.
+        IconButton {
+            x: root.inset;
+            y: root.inset + 2 * (root.size + root.gap);
+            width: root.size;
+            height: root.size;
+            icon: @image-url("icons/house.svg");
+            icon-size: root.size;
+            tooltip: "Welcome Screen";
+            clicked => {
+                Actions.patina("welcome");
             }
         }
     }

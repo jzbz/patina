@@ -417,7 +417,7 @@ pub const ITEMS: &[Item] = &[
         "On-screen controller",
         "toolbar.pip",
         "Picture in picture button",
-        "",
+        "The controller shows as many as fit, in this order.",
         Switch,
     ),
     item(

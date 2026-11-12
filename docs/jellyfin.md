@@ -195,9 +195,9 @@ the welcome view. Its bar has Home, the account's libraries and Search.
 Pages stack: opening an item pushes its page, Back (the button, the mouse's
 back button, Backspace) pops it, and Back from Home goes to the welcome
 view, as the YouTube section's Back does from its first page. The title
-bar's Home button (a house, shown over the library and the YouTube section
-and never over a file; not in the system's title bar, where Patina draws
-none) goes there from any page. Going there the window lets its server go,
+bar's Home button (a house, shown over the library, the YouTube section
+and a file, and on the controller over a file where that bar isn't drawn)
+goes there from any page. Going there the window lets its server go,
 as a window starts without one, and picking the server again opens its
 Home. What plays from the library plays in its place; Escape (outside
 full screen, where it does nothing as bound by default) or Stop goes back
