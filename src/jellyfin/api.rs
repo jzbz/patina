@@ -1214,7 +1214,9 @@ impl Client {
     /// `tag` (from `ImageTags`) changes when the image does, so the image
     /// cache can keep what it fetched by URL. `max_width` is rounded up to
     /// one of a few sizes (`image_width`). JPEG, which Patina decodes,
-    /// whatever the original is.
+    /// whatever the original is; but PNG for a logo, which is drawn over
+    /// the backdrop and is transparent around the lettering, where a JPEG
+    /// would put a black box.
     pub fn image_url(
         &self,
         item_id: &str,
@@ -1234,7 +1236,11 @@ impl Client {
         if let Some(width) = max_width {
             query.push(("maxWidth".to_owned(), image_width(width).to_string()));
         }
-        query.push(("format".to_owned(), "Jpg".to_owned()));
+        let format = match kind {
+            ImageType::Logo => "Png",
+            _ => "Jpg",
+        };
+        query.push(("format".to_owned(), format.to_owned()));
         self.url(&path, &query)
     }
 
@@ -2086,6 +2092,13 @@ mod tests {
                 .image_url("i1", ImageType::Backdrop, Some(2), None, None)
                 .as_str(),
             "https://example.org/jf/Items/i1/Images/Backdrop/2?format=Jpg"
+        );
+        assert_eq!(
+            client
+                .image_url("i1", ImageType::Logo, None, Some("t"), Some(400))
+                .as_str(),
+            "https://example.org/jf/Items/i1/Images/Logo?tag=t&maxWidth=480&format=Png",
+            "a logo keeps its transparency"
         );
         assert_eq!(
             client

@@ -248,7 +248,9 @@ playing the page still queues up to 1000.
 
 **Images.** `GET /Items/{id}/Images/{type}?tag=…&maxWidth=…&format=Jpg`,
 with widths rounded to a few fixed sizes (the server caches each size it
-makes) and no `fill` parameters. A worker pool fetches and decodes them
+makes) and no `fill` parameters. A logo is asked for as `format=Png`: it
+is drawn over the backdrop, transparent around its lettering, which a
+JPEG would fill with black. A worker pool fetches and decodes them
 into `SharedPixelBuffer`s, which become `slint::Image`s on the interface
 thread; they are kept in memory and on disk under the data folder's
 `jellyfin/images`, with the least recently used removed past the size
