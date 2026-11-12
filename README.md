@@ -6,7 +6,9 @@ of [mpv](https://mpv.io). Besides your own files and streams, it has a
 Jellyfin client for your server's films, shows and music, and a YouTube
 client with no account.
 
-![Patina playing a video, with the floating controller](docs/images/player.png)
+![Patina playing a film, with the title bar and the floating controller](docs/images/player.png)
+
+![The YouTube section's feed of followed channels](docs/images/youtube.png)
 
 ![The preferences window](docs/images/preferences.png)
 
