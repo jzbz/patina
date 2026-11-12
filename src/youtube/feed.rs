@@ -558,6 +558,11 @@ impl SavedFeed {
         }
     }
 
+    /// What the feed knows of a video, whichever channel's it is.
+    pub fn video(&self, id: &VideoId) -> Option<&Video> {
+        self.videos.get(id).map(|row| &row.video)
+    }
+
     /// Forgets channels no longer subscribed to.
     pub fn keep_channels(&mut self, subscribed: &HashSet<ChannelId>) {
         self.channels.retain(|id, _| subscribed.contains(id));

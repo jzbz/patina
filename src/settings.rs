@@ -911,13 +911,14 @@ impl History {
         }
     }
 
-    /// Gives `path`'s entry `title` in place of one of `fallbacks`, names it
-    /// was recorded under for want of one; whether it changed. A title
-    /// already there stays.
+    /// Gives `path`'s entry `title` in place of a name it was recorded under
+    /// for want of one, whether one of `fallbacks` or one `is_untitled`
+    /// knows; whether it changed. A title already there stays.
     pub fn retitle(&mut self, path: &str, title: &str, fallbacks: &[&str]) -> bool {
-        let fallback = |name: &str| !name.is_empty() && fallbacks.contains(&name);
+        let fallback =
+            |name: &str| (!name.is_empty() && fallbacks.contains(&name)) || is_untitled(path, name);
         match self.entries.iter_mut().find(|entry| entry.path == path) {
-            Some(entry) if fallback(&entry.title) && !title.is_empty() && !fallback(title) => {
+            Some(entry) if fallback(&entry.title) && !fallback(title) => {
                 entry.title = title.to_owned();
                 true
             }
@@ -928,6 +929,60 @@ impl History {
     pub fn recent(&self, limit: usize) -> impl Iterator<Item = &HistoryEntry> {
         self.entries.iter().take(limit)
     }
+}
+
+/// Whether `title` is no title for `path`, only what it was called for want
+/// of one: nothing, Patina's name for it (`file_name`, which for an address
+/// is all of it), or for an address mpv's. With no title mpv shows its
+/// `filename`, and with mpv 0.42 a web video was recorded in the history
+/// under that before yt-dlp's title came (player::give_ytdl_title); the
+/// entries recorded before that was mended keep it until something gives
+/// them their title.
+pub fn is_untitled(path: &str, title: &str) -> bool {
+    title.is_empty()
+        || title == crate::player::state::file_name(path)
+        || (crate::util::is_url(path) && mpv_filenames(path).iter().any(|name| name == title))
+}
+
+/// mpv's `filename` for an address: the address percent-decoded, then what
+/// comes after its last '/', query and all, or all of it when nothing does.
+/// The part as written comes too, which is the same unless the address has
+/// an escape in it, as YouTube's share codes do ("%3D").
+fn mpv_filenames(url: &str) -> [String; 2] {
+    let last = |text: &str| match text.rsplit('/').next() {
+        Some(part) if !part.is_empty() => part.to_owned(),
+        _ => text.to_owned(),
+    };
+    [last(&mpv_unescaped(url)), last(url)]
+}
+
+/// `text` with each `%` and two hex digits made the byte they stand for, as
+/// mpv's `mp_url_unescape_inplace` makes it: a `%` with anything else after
+/// it stays, with the two characters after it.
+fn mpv_unescaped(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut unescaped = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escape = match bytes.get(index..index + 3) {
+            Some([b'%', high, low]) => Some((*high as char, *low as char)),
+            _ => None,
+        };
+        match escape {
+            Some((high, low)) => {
+                match (high.to_digit(16), low.to_digit(16)) {
+                    (Some(high), Some(low)) => unescaped.push((high * 16 + low) as u8),
+                    _ => unescaped.extend_from_slice(&bytes[index..index + 3]),
+                }
+                index += 3;
+            }
+            None => {
+                unescaped.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&unescaped).into_owned()
 }
 
 /// Loads the preferences, keeping every setting that can still be read
@@ -1535,17 +1590,67 @@ mod tests {
         // `filename`), then Patina's, which for an address is all of it.
         let full = crate::player::state::file_name(url);
         assert_eq!(full, url);
-        assert!(!history.retitle(url, "Big Buck Bunny Trailer", &[full.as_str()]));
         let fallbacks = ["watch?v=5xAgp6i9lUQ", full.as_str()];
         assert!(!history.retitle(url, "", &fallbacks));
         assert!(!history.retitle(url, "watch?v=5xAgp6i9lUQ", &fallbacks));
         assert!(!history.retitle("https://elsewhere", "Other", &fallbacks));
-        // mpv may have had no stand-in either.
-        assert!(!history.retitle(url, "Big Buck Bunny Trailer", &["", full.as_str()]));
         assert!(history.retitle(url, "Big Buck Bunny Trailer", &fallbacks));
         assert_eq!(history.entries[0].title, "Big Buck Bunny Trailer");
         assert!(!history.retitle(url, "Something else", &fallbacks));
         assert_eq!(history.entries[0].title, "Big Buck Bunny Trailer");
+    }
+
+    /// An entry recorded under mpv's stand-in before yt-dlp's title came in
+    /// time, the address's last part, has no title, however it came to be
+    /// there: mpv's `filename` is the address percent-decoded, query and
+    /// all. It takes a title whatever names it was given as stand-ins,
+    /// none included, and a title it has stays.
+    #[test]
+    fn mpvs_stand_in_from_before_the_mend_is_no_title() {
+        let share = "https://www.youtube.com/watch?v=d24DYchpPpc&pp=ugUEEgJlbg%3D%3D";
+        for (path, title) in [
+            (share, "watch?v=d24DYchpPpc&pp=ugUEEgJlbg=="),
+            (share, "watch?v=d24DYchpPpc&pp=ugUEEgJlbg%3D%3D"),
+            (share, share),
+            (share, ""),
+            ("https://youtu.be/x6RPajPuzr8?si=abc", "x6RPajPuzr8?si=abc"),
+            ("https://example.com/videos/", "https://example.com/videos/"),
+            // An escaped '/' is one by the time mpv takes the last part.
+            ("https://example.com/a%2Fb.mp4", "b.mp4"),
+            ("/films/a film.mkv", "a film.mkv"),
+        ] {
+            assert!(is_untitled(path, title), "{path}: {title}");
+        }
+        for (path, title) in [
+            (share, "Big Buck Bunny Trailer"),
+            (share, "ugUEEgJlbg=="),
+            ("https://example.com/videos/", "videos"),
+            // Only an address has mpv's stand-in.
+            ("/films/a%20film.mkv", "a film.mkv"),
+            ("/films/a film.mkv", "films/a film.mkv"),
+        ] {
+            assert!(!is_untitled(path, title), "{path}: {title}");
+        }
+        assert_eq!(mpv_unescaped("%41%zz%4"), "A%zz%4");
+
+        let mut history = History::default();
+        let url = "https://www.youtube.com/watch?v=x6RPajPuzr8";
+        let entry = |path: &str, title: &str| HistoryEntry {
+            path: path.into(),
+            title: title.into(),
+            played_at: 1,
+            duration: 0.0,
+            position: 0.0,
+            section: false,
+        };
+        history.record(entry(url, "watch?v=x6RPajPuzr8"));
+        history.record(entry(share, "Already titled"));
+        assert!(!history.retitle(url, "watch?v=x6RPajPuzr8", &[]));
+        // mpv may have had no stand-in to say, or none at all was asked.
+        assert!(history.retitle(url, "Big Buck Bunny Trailer", &["", url]));
+        assert_eq!(history.entries[1].title, "Big Buck Bunny Trailer");
+        assert!(!history.retitle(share, "Something else", &[]));
+        assert_eq!(history.entries[0].title, "Already titled");
     }
 
     #[test]

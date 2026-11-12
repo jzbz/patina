@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 /// How often a saved video's details are asked for before leaving it be. It
 /// still shows, untitled, and can be played. Importing it again gives it these
-/// tries anew.
+/// tries anew. A History video's title gets as many in each run of the app.
 const DETAIL_TRIES: u8 = 3;
 /// Time limits in a row before saved videos' details stop for now: one can be
 /// that video, and more are the way to YouTube.
@@ -110,7 +110,7 @@ pub struct ImportReport {
 pub struct Played {
     pub id: VideoId,
     /// What the history calls it, cleaned as others' text is; empty when that
-    /// is only its address or its file's name.
+    /// is only its address, mpv's stand-in for it or its file's name.
     pub title: String,
     /// Seconds since the Unix epoch.
     pub played_at: i64,
@@ -132,6 +132,9 @@ type Sources = Box<dyn Fn(&Preferences, &Path) -> (Box<dyn Source>, Box<dyn Sour
 
 /// Moves files to the trash, and says which it couldn't and why, on any thread.
 type Trash = Box<dyn Fn(Vec<String>, Box<dyn FnOnce(Vec<(String, String)>) + Send>)>;
+
+/// Gives entries of the player's history titles, as (path, title).
+type Retitle = Box<dyn Fn(Vec<(String, String)>)>;
 
 /// How pictures are fetched for a proxy preference. One that can't be used fails
 /// each fetch rather than going direct.
@@ -219,6 +222,13 @@ pub struct Session {
     history: RefCell<Vec<HistoryEntry>>,
     /// Takes the YouTube videos out of the player's history, which is the app's.
     forget_history: RefCell<Box<dyn Fn()>>,
+    /// Gives entries of the player's history titles, by their paths
+    /// (`on_retitle_history`).
+    retitle_history: RefCell<Retitle>,
+    /// How often a pass has asked for a History video's title and not had it,
+    /// as `SavedVideo::tries` counts for a saved video. Only for this run:
+    /// the history is the app's, and keeps nothing of the section's.
+    history_tries: RefCell<HashMap<VideoId, u8>>,
 }
 
 /// Seconds since the Unix epoch, as the store keeps time.
@@ -356,6 +366,8 @@ impl Session {
             })),
             history: RefCell::new(Vec::new()),
             forget_history: RefCell::new(Box::new(|| {})),
+            retitle_history: RefCell::new(Box::new(|_| {})),
+            history_tries: RefCell::new(HashMap::new()),
         })
     }
 
@@ -930,8 +942,13 @@ impl Session {
     }
 
     /// `pause_first` when a pass has only just asked for the last of its own.
+    /// The History videos with no title come first: they are few, and show
+    /// in Recent and on the welcome screen as well as on the History page,
+    /// where a long import's saved videos would keep them waiting for hours.
+    /// None of them is on Watch Later, so no video comes twice.
     fn details_pass(self: &Rc<Self>, prefs: &Preferences, pause_first: bool) {
-        let ids = self.store().saved_without_details(DETAIL_TRIES);
+        let mut ids = self.history_to_title(prefs);
+        ids.extend(self.store().saved_without_details(DETAIL_TRIES));
         if ids.is_empty() {
             return;
         }
@@ -993,6 +1010,11 @@ impl Session {
     }
 
     fn took_details(&self, id: &VideoId, answer: Result<Video, Error>) {
+        self.took_history_title(id, &answer);
+        // Taken off Watch Later while its details were on their way.
+        if !self.store().is_saved(id) {
+            return;
+        }
         let time = now();
         {
             let mut store = self.store();
@@ -1079,14 +1101,248 @@ impl Session {
 
     /// The player's history, as it is now.
     pub fn set_history(&self, entries: &[HistoryEntry]) {
+        // Looked at only while a pass runs, which has read the lists
+        // `video_at` needs.
+        let askable = if self.details.borrow().is_some() {
+            self.askable_history()
+        } else {
+            Vec::new()
+        };
         *self.history.borrow_mut() = entries.to_vec();
+        if !askable.is_empty() {
+            // A title given to an entry keeps its path and its video's
+            // address, and leaves the pass be.
+            let cleared = self.cleared_history();
+            let gone = askable.iter().any(|(path, id)| {
+                !cleared.contains(id) || !entries.iter().any(|entry| entry.path == *path)
+            });
+            if gone {
+                self.retake_history_titles();
+            }
+        }
         self.notify(Change::History);
+    }
+
+    /// History began or stopped being kept. Work that starts from the
+    /// newest preferences, an import or a pass starting again, goes by
+    /// this either way, or it would keep skipping History videos after
+    /// history is kept again. Once it is off, a pass under way asks for no
+    /// more of its videos' titles; once it is on, one under way starts
+    /// again as it ends, to ask for the titles it skipped.
+    pub fn history_kept(&self, prefs: &Preferences) {
+        *self.latest_prefs.borrow_mut() = Some(prefs.clone());
+        if !prefs.record_history {
+            self.retake_history_titles();
+        } else if self.details.borrow().is_some() {
+            self.details_again.set(true);
+        }
+    }
+
+    /// A pass over titles took its History videos as it began, and would
+    /// go on asking YouTube about videos taken out of the history since,
+    /// which a user clearing it doesn't expect. So it stops, and starts
+    /// again with what is left once it has wound down.
+    fn retake_history_titles(&self) {
+        if self.details.borrow().is_some() {
+            self.stop_details();
+            self.details_again.set(true);
+        }
     }
 
     /// What takes the YouTube videos out of the player's history, for Clear
     /// History on the section's page.
     pub fn on_clear_history(&self, forget: Box<dyn Fn()>) {
         *self.forget_history.borrow_mut() = forget;
+    }
+
+    /// What gives entries of the player's history the titles the section
+    /// has for them, as (path, title): a video recorded with none, such as
+    /// one recorded under mpv's stand-in before yt-dlp's title came in time
+    /// (`settings::is_untitled`), keeps it until it plays again otherwise.
+    /// Recent, the welcome screen, the History window and the History page
+    /// all show it from there.
+    pub fn on_retitle_history(&self, retitle: Retitle) {
+        *self.retitle_history.borrow_mut() = retitle;
+    }
+
+    /// The history's entries that play a YouTube video, by any of its
+    /// addresses (`VideoId::in_address`), and have no title, newest first.
+    fn untitled_history(&self) -> Vec<(String, VideoId)> {
+        self.history
+            .borrow()
+            .iter()
+            .filter(|entry| crate::settings::is_untitled(&entry.path, &entry.title))
+            .filter_map(|entry| VideoId::in_address(&entry.path).map(|id| (entry.path.clone(), id)))
+            .collect()
+    }
+
+    /// Gives the history's YouTube videos with no title the titles the
+    /// section knows, from Watch Later, the feed, what it sent to a player
+    /// or another of the history's entries of the video, with no request.
+    /// The lists are read for this only when the history has such a video.
+    /// Says which videos are still untitled.
+    pub fn title_history(&self) -> Vec<VideoId> {
+        let untitled = self.untitled_history();
+        if untitled.is_empty() {
+            return Vec::new();
+        }
+        let held = self.history_titles();
+        let mut titles = Vec::new();
+        let mut rest: Vec<VideoId> = Vec::new();
+        for (path, id) in untitled {
+            match self.known_title(&id).or_else(|| held.get(&id).cloned()) {
+                Some(title) => titles.push((path, title)),
+                None if !rest.contains(&id) => rest.push(id),
+                None => {}
+            }
+        }
+        self.retitle(titles);
+        rest
+    }
+
+    /// A video's title, as the lists or what was sent to a player have it.
+    fn known_title(&self, id: &VideoId) -> Option<String> {
+        let saved = self
+            .store()
+            .saved()
+            .iter()
+            .find(|saved| saved.video.id == *id)
+            .map(|saved| saved.video.title.clone());
+        let fed = || self.feed().video(id).map(|video| video.title.clone());
+        let sent = || self.title_of(&id.watch_url());
+        saved
+            .filter(|title| !title.is_empty())
+            .or_else(|| fed().filter(|title| !title.is_empty()))
+            .or_else(sent)
+    }
+
+    /// The titles the history has for its videos, by any of their
+    /// addresses or as a file the section downloaded, cleaned as `history`
+    /// cleans them: the newest entry's that has one, or failing that a
+    /// downloaded file's name, yt-dlp's "<title> [<id>]". An entry with
+    /// none of a video another entry names would otherwise have YouTube
+    /// asked for a title Patina holds, only to rename a row in Recent.
+    fn history_titles(&self) -> HashMap<VideoId, String> {
+        let mut titled: HashMap<VideoId, String> = HashMap::new();
+        let mut named: HashMap<VideoId, String> = HashMap::new();
+        for entry in self.history.borrow().iter() {
+            let Some(id) = VideoId::in_address(&entry.path).or_else(|| self.video_at(&entry.path))
+            else {
+                continue;
+            };
+            if !crate::settings::is_untitled(&entry.path, &entry.title) {
+                let title = super::clean_text(&entry.title);
+                if !title.is_empty() {
+                    titled.entry(id).or_insert(title);
+                }
+            } else if !crate::util::is_url(&entry.path) {
+                let name = Path::new(&entry.path)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| stem.strip_suffix(&format!(" [{}]", id.as_str())))
+                    .map(super::clean_text)
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    named.entry(id).or_insert(name);
+                }
+            }
+        }
+        for (id, name) in named {
+            titled.entry(id).or_insert(name);
+        }
+        titled
+    }
+
+    fn retitle(&self, titles: Vec<(String, String)>) {
+        if !titles.is_empty() {
+            (self.retitle_history.borrow())(titles);
+        }
+    }
+
+    /// The videos the history has at the address Clear History takes out,
+    /// or as a file the section downloaded (`video_at`).
+    fn cleared_history(&self) -> HashSet<VideoId> {
+        self.history
+            .borrow()
+            .iter()
+            .filter_map(|entry| self.video_at(&entry.path))
+            .collect()
+    }
+
+    /// The history's entries with no title whose videos a pass may ask
+    /// YouTube about, by `history_to_title`'s rule of addresses.
+    fn askable_history(&self) -> Vec<(String, VideoId)> {
+        let cleared = self.cleared_history();
+        self.untitled_history()
+            .into_iter()
+            .filter(|(_, id)| cleared.contains(id))
+            .collect()
+    }
+
+    /// The History videos whose titles a pass asks for: those with none
+    /// that the section doesn't know either, newest played first. Only
+    /// those the history has at an address Clear History takes out
+    /// (`video_at`), as the section would otherwise go on asking YouTube
+    /// about videos it was told to forget; one there by another of its
+    /// addresses gets only what the section knows. A video on Watch Later
+    /// is left to its row, which keeps its tries and YouTube's "can't be
+    /// watched" past the run, and whose title reaches the history as well
+    /// (`took_history_title`). Each of the rest is asked for up to
+    /// `DETAIL_TRIES` times. None when no history is kept, as their titles
+    /// would go nowhere.
+    fn history_to_title(&self, prefs: &Preferences) -> Vec<VideoId> {
+        if !prefs.record_history {
+            return Vec::new();
+        }
+        let cleared = self.cleared_history();
+        let tries = self.history_tries.borrow().clone();
+        let untitled = self.title_history();
+        let store = self.store();
+        untitled
+            .into_iter()
+            .filter(|id| cleared.contains(id))
+            .filter(|id| !store.is_saved(id))
+            .filter(|id| tries.get(id).copied().unwrap_or(0) < DETAIL_TRIES)
+            .collect()
+    }
+
+    /// Takes in what a pass heard of a video, for the history's entries of
+    /// it that have no title: its title goes to them, and a failure counts
+    /// against it as it would against a saved video.
+    fn took_history_title(&self, id: &VideoId, answer: &Result<Video, Error>) {
+        let paths: Vec<String> = self
+            .untitled_history()
+            .into_iter()
+            .filter(|(_, played)| played == id)
+            .map(|(path, _)| path)
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let tries = match answer {
+            Ok(video) if !video.title.is_empty() => {
+                self.history_tries.borrow_mut().remove(id);
+                let title = &video.title;
+                self.retitle(
+                    paths
+                        .into_iter()
+                        .map(|path| (path, title.clone()))
+                        .collect(),
+                );
+                return;
+            }
+            // Gone for good, as far as can be told.
+            Err(error) if error.kind.about_the_video() || error.kind == Failure::NoSuchChannel => {
+                DETAIL_TRIES
+            }
+            Ok(_) => 1,
+            Err(error) if matches!(error.kind, Failure::Failed | Failure::BadOutput) => 1,
+            // Nothing about the video at all: it isn't counted against it.
+            Err(_) => return,
+        };
+        let mut counts = self.history_tries.borrow_mut();
+        let count = counts.entry(id.clone()).or_insert(0);
+        *count = count.saturating_add(tries).min(DETAIL_TRIES);
     }
 
     /// The YouTube videos in the player's history, newest first, each once
@@ -1107,8 +1363,7 @@ impl Session {
             let Some(id) = self.video_at(&entry.path) else {
                 continue;
             };
-            let file_name = crate::player::state::file_name(&entry.path);
-            let title = if entry.title == file_name {
+            let title = if crate::settings::is_untitled(&entry.path, &entry.title) {
                 String::new()
             } else {
                 super::clean_text(&entry.title)
@@ -1169,6 +1424,7 @@ impl Session {
                 .collect()
         };
         *self.history.borrow_mut() = kept;
+        self.retake_history_titles();
         (self.forget_history.borrow())();
         self.clear_marks();
         self.notify(Change::History);
@@ -2368,6 +2624,99 @@ mod tests {
         assert!(!folder.paths().youtube_file().exists());
     }
 
+    fn history_entry(path: &str, title: &str) -> HistoryEntry {
+        HistoryEntry {
+            path: path.to_owned(),
+            title: title.to_owned(),
+            played_at: 1,
+            duration: 0.0,
+            position: 0.0,
+            section: false,
+        }
+    }
+
+    /// The titles the session gives the player's history, as the app takes
+    /// them.
+    fn titles_given(session: &Session) -> Rc<RefCell<Vec<(String, String)>>> {
+        let given = Rc::new(RefCell::new(Vec::new()));
+        let kept = given.clone();
+        session.on_retitle_history(Box::new(move |titles| kept.borrow_mut().extend(titles)));
+        given
+    }
+
+    /// An entry recorded under mpv's stand-in for its address, before
+    /// yt-dlp's title came in time, has no title on the History page, as
+    /// one recorded under all of its address hasn't: what the lists know of
+    /// it shows instead, or "Untitled video".
+    #[test]
+    fn mpvs_stand_in_is_no_title_on_the_history_page() {
+        let folder = Folder::new("history-stand-in");
+        let session = working(&folder);
+        let watch = |id: &str| video_id(id).watch_url();
+        session.set_history(&[
+            history_entry(&watch("aaaaaaaaaaa"), "watch?v=aaaaaaaaaaa"),
+            history_entry(&watch("bbbbbbbbbbb"), &watch("bbbbbbbbbbb")),
+            history_entry(&watch("ccccccccccc"), "Three"),
+        ]);
+        let titles: Vec<String> = session
+            .history()
+            .into_iter()
+            .map(|played| played.title)
+            .collect();
+        assert_eq!(titles, ["", "", "Three"]);
+    }
+
+    /// YouTube videos in the history with no title, such as those recorded
+    /// under mpv's stand-in before yt-dlp's title came in time, get what the
+    /// section knows of them, with no request: Watch Later's title, the
+    /// feed's, or what was sent to a player, by any of a video's addresses.
+    /// A title an entry has stays, and with no such video the lists aren't
+    /// even read.
+    #[test]
+    fn the_history_gets_the_titles_the_section_knows() {
+        let folder = Folder::new("history-known");
+        let session = working(&folder);
+        let given = titles_given(&session);
+        let watch = |id: &str| video_id(id).watch_url();
+        session.set_history(&[
+            history_entry(&watch("aaaaaaaaaaa"), "Already titled"),
+            history_entry("/films/a film.mkv", "a film.mkv"),
+            history_entry(
+                "https://example.com/watch?v=bbbbbbbbbbb",
+                "watch?v=bbbbbbbbbbb",
+            ),
+        ]);
+        assert!(session.title_history().is_empty());
+        assert!(session.store.get().is_none(), "the lists weren't read");
+        assert!(session.feed.get().is_none(), "nor the feed");
+        assert!(given.borrow().is_empty());
+
+        let mut saved = Video::new(video_id("aaaaaaaaaaa"));
+        saved.title = "Saved".into();
+        session.save_video(saved);
+        let mut fed = Video::new(video_id("bbbbbbbbbbb"));
+        fed.title = "From the feed".into();
+        session.feed_video_for_a_test(&channel(A), fed);
+        session.name_source(watch("ccccccccccc"), "Sent".into());
+        let share = "https://www.youtube.com/watch?v=bbbbbbbbbbb&pp=ugUEEgJlbg%3D%3D";
+        session.set_history(&[
+            history_entry(&watch("aaaaaaaaaaa"), "watch?v=aaaaaaaaaaa"),
+            history_entry(share, "watch?v=bbbbbbbbbbb&pp=ugUEEgJlbg=="),
+            history_entry(&watch("ccccccccccc"), &watch("ccccccccccc")),
+            history_entry(&watch("ddddddddddd"), "watch?v=ddddddddddd"),
+            history_entry(&watch("eeeeeeeeeee"), "Already titled"),
+        ]);
+        assert_eq!(session.title_history(), [video_id("ddddddddddd")]);
+        assert_eq!(
+            *given.borrow(),
+            [
+                (watch("aaaaaaaaaaa"), "Saved".to_owned()),
+                (share.to_owned(), "From the feed".to_owned()),
+                (watch("ccccccccccc"), "Sent".to_owned()),
+            ]
+        );
+    }
+
     #[test]
     fn a_damaged_file_is_mentioned_and_kept() {
         let folder = Folder::new("damaged");
@@ -2916,6 +3265,269 @@ esac
             });
             session.details_finished(&prefs);
             assert_eq!(fake.runs().len(), 0);
+        }
+
+        fn asked(fake: &Fake) -> Vec<String> {
+            fake.runs()
+                .iter()
+                .map(|run| run.last().unwrap().rsplit('=').next().unwrap().to_owned())
+                .collect()
+        }
+
+        /// A pass over titles asks for the History videos that have none
+        /// and that the section doesn't know either, before saved videos',
+        /// as there are few of them and they show in more places, and gives
+        /// the player's history what comes. A video on Watch Later as well
+        /// is asked for once, as a saved video, and its title reaches the
+        /// history too. One YouTube says can't be watched isn't asked for
+        /// again. With no history kept, none is asked for.
+        #[test]
+        fn history_titles_come_with_the_pass() {
+            let folder = Folder::new("details-history");
+            let fake = answering(&folder, DETAILS);
+            let prefs = prefs(&fake);
+            let session = working(&folder);
+            let given = titles_given(&session);
+            let short = "https://youtu.be/aaaaaaaaaaa?si=x";
+            let mut history = crate::settings::History {
+                entries: vec![
+                    history_entry(short, "aaaaaaaaaaa?si=x"),
+                    history_entry(&video_id("bbbbbbbbbbb").watch_url(), "watch?v=bbbbbbbbbbb"),
+                    history_entry(&video_id("ddddddddddd").watch_url(), "Has one"),
+                ],
+            };
+            session.set_history(&history.entries);
+            let off = Preferences {
+                record_history: false,
+                ..prefs.clone()
+            };
+            session.fetch_details(&off);
+            assert!(fake.runs().is_empty());
+
+            // Added a second apart, as Watch Later's newest come first, and
+            // two saved in the same second could come either way.
+            session.store().add_saved(
+                vec![
+                    SavedVideo::new(Video::new(video_id("aaaaaaaaaaa")), 1),
+                    SavedVideo::new(Video::new(video_id("ccccccccccc")), 2),
+                ],
+                2,
+            );
+            session.fetch_details(&prefs);
+            assert_eq!(asked(&fake), ["bbbbbbbbbbb", "ccccccccccc", "aaaaaaaaaaa"]);
+            assert_eq!(
+                *given.borrow(),
+                [(short.to_owned(), "First title".to_owned())]
+            );
+            let rows = session.saved();
+            assert!(rows.iter().all(|row| !row.video.title.is_empty()));
+
+            // As the app takes it: then nothing is left to ask for, b being
+            // private.
+            for (path, title) in given.borrow().iter() {
+                assert!(history.retitle(path, title, &[]));
+            }
+            session.set_history(&history.entries);
+            session.fetch_details(&prefs);
+            assert_eq!(fake.runs().len(), 3);
+        }
+
+        /// A pass takes its History videos as it begins. Clear History,
+        /// Clear Recent, a video taken off the history or history no longer
+        /// being kept stops one under way, and it starts again with what is
+        /// left, so YouTube is asked nothing more of the videos gone. So
+        /// does taking off the one address a pass asks for a video by while
+        /// another of its addresses stays.
+        #[test]
+        fn taking_videos_out_of_the_history_stops_a_pass_asking_for_them() {
+            let folder = Folder::new("details-history-cleared");
+            let fake = answering(&folder, DETAILS);
+            let prefs = prefs(&fake);
+            let session = working(&folder);
+            session.entered();
+            let url = video_id("aaaaaaaaaaa").watch_url();
+            let entry = history_entry(&url, "watch?v=aaaaaaaaaaa");
+            let off = Preferences {
+                record_history: false,
+                ..prefs.clone()
+            };
+            let ways: [&dyn Fn(); 3] = [
+                &|| session.clear_history(),
+                &|| session.set_history(&[]),
+                &|| session.history_kept(&off),
+            ];
+            for take_out in ways {
+                session.set_history(std::slice::from_ref(&entry));
+                // A pass under way, as its thread has it.
+                let running = Cancel::default();
+                *session.details.borrow_mut() = Some(running.clone());
+                take_out();
+                assert!(running.cancelled());
+                session.details_finished(&prefs);
+                assert!(fake.runs().is_empty());
+            }
+            let short = "https://youtu.be/aaaaaaaaaaa?si=x";
+            let untitled_short = history_entry(short, "aaaaaaaaaaa?si=x");
+            session.set_history(&[untitled_short.clone(), history_entry(&url, "A title")]);
+            let running = Cancel::default();
+            *session.details.borrow_mut() = Some(running.clone());
+            session.set_history(std::slice::from_ref(&untitled_short));
+            assert!(running.cancelled());
+            session.details_finished(&prefs);
+            assert!(fake.runs().is_empty());
+            // A title given to an entry leaves the pass be.
+            session.set_history(std::slice::from_ref(&entry));
+            let running = Cancel::default();
+            *session.details.borrow_mut() = Some(running.clone());
+            session.set_history(&[history_entry(&url, "A title")]);
+            assert!(!running.cancelled());
+        }
+
+        /// History kept again after it was off: an import goes by that,
+        /// not by the preferences stored as it went off, and asks for the
+        /// title of a History video that has none.
+        #[test]
+        fn an_import_asks_for_history_titles_once_history_is_kept_again() {
+            let folder = Folder::new("details-history-back-on");
+            let fake = answering(&folder, DETAILS);
+            let prefs = prefs(&fake);
+            let session = working(&folder);
+            session.entered();
+            session.history_kept(&Preferences {
+                record_history: false,
+                ..prefs.clone()
+            });
+            session.history_kept(&prefs);
+            let url = video_id("ddddddddddd").watch_url();
+            session.set_history(&[history_entry(&url, "watch?v=ddddddddddd")]);
+            import_watch_later(&session, &prefs, &folder);
+            assert_eq!(
+                asked(&fake),
+                ["ddddddddddd", "ccccccccccc", "bbbbbbbbbbb", "aaaaaaaaaaa"]
+            );
+        }
+
+        /// An entry with no title of a video the history names under
+        /// another of its entries, by its one address or as a downloaded
+        /// file, gets that title with no request, as the History page
+        /// shows it already.
+        #[test]
+        fn a_video_titled_under_another_history_entry_is_never_asked_for() {
+            let folder = Folder::new("details-history-held");
+            let fake = answering(&folder, DETAILS);
+            let prefs = prefs(&fake);
+            let session = working(&folder);
+            let given = titles_given(&session);
+            let short = "https://youtu.be/aaaaaaaaaaa?si=x";
+            let file = folder.0.join("A downloaded title [bbbbbbbbbbb].webm");
+            std::fs::write(&file, b"").unwrap();
+            session.set_download(&video_id("bbbbbbbbbbb"), &file);
+            let file = file.to_str().unwrap().to_owned();
+            let file_name = crate::player::state::file_name(&file);
+            session.set_history(&[
+                history_entry(short, "aaaaaaaaaaa?si=x"),
+                history_entry(
+                    &video_id("aaaaaaaaaaa").watch_url(),
+                    "A title the history has",
+                ),
+                history_entry("https://youtu.be/bbbbbbbbbbb", "bbbbbbbbbbb"),
+                history_entry(&file, &file_name),
+            ]);
+            session.fetch_details(&prefs);
+            assert!(fake.runs().is_empty(), "{:?}", asked(&fake));
+            assert_eq!(
+                *given.borrow(),
+                [
+                    (short.to_owned(), "A title the history has".to_owned()),
+                    (
+                        "https://youtu.be/bbbbbbbbbbb".to_owned(),
+                        "A downloaded title".to_owned()
+                    ),
+                ]
+            );
+        }
+
+        /// A video on Watch Later is asked for as its row, whose mark and
+        /// tries last past the run: once YouTube has said it can't be
+        /// watched, its History entry with no title doesn't have it asked
+        /// for again, in that run or the next.
+        #[test]
+        fn a_saved_video_marked_unavailable_isnt_asked_for_for_its_history_entry() {
+            let folder = Folder::new("details-history-saved");
+            let fake = answering(&folder, DETAILS);
+            let prefs = prefs(&fake);
+            let session = working(&folder);
+            import_watch_later(&session, &prefs, &folder);
+            assert_eq!(fake.runs().len(), 3);
+            assert!(
+                session
+                    .saved()
+                    .iter()
+                    .any(|row| row.video.id.as_str() == "bbbbbbbbbbb" && row.unavailable)
+            );
+            let url = video_id("bbbbbbbbbbb").watch_url();
+            let entry = history_entry(&url, "watch?v=bbbbbbbbbbb");
+            session.set_history(std::slice::from_ref(&entry));
+            session.fetch_details(&prefs);
+            assert_eq!(fake.runs().len(), 3);
+            drop(session);
+            let again = working(&folder);
+            again.set_history(std::slice::from_ref(&entry));
+            again.fetch_details(&prefs);
+            assert_eq!(fake.runs().len(), 3);
+        }
+
+        /// A pass asks YouTube only about History videos at the one address
+        /// Clear History takes out. A video in the history only by a share
+        /// link, `youtu.be` or the like stays after Clear History, so it
+        /// isn't asked about, before the clearing or after.
+        #[test]
+        fn a_video_in_the_history_by_another_address_isnt_asked_for() {
+            let folder = Folder::new("details-history-addresses");
+            let fake = answering(&folder, DETAILS);
+            let prefs = prefs(&fake);
+            let session = working(&folder);
+            let given = titles_given(&session);
+            let short = "https://youtu.be/bbbbbbbbbbb?si=abc";
+            let share = "https://www.youtube.com/watch?v=ccccccccccc&pp=ugUEEgJlbg%3D%3D";
+            let exact = video_id("aaaaaaaaaaa").watch_url();
+            session.set_history(&[
+                history_entry(short, "bbbbbbbbbbb?si=abc"),
+                history_entry(share, "watch?v=ccccccccccc&pp=ugUEEgJlbg=="),
+                history_entry(&exact, "watch?v=aaaaaaaaaaa"),
+            ]);
+            session.fetch_details(&prefs);
+            assert_eq!(asked(&fake), ["aaaaaaaaaaa"]);
+            assert_eq!(*given.borrow(), [(exact, "First title".to_owned())]);
+
+            session.clear_history();
+            let left: Vec<String> = session
+                .history
+                .borrow()
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect();
+            assert_eq!(left, [short.to_owned(), share.to_owned()]);
+            session.fetch_details(&prefs);
+            assert_eq!(asked(&fake), ["aaaaaaaaaaa"]);
+        }
+
+        /// A History video whose answer can't be read is asked for three
+        /// times in a run, as a saved video is, and then left be.
+        #[test]
+        fn an_unreadable_history_title_is_asked_for_three_times() {
+            let folder = Folder::new("details-history-unreadable");
+            let fake = answering(&folder, "echo 'not json'");
+            let prefs = prefs(&fake);
+            let session = working(&folder);
+            let given = titles_given(&session);
+            let url = video_id("aaaaaaaaaaa").watch_url();
+            session.set_history(&[history_entry(&url, "watch?v=aaaaaaaaaaa")]);
+            for _ in 0..4 {
+                session.fetch_details(&prefs);
+            }
+            assert_eq!(fake.runs().len(), 3);
+            assert!(given.borrow().is_empty());
         }
 
         #[test]

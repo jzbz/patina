@@ -64,7 +64,8 @@ window shows. In the section, requests start from:
 - **Opening it, and coming back to it from a video:** the feed, if it was
   last checked over 30 minutes ago (an hour after YouTube refused), for the
   channels that haven't answered in that time, any channel never asked, and
-  the titles of saved videos that have none.
+  the titles of saved videos and of the player's history's YouTube videos
+  that have none (see History for which).
 - **What the user does:** Update Now, a search on Enter, adding a channel,
   opening a channel's page, importing a list (its new channels are fetched,
   and its Watch Later rows' titles), playing and downloading.
@@ -84,7 +85,7 @@ or the proxy's when one is set (see Proxy).
 | yt-dlp, listing | Channels the feed didn't answer for, and a channel's page | `www.youtube.com` | The channels' ids, up to 8 in one process |
 | yt-dlp, search | Enter in the search field | `www.youtube.com` | The search text, at least twice: once for videos, once for channels |
 | yt-dlp, adding a channel | Adding a channel | `www.youtube.com` | The `@handle`, old name or id that was pasted, as an address Patina builds |
-| yt-dlp, details | A saved video with no title, one every 15 seconds | `www.youtube.com` | The video's id |
+| yt-dlp, details | A saved video with no title, or a video in the history by its one address with none, one every 15 seconds | `www.youtube.com` | The video's id |
 | yt-dlp and mpv, playing | A video opens | `www.youtube.com`, then `googlevideo.com` for the stream | The video's id to yt-dlp; mpv then asks for the signed stream addresses yt-dlp returned, which carry the user's address |
 | yt-dlp, downloading | A download starts | The same | The video's id, then the stream |
 | Thumbnails | A card near the screen, unless cached | `i.ytimg.com` | The video's id, in `/vi/<id>/mqdefault.jpg`, and `hq720` or `hqdefault` as well as or instead of that, with `Patina/<version>` and no cookie |
@@ -243,13 +244,14 @@ already, and how many were skipped, the newest such message first. New
 channels are fetched. Watch Later's rows have no titles in Google's file, so
 they show as "Fetching its title…" and can be played at once, while titles
 come one at a time, the newest added first as they are at the top of the list,
-15 seconds apart. Rows imported meanwhile are fetched after those. A row gets
-three tries, unreadable answers included, and then shows as "Untitled video",
-as it does while nothing is fetching; importing it again gives it three more.
-A video YouTube says can't be watched is marked and left. A block, the network
-or two time limits in a row stop the fetching, which picks up the next time
-the section opens. It also stops when a video starts playing, since the two
-count against the same limit on a guest, and is taken up again on coming back.
+15 seconds apart, after any of the history's videos with none (see History).
+Rows imported meanwhile are fetched after those. A row gets three tries,
+unreadable answers included, and then shows as "Untitled video", as it does
+while nothing is fetching; importing it again gives it three more. A video
+YouTube says can't be watched is marked and left. A block, the network or two
+time limits in a row stop the fetching, which picks up the next time the
+section opens. It also stops when a video starts playing, since the two count
+against the same limit on a guest, and is taken up again on coming back.
 
 **NewPipe's file.** Import takes the JSON file NewPipe exports its
 subscriptions to through the same button, the same read and the same report.
@@ -501,15 +503,47 @@ with when it last played. It keeps nothing of its own. The app hands the
 section its history whenever that changes (`Session::set_history`), a file's
 length and position at its end included, and which entries are videos is
 worked out only when the page shows, as telling a downloaded file needs
-`youtube.json`, which nothing reads before the section does. What the lists
-know of a video, its title, channel and length, fills in what the history
-doesn't keep; the history's title and length are used otherwise, from an older
-entry of the same video where the newest has none: a title that is only the
-address or a file's name is none, and a file that has only just loaded has no
-length. A downloaded file with no title anywhere is called what its name
-says, yt-dlp's "<title> [<id>]". Both come from mpv or yt-dlp, and are
-cleaned as any other title is (see Untrusted input). With "Remember playback
-history" off, nothing is added, and the empty page says so.
+`youtube.json`, which nothing reads before the section does but for the titles
+below. What the lists know of a video, its title, channel and length, fills in
+what the history doesn't keep; the history's title and length are used
+otherwise, from an older entry of the same video where the newest has none: a
+title that is only the address, mpv's stand-in for it or a file's name is
+none, and a file that has only just loaded has no length. A downloaded file
+with no title anywhere is called what its name says, yt-dlp's
+"<title> [<id>]". Both come from mpv or yt-dlp, and are cleaned as any other
+title is (see Untrusted input). With "Remember playback history" off, nothing
+is added, and the empty page says so.
+
+An entry recorded with no title keeps that until something gives it one, and
+then shows it in Recent, on the welcome screen and in the History window as
+well. A video opened by its address under mpv 0.42, before Patina gave mpv
+yt-dlp's title in time (`player::give_ytdl_title`), was recorded under mpv's
+stand-in, the address after its last '/', query and all (`watch?v=…`), which
+counts as no title wherever one is judged (`settings::is_untitled`). The
+history's YouTube videos with none get one from what the section has, with no
+request, once the app's windows have opened (`Session::title_history`): Watch
+Later's title, the feed's, what the section sent to a player, or failing
+those what another of the history's entries of the video has, as the History
+page shows it, a downloaded file's name included. Only for this are the lists
+read before the section opens, and only when the history has such a video. A
+video is known for this by any of its addresses (`VideoId::in_address`: a
+time or a share code in the query, `youtu.be`, a Short's or a stream's page,
+but not a playlist's), though only its one address puts it on this page. The
+rest are asked of yt-dlp in the section's pass over titles, before saved
+videos' as there are few of them, with the pass's spacing and stops, three
+tries each in a run of the app, and none at all with "Remember playback
+history" off. Only a video the history has by its one address is asked about,
+as that is the entry Clear History takes out: one there by another address
+stays after the clearing, and would otherwise go on being asked about after
+the user said to forget it. A video on Watch Later is asked for as its row is
+(see Import and export), whose tries and "can't be watched" mark last past
+the run; one only in the history that YouTube says can't be watched is left
+for the run, and so is asked about once each time the app starts. What comes
+goes to the player's history (`Session::on_retitle_history`), by the entries'
+paths, to each of the video's entries with no title, whatever its address.
+Clear History, Clear Recent, taking an entry off the history or turning off
+"Remember playback history" stops a pass under way, which starts again with
+what is left, so YouTube is asked nothing more of the videos gone.
 
 Clear History asks first, in a dialog, as the clearing goes further than the
 page: the YouTube videos leave the history, Recent and the History window
@@ -681,9 +715,9 @@ gone; a proxy never going direct; the two Google files round-tripping byte
 for byte; what a request carries
 (`a_request_says_who_is_asking_and_nothing_of_the_user`); the section's
 arguments to yt-dlp; the queue's limit and spacing; time seen; the lines in
-sight and the pictures asked for them; the History page and its clearing; and
-the pages, focus, Back, Copy Link and the Clear History dialog through the
-Slint testing backend.
+sight and the pictures asked for them; the History page, its clearing and the
+history's titles; and the pages, focus, Back, Copy Link and the Clear History
+dialog through the Slint testing backend.
 
 To try it by hand without YouTube, point the `ytdl-path` preference at a
 stand-in with its own settings and data folders (development.md). A

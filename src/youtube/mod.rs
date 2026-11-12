@@ -83,6 +83,42 @@ impl VideoId {
     pub fn from_watch_url(url: &str) -> Option<Self> {
         Self::parse(url.strip_prefix("https://www.youtube.com/watch?v=")?)
     }
+
+    /// The video a YouTube address plays, however it was written: as
+    /// `watch_url` makes it, or with more to its query (a time, a share
+    /// code), a `youtu.be` link, or a Short's, a stream's or an embed's
+    /// page. Only to give what a player's history holds a title the section
+    /// has: history and progress go by `watch_url`'s exact text
+    /// (`from_watch_url`), and so does which History videos a pass asks
+    /// YouTube about. An address with a playlist in it is none, as mpv
+    /// plays the playlist, and its entry is the playlist's.
+    pub fn in_address(address: &str) -> Option<Self> {
+        if let Some(id) = Self::from_watch_url(address) {
+            return Some(id);
+        }
+        let url = url::Url::parse(address).ok()?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.query_pairs().any(|(key, _)| key == "list")
+        {
+            return None;
+        }
+        let youtube = matches!(
+            url.host_str()?,
+            "www.youtube.com" | "youtube.com" | "m.youtube.com" | "music.youtube.com"
+        );
+        let mut parts = url.path_segments()?;
+        let first = parts.next()?;
+        let id = match first {
+            "watch" if youtube => url
+                .query_pairs()
+                .find(|(key, _)| key == "v")
+                .map(|(_, id)| id.into_owned())?,
+            "shorts" | "live" | "embed" if youtube => parts.next()?.to_owned(),
+            id if url.host_str() == Some("youtu.be") => id.to_owned(),
+            _ => return None,
+        };
+        Self::parse(&id)
+    }
 }
 
 impl std::fmt::Debug for VideoId {
@@ -681,6 +717,41 @@ mod tests {
             channel.videos_url(),
             format!("https://www.youtube.com/channel/{CHANNEL}/videos")
         );
+    }
+
+    /// The video an address plays, for the history's titles, is read from
+    /// the ways a video's address is written; a playlist's, another site's
+    /// or a channel's page is none.
+    #[test]
+    fn a_video_is_read_from_any_of_its_addresses() {
+        let id = VideoId::parse("d24DYchpPpc");
+        for address in [
+            "https://www.youtube.com/watch?v=d24DYchpPpc",
+            "https://www.youtube.com/watch?v=d24DYchpPpc&pp=ugUEEgJlbg%3D%3D",
+            "http://youtube.com/watch?feature=share&v=d24DYchpPpc&t=30",
+            "https://m.youtube.com/watch?v=d24DYchpPpc",
+            "https://music.youtube.com/watch?v=d24DYchpPpc",
+            "https://youtu.be/d24DYchpPpc?si=abc",
+            "https://www.youtube.com/shorts/d24DYchpPpc",
+            "https://www.youtube.com/live/d24DYchpPpc?feature=share",
+            "https://www.youtube.com/embed/d24DYchpPpc",
+        ] {
+            assert_eq!(VideoId::in_address(address), id, "{address}");
+        }
+        for address in [
+            "https://www.youtube.com/watch?v=d24DYchpPpc&list=PLaaaaaaaaaaaaaaaa",
+            "https://youtu.be/d24DYchpPpc?list=PLaaaaaaaaaaaaaaaa",
+            "https://www.youtube.com/watch?v=d24DYchpPp",
+            "https://www.youtube.com/watch",
+            "https://evil.example/watch?v=d24DYchpPpc",
+            "https://youtu.be.evil.example/d24DYchpPpc",
+            "https://www.youtube.com/d24DYchpPpc",
+            "https://www.youtube.com/@Name",
+            "ytdl://www.youtube.com/watch?v=d24DYchpPpc",
+            "/videos/d24DYchpPpc",
+        ] {
+            assert_eq!(VideoId::in_address(address), None, "{address}");
+        }
     }
 
     #[test]

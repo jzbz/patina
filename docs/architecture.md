@@ -357,6 +357,15 @@ changed on every running core, as IINA's option observers do. Resume
 positions use mpv's own watch-later files, except a Jellyfin item's, which
 the server keeps.
 
+A history entry's title is none when it is empty, the file's name, or for an
+address mpv's stand-in, the address after its last '/', query and all
+(`settings::is_untitled`): mpv 0.42 shows that until yt-dlp's title comes,
+and web videos recorded before `player::give_ytdl_title` gave mpv the title
+in time keep it. `History::retitle` replaces only such a title: with
+yt-dlp's when its answer reaches the window, or with what the YouTube
+section knows or fetches of a video, which it hands to `App` as it does
+Clear History (youtube.md, History).
+
 ## Preferences window
 
 `src/preferences/schema.rs` lists every setting: page, section, label, and

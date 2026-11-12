@@ -156,6 +156,17 @@ impl App {
                 app.forget_youtube_history();
             }
         }));
+        // Deferred: the section gives them as one of its pages or passes is
+        // under way, which the history's change reaches.
+        let weak = Rc::downgrade(&app);
+        app.youtube.on_retitle_history(Box::new(move |titles| {
+            let weak = weak.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Some(app) = weak.upgrade() {
+                    app.titles_from_youtube(&titles);
+                }
+            });
+        }));
         // The saved sign-ins come back from the keyring while the first
         // window opens.
         app.jellyfin.start();
@@ -263,6 +274,9 @@ impl App {
         {
             self.youtube.config_changed(&prefs);
         }
+        if prefs.record_history != old.record_history {
+            self.youtube.history_kept(&prefs);
+        }
         if prefs.media_keys != old.media_keys {
             if prefs.media_keys {
                 self.media_started.set(false);
@@ -312,7 +326,7 @@ impl App {
                 .iter()
                 .find(|history| history.path == entry)
                 .map(|history| history.title.clone())
-                .filter(|title| !title.is_empty() && title != entry)
+                .filter(|title| !settings::is_untitled(entry, title))
         })
     }
 
@@ -545,6 +559,17 @@ impl App {
         }
         if let Some(window) = &first {
             watch_first_window(window);
+        }
+        // YouTube videos recorded with no title, as under mpv's stand-in
+        // before yt-dlp's title came in time, get what the section knows of
+        // them. After the windows have opened, as that may read its lists.
+        if self.prefs().record_history {
+            let weak = Rc::downgrade(self);
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Some(app) = weak.upgrade() {
+                    app.youtube.title_history();
+                }
+            });
         }
     }
 
@@ -1513,6 +1538,23 @@ impl App {
         }
     }
 
+    /// Titles the YouTube section has for videos in the history with none
+    /// (`Session::on_retitle_history`), by their paths.
+    fn titles_from_youtube(&self, titles: &[(String, String)]) {
+        if !self.prefs().record_history {
+            return;
+        }
+        let changed = {
+            let mut history = self.history.borrow_mut();
+            titles.iter().fold(false, |changed, (path, title)| {
+                history.retitle(path, title, &[]) || changed
+            })
+        };
+        if changed {
+            self.history_changed();
+        }
+    }
+
     pub fn update_history(&self, path: &str, position: f64, duration: f64) {
         if path.is_empty() || !self.prefs().record_history {
             return;
@@ -1617,7 +1659,7 @@ impl App {
         let Some(entry) = history.entries.iter().find(|entry| entry.path == path) else {
             return false;
         };
-        if entry.section && entry.title != file_name(path) {
+        if entry.section && !settings::is_untitled(path, &entry.title) {
             self.youtube
                 .name_source(path.to_owned(), entry.title.clone());
         }
