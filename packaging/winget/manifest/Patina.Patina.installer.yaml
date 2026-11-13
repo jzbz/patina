@@ -1,10 +1,8 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 
-# Written by hand to the checklist in packaging/winget/README.md, and to be
-# kept in sync with what is actually submitted, so the next release starts
-# from the real thing rather than from a draft. Nothing has been submitted
-# yet: two values below are placeholders, filled in once the release is
-# published and its SHA256SUMS signed.
+# Written by hand to the checklist in packaging/winget/README.md and kept in
+# sync with what was actually submitted, so the next release starts from the
+# real thing rather than from a draft.
 #
 # InstallerType inno: the per-user Inno Setup installer release.yml builds
 # around the portable folder (packaging/windows/). It never asks for
@@ -92,16 +90,12 @@ FileExtensions:
 - m3u8
 - pls
 ProductCode: Patina.Patina_is1
-# The day the release is published. A placeholder until then, and not a
-# date, so winget validate refuses the manifest until it is filled in.
-ReleaseDate: YYYY-MM-DD
+ReleaseDate: 2026-11-12
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/jzbz/patina/releases/download/v0.1.0/patina-v0.1.0-x86_64-setup.exe
   # Taken from the release's PGP-signed SHA256SUMS rather than computed here,
-  # so the hash winget pins is the one covered by that signature. A
-  # placeholder until the release is signed, and not a hash, so winget
-  # validate refuses the manifest until it is filled in.
-  InstallerSha256: FROM-THE-SIGNED-SHA256SUMS
+  # so the hash winget pins is the one covered by that signature.
+  InstallerSha256: 9C505FF20D8A3AE793B8CC9BCBE004F4B682DAB0C79845A4AD56E149FDC44999
 ManifestType: installer
 ManifestVersion: 1.12.0

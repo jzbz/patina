@@ -368,5 +368,5 @@ modules:
         # these two beside it, so all three keep the same indentation. What is
         # written here is corrected to the tag's own commit immediately after
         # tagging.
-        commit: 3b05f77edcc9d5a1887699267d8c73de087bcdd3
+        commit: 2a50d597821b71965de598e45b6729e136104c2d
       - cargo-sources.json

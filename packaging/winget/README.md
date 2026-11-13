@@ -4,10 +4,11 @@ Manifests for the Microsoft winget community repository. They do not live here
 in any operational sense — winget reads them from `microsoft/winget-pkgs` — but
 the first submission has to come from somewhere, and package metadata that
 strangers read before installing is worth writing deliberately rather than
-generating blind. Nothing has been submitted yet. `manifest/` holds 0.1.0's,
-written to the checklist below, with two placeholders (`InstallerSha256` and
-`ReleaseDate`) that can only be filled in once that release is published and
-its `SHA256SUMS` signed.
+generating blind. 0.1.0 was submitted on 2026-11-12 as
+microsoft/winget-pkgs#478978 and waits for a moderator's review. `manifest/`
+holds what was submitted, written to the checklist below; its
+`InstallerSha256` and `ReleaseDate` can only be filled in once a release is
+published and its `SHA256SUMS` signed.
 
 ## What ships
 
@@ -138,7 +139,7 @@ the same ProductCode, and `InstallationMetadata`, if written, has
 `DefaultInstallLocation: '%LocalAppData%\Programs\Patina'`.
 
 Then, on Windows, `winget validate --manifest packaging\winget\manifest` has
-to pass; the placeholders make it fail until both are filled in. rPGP's
+to pass; a value still to be filled in makes it fail. rPGP's
 first installer manifest went in this way: written by hand, validated, and
 committed, signed, on a branch of a fork of winget-pkgs, as
 `manifests/j/jzbz/rPGP/0.1.4/`; the same for Patina means the three files in

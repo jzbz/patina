@@ -121,7 +121,7 @@ carries.
 
 ## Installing
 
-There is no release yet. From the first one on, each release on GitHub
+Each [release on GitHub](https://github.com/jzbz/patina/releases/latest)
 carries:
 
 - `patina-vX.Y.Z-x86_64.flatpak` and `patina-vX.Y.Z-aarch64.flatpak`:
